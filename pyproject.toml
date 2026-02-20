@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "petcrl"
+version = "0.1.0"
+description = "Modular control framework for the PET robot"
+requires-python = ">=3.10"
+dependencies = [
+    "rerun-sdk>=0.21.0",
+    "pynput>=1.7.0",
+    "typer>=0.12.0",
+    "numpy>=1.21.0",
+    "watchdog>=4.0.0",
+    "ftservo-python-websockets @ git+https://github.com/robotstack-dev/ftservo-python-websockets.git",
+    "websocket-client>=1.8.0",
+]
+
+[project.optional-dependencies]
+ml = ["torch>=2.0.0"]
+
+[project.scripts]
+petcrl = "petcrl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["petcrl*"]
