@@ -6,21 +6,19 @@ Displays two things simultaneously in the Rerun viewer:
   2. 3D robot pose from actual OBJ mesh files, forward-kinematics driven
 
 3D hierarchy per module:
-  robot/module_0                ← Transform3D: link offset + joint angle (dynamic)
-  robot/module_0/mesh           ← Asset3D + Transform3D: initial mesh rotation (static)
-  robot/module_0/module_1       ← Transform3D: link offset + joint angle (dynamic)
-  robot/module_0/module_1/mesh  ← Asset3D + Transform3D: initial mesh rotation (static)
+  robot/module_0              ← Transform3D: offset + R_hpr @ R_joint  (dynamic)
+  robot/module_0/mesh         ← Asset3D: raw OBJ geometry               (static)
+  robot/module_0/module_1     ← Transform3D: offset + R_hpr @ R_joint  (dynamic)
+  robot/module_0/module_1/mesh ← Asset3D                               (static)
   ...
+
+Rotation composition matches Panda3D convention:
+  combined = R_hpr * R_joint   (HPR applied after joint angle)
+This ensures that modules with rotation=[180,0,180] correctly invert
+the apparent servo direction in world-frame.
 
 Rerun runs in its own separate process (spawned automatically).
 There are no threading conflicts with asyncio.
-
-Install: pip install rerun-sdk
-
-Usage:
-  viz = RerunVisualizer()
-  ctrl = Controller(backend=..., scheme=..., visualizers=[viz])
-  await ctrl.run()
 """
 
 from __future__ import annotations
@@ -28,10 +26,9 @@ from __future__ import annotations
 import json
 import math
 import os
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
-from rerun.datatypes import RotationAxisAngle, Angle
 
 from petcrl.protocols import Visualizer
 from petcrl.types import RobotState, ServoCommand
@@ -39,26 +36,27 @@ from petcrl.types import RobotState, ServoCommand
 if TYPE_CHECKING:
     from petcrl.controller import Controller
 
-# Paths to robot_assembly.json and 3D model files from grapple_ai
-_GRAPPLE_AI = os.path.normpath(os.path.join(
+# petcrl-local assembly (source of truth for module count / geometry)
+_DEFAULT_ASSEMBLY = os.path.normpath(os.path.join(
     os.path.dirname(__file__),
-    "../../../python/grapple_ai",
+    "../assets/robot_assembly.json",
 ))
-_DEFAULT_ASSEMBLY = os.path.join(_GRAPPLE_AI, "robot_assembly.json")
-_MODELS_DIR = os.path.join(_GRAPPLE_AI, "3d_models/prisms")
+
+# 3D model files live in grapple_ai (not duplicated into petcrl)
+_MODELS_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(__file__),
+    "../../../python/grapple_ai/3d_models/prisms",
+))
 
 
 class RerunVisualizer(Visualizer):
     """
     Visualizes sensor data and robot pose in Rerun.
 
-    Shows the actual OBJ prism mesh files driven by the assembly JSON,
-    with joint angles mapped from servo positions.
-
     Args:
         app_name:       Rerun application name (shown in viewer title bar)
-        assembly_file:  Path to robot_assembly.json.  Defaults to grapple_ai one.
-        models_dir:     Directory containing the .obj files.  Defaults to grapple_ai one.
+        assembly_file:  Path to robot_assembly.json.  Defaults to petcrl/assets one.
+        models_dir:     Directory containing the .obj files.
         show_sensors:   Log sensor time-series charts (default: True)
         show_3d:        Log 3D robot pose (default: True)
     """
@@ -79,7 +77,9 @@ class RerunVisualizer(Visualizer):
         self.show_sensors = show_sensors
         self.show_3d = show_3d
 
-        self._module_meta: List[dict] = []   # ordered list of module configs from JSON
+        self._module_meta: List[dict] = []
+        # Pre-computed HPR rotation matrices keyed by module_id
+        self._hpr_mats: Dict[int, np.ndarray] = {}
         self._rr = None
 
     # ------------------------------------------------------------------
@@ -95,7 +95,6 @@ class RerunVisualizer(Visualizer):
             return
 
         rr.init(self.app_name, spawn=True)
-        # Right-hand Z-up coordinate frame (matches assembly JSON)
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         if self.show_3d:
@@ -105,12 +104,9 @@ class RerunVisualizer(Visualizer):
         if self._rr is None:
             return
         rr = self._rr
-
         rr.set_time("time", timestamp=state.timestamp)
-
         if self.show_sensors:
             self._log_sensors(rr, state)
-
         if self.show_3d:
             self._log_3d_pose(rr, state)
 
@@ -144,16 +140,17 @@ class RerunVisualizer(Visualizer):
         with open(self.assembly_file) as f:
             data = json.load(f)
         self._module_meta = data.get("assembly", {}).get("modules", [])
+
+        # Pre-compute HPR rotation matrices (used each tick in _log_3d_pose)
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            euler = mod.get("rotation", [0.0, 0.0, 0.0])
+            self._hpr_mats[mod_id] = _hpr_to_mat3(*euler)
+
         print(f"[RerunVisualizer] Loaded assembly with {len(self._module_meta)} modules")
 
     def _setup_3d_geometry(self) -> None:
-        """
-        Log static mesh geometry for each module (once, time-independent).
-
-        Each module gets a two-level entity:
-          robot/.../module_N        ← joint node (updated per-tick with Transform3D)
-          robot/.../module_N/mesh   ← Asset3D + initial mesh rotation (static)
-        """
+        """Log static OBJ mesh for each module (once, time-independent)."""
         rr = self._rr
         if not self._module_meta:
             print("[RerunVisualizer] No assembly data — skipping 3D geometry")
@@ -161,15 +158,12 @@ class RerunVisualizer(Visualizer):
 
         for mod in self._module_meta:
             mod_id = int(mod["id"])
-            joint_path = self._entity_path(mod_id)
-            mesh_path = joint_path + "/mesh"
+            mesh_path = self._entity_path(mod_id) + "/mesh"
 
-            # Resolve OBJ file path
             model_filename = mod.get("model", "")
             obj_path = os.path.join(self.models_dir, model_filename)
             if not os.path.isfile(obj_path):
                 print(f"[RerunVisualizer] Model not found: {obj_path}")
-                # Fall back to a box placeholder
                 rr.log(mesh_path, rr.Boxes3D(
                     half_sizes=[[3.5, 3.5, 3.59]],
                     colors=[[250, 245, 217, 220]],
@@ -177,17 +171,19 @@ class RerunVisualizer(Visualizer):
             else:
                 rr.log(mesh_path, rr.Asset3D(path=obj_path), static=True)
 
-            # Log initial mesh orientation from the JSON "rotation" field [H, P, R] degrees
-            euler = mod.get("rotation", [0.0, 0.0, 0.0])
-            initial_rot = _hpr_to_mat3(*euler)
-            rr.log(mesh_path, rr.Transform3D(mat3x3=initial_rot), static=True)
-
     def _log_3d_pose(self, rr, state: RobotState) -> None:
         """
-        Log each module's joint transform: link offset + joint angle rotation.
+        Log each module's joint transform each tick.
 
-        Each module's Transform3D is relative to its parent in the entity
-        hierarchy — Rerun composes them automatically for correct FK.
+        Transform = link offset (translation) + R_hpr @ R_joint (rotation).
+
+        R_hpr is the module's static mesh orientation from the assembly JSON.
+        R_joint is the dynamic rotation from the servo angle around the joint axis.
+        Composing R_hpr @ R_joint (HPR applied after joint) matches Panda3D's
+        `initial_quat * joint_quat` convention, so modules with rotation=[180,0,180]
+        correctly invert the apparent servo direction.
+
+        Rerun composes transforms along the entity hierarchy automatically.
         """
         if not self._module_meta:
             return
@@ -195,24 +191,17 @@ class RerunVisualizer(Visualizer):
         for mod in self._module_meta:
             mod_id = int(mod["id"])
             joint_path = self._entity_path(mod_id)
-
-            # Link offset: translation from parent joint to this joint (cm)
             offset = mod.get("offset", [0.0, 0.0, 0.0])
 
-            # Joint axis and current angle
-            joint_info = mod.get("joint", {})
-            joint_axis = joint_info.get("axis", [0, 0, 1])
-
-            # servo_id = mod_id + 1 (servo 1 drives module 0's joint, etc.)
+            joint_axis = mod.get("joint", {}).get("axis", [0, 0, 1])
             servo_id = mod_id + 1
             angle_rad = self._servo_angle_rad(servo_id, state)
 
+            R = self._hpr_mats[mod_id] @ _axis_angle_to_mat3(joint_axis, angle_rad)
+
             rr.log(joint_path, rr.Transform3D(
                 translation=offset,
-                rotation_axis_angle=RotationAxisAngle(
-                    axis=joint_axis,
-                    angle=Angle(rad=angle_rad),
-                ),
+                mat3x3=R,
             ))
 
     # ------------------------------------------------------------------
@@ -220,18 +209,14 @@ class RerunVisualizer(Visualizer):
     # ------------------------------------------------------------------
 
     def _entity_path(self, mod_id: int) -> str:
-        """
-        Build the Rerun entity path for a module, preserving parent-child
-        relationships from the assembly so Rerun composes transforms correctly.
-        """
+        """Hierarchical entity path: robot/module_0/module_1/module_2/..."""
         if not self._module_meta:
             return f"robot/module_{mod_id}"
         chain = self._ancestor_chain(mod_id)
-        parts = ["robot"] + [f"module_{m}" for m in chain]
-        return "/".join(parts)
+        return "/".join(["robot"] + [f"module_{m}" for m in chain])
 
     def _ancestor_chain(self, mod_id: int) -> List[int]:
-        """Return the list of module IDs from root to mod_id (inclusive)."""
+        """Return module IDs from root to mod_id (inclusive)."""
         parent_map: Dict[int, Optional[int]] = {}
         for mod in self._module_meta:
             mid = int(mod["id"])
@@ -248,7 +233,6 @@ class RerunVisualizer(Visualizer):
 
     @staticmethod
     def _servo_angle_rad(servo_id: int, state: RobotState) -> float:
-        """Convert servo_id's raw position in state to radians."""
         raw = state.servo_positions.get(servo_id, 2048)
         return ServoCommand.position_to_radians(raw)
 
@@ -259,10 +243,9 @@ class RerunVisualizer(Visualizer):
 
 def _hpr_to_mat3(h_deg: float, p_deg: float, r_deg: float) -> np.ndarray:
     """
-    Convert Panda3D HPR angles (degrees) to a 3x3 rotation matrix.
-
-    Panda3D convention: Heading=Z, Pitch=X, Roll=Y, applied in H*P*R order.
-    This matches how robot_assembly.json 'rotation' values were authored.
+    Panda3D HPR → 3x3 rotation matrix.
+    Convention: Heading=Z, Pitch=X, Roll=Y, composed as Rz(H) @ Rx(P) @ Ry(R).
+    This matches how robot_assembly.json 'rotation' fields were authored.
     """
     h = math.radians(h_deg)
     p = math.radians(p_deg)
@@ -272,17 +255,33 @@ def _hpr_to_mat3(h_deg: float, p_deg: float, r_deg: float) -> np.ndarray:
     cp, sp = math.cos(p), math.sin(p)
     cr, sr = math.cos(r), math.sin(r)
 
-    # Rz(h)
-    Rz = np.array([[ch, -sh, 0],
-                   [sh,  ch, 0],
-                   [0,   0,  1]], dtype=np.float32)
-    # Rx(p)
-    Rx = np.array([[1,  0,   0 ],
-                   [0,  cp, -sp],
-                   [0,  sp,  cp]], dtype=np.float32)
-    # Ry(r)
-    Ry = np.array([[ cr, 0, sr],
-                   [0,   1, 0 ],
-                   [-sr, 0, cr]], dtype=np.float32)
+    Rz = np.array([[ch, -sh, 0.],
+                   [sh,  ch, 0.],
+                   [0.,  0., 1.]], dtype=np.float32)
+    Rx = np.array([[1., 0.,   0. ],
+                   [0., cp,  -sp ],
+                   [0., sp,   cp ]], dtype=np.float32)
+    Ry = np.array([[ cr, 0., sr],
+                   [0.,  1., 0.],
+                   [-sr, 0., cr]], dtype=np.float32)
 
     return Rz @ Rx @ Ry
+
+
+def _axis_angle_to_mat3(axis, angle_rad: float) -> np.ndarray:
+    """Rodrigues' rotation formula: rotation by angle_rad around unit axis."""
+    ax, ay, az = [float(v) for v in axis]
+    norm = math.sqrt(ax*ax + ay*ay + az*az)
+    if norm < 1e-9:
+        return np.eye(3, dtype=np.float32)
+    ax, ay, az = ax/norm, ay/norm, az/norm
+
+    c = math.cos(angle_rad)
+    s = math.sin(angle_rad)
+    t = 1.0 - c
+
+    return np.array([
+        [t*ax*ax + c,    t*ax*ay - s*az, t*ax*az + s*ay],
+        [t*ax*ay + s*az, t*ay*ay + c,    t*ay*az - s*ax],
+        [t*ax*az - s*ay, t*ay*az + s*ax, t*az*az + c   ],
+    ], dtype=np.float32)
