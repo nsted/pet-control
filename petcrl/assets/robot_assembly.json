@@ -44,7 +44,7 @@
         "offset": [0, -4.01, -3.5875],
         "joint": {
           "type": "revolute",
-          "axis": [0, 1, 0]
+          "axis": [0, 0, 1]
         }
       },
       {
@@ -58,7 +58,7 @@
         "offset": [0, -4.01, -3.5875],
         "joint": {
           "type": "revolute",
-          "axis": [0, 1, 0]
+          "axis": [0, 0, 1]
         }
       },
       {
@@ -72,7 +72,7 @@
         "offset": [0, -4.01, -3.5875],
         "joint": {
           "type": "revolute",
-          "axis": [0, 1, 0]
+          "axis": [0, 0, 1]
         }
       },
       {
@@ -86,7 +86,7 @@
         "offset": [0, -4.01, -3.5875],
         "joint": {
           "type": "revolute",
-          "axis": [0, 1, 0]
+          "axis": [0, 0, 1]
         }
       },
       {
@@ -100,7 +100,7 @@
         "offset": [0, -4.01, -3.5875],
         "joint": {
           "type": "revolute",
-          "axis": [0, 1, 0]
+          "axis": [0, 0, 1]
         }
       },
       {
@@ -114,7 +114,7 @@
         "offset": [0, -4.01, -3.5875],
         "joint": {
           "type": "revolute",
-          "axis": [0, 1, 0]
+          "axis": [0, 0, 1]
         }
       }
     ],
