@@ -1,5 +1,5 @@
 """
-Abstract base classes (plugin protocols) for petcrl.
+Abstract base classes (plugin protocols) for petctl.
 
 Implement these to add new backends, control schemes, or visualizers:
 
@@ -16,11 +16,11 @@ Implement these to add new backends, control schemes, or visualizers:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
-    from petcrl.controller import Controller
-    from petcrl.types import RobotState, ServoCommand
+    from petctl.controller import Controller
+    from petctl.types import RobotState, ServoCommand
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ class RobotBackend(ABC):
     Abstraction over a physical robot or a simulator.
 
     The Controller talks exclusively through this interface, so swapping
-    GrappleBackend for MockBackend or a future MuJoCoBackend requires
+    RobotBackend for MockBackend or a future MuJoCoBackend requires
     zero changes to control schemes or visualizers.
     """
 
@@ -56,13 +56,13 @@ class RobotBackend(ABC):
 
         Called every tick by the Controller. Must be non-blocking on the
         happy path. If the connection is lost, implementations should:
-          - attempt reconnect (GrappleBackend with auto_reconnect=True)
+          - attempt reconnect (RobotBackend with auto_reconnect=True)
           - return the last known state with connected=False
         """
         ...
 
     @abstractmethod
-    async def send_commands(self, commands: "List[ServoCommand]") -> None:
+    async def send_commands(self, commands: "list[ServoCommand]") -> None:
         """
         Apply servo commands to the robot or simulator.
 
@@ -101,20 +101,20 @@ class ControlScheme(ABC):
             def on_start(self, controller):
                 self.model = load_model("weights.pth")
 
-            def update(self, state: RobotState) -> List[ServoCommand]:
+            def update(self, state: RobotState) -> list[ServoCommand]:
                 features = build_features(state)
                 actions = self.model(features)
                 return [ServoCommand.from_angle(i+1, a) for i, a in enumerate(actions)]
     """
 
-    name: str = "unnamed"
+    name: ClassVar[str] = "unnamed"
 
     def on_start(self, controller: "Controller") -> None:
         """Called once when this scheme is activated."""
-        pass
+        ...
 
     @abstractmethod
-    def update(self, state: "RobotState") -> "List[ServoCommand]":
+    def update(self, state: "RobotState") -> "list[ServoCommand]":
         """
         Called every tick. Return servo commands to execute.
 
@@ -128,7 +128,7 @@ class ControlScheme(ABC):
 
     def on_stop(self) -> None:
         """Called on shutdown or when scheme is swapped out."""
-        pass
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +148,11 @@ class Visualizer(ABC):
         on_stop()             — clean up resources
     """
 
-    name: str = "unnamed"
+    name: ClassVar[str] = "unnamed"
 
     def on_start(self, controller: "Controller") -> None:
         """Called once when visualizer is activated."""
-        pass
+        ...
 
     @abstractmethod
     def update(self, state: "RobotState") -> None:
@@ -161,4 +161,4 @@ class Visualizer(ABC):
 
     def on_stop(self) -> None:
         """Called on shutdown. Close windows, flush buffers, etc."""
-        pass
+        ...

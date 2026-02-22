@@ -1,16 +1,16 @@
 """
-petcrl command-line interface.
+petctl command-line interface.
 
 Usage:
-    petcrl run                                  # keyboard + Rerun, mock backend
-    petcrl run --backend grapple                # use real robot
-    petcrl run --backend mock --mode sine       # animated sensor data
-    petcrl run --backend mock --state s.json    # load sensor values from file
-    petcrl run --no-viz                         # headless (sensors only, no Rerun)
-    petcrl run --dry-run                        # never send servo commands
-    petcrl run --hz 10                          # 10 Hz control loop
-    petcrl run --host 192.168.1.42              # connect to robot by IP
-    petcrl info                                 # connect and print robot status
+    petctl run                                  # keyboard + Rerun, mock backend
+    petctl run --backend robot                  # use real robot
+    petctl run --backend mock --mode sine       # animated sensor data
+    petctl run --backend mock --state s.json    # load sensor values from file
+    petctl run --no-viz                         # headless (sensors only, no Rerun)
+    petctl run --dry-run                        # never send servo commands
+    petctl run --hz 10                          # 10 Hz control loop
+    petctl run --host 192.168.1.42              # connect to robot by IP
+    petctl info                                 # connect and print robot status
 """
 
 import asyncio
@@ -19,8 +19,10 @@ from typing import Optional
 
 import typer
 
+from petctl.backends.robot import ROBOT_DEFAULT_HOST, ROBOT_DEFAULT_PORT
+
 app = typer.Typer(
-    name="petcrl",
+    name="petctl",
     help="PET robot control framework",
     add_completion=False,
 )
@@ -30,7 +32,7 @@ app = typer.Typer(
 def run(
     backend: str = typer.Option(
         "mock",
-        help="Backend: 'mock' (no robot) or 'grapple' (real robot)",
+        help="Backend: 'mock' (no robot) or 'robot' (real robot)",
     ),
     control: str = typer.Option(
         "keyboard",
@@ -63,19 +65,19 @@ def run(
         4,
         help="Number of simulated modules (mock backend only)",
     ),
-    # GrappleBackend options
+    # RobotBackend options
     host: str = typer.Option(
-        "pet-robot.local",
-        help="Robot hostname or IP address (grapple backend)",
+        ROBOT_DEFAULT_HOST,
+        help="Robot hostname or IP address (robot backend)",
     ),
     port: int = typer.Option(
-        8080,
-        help="Robot WebSocket port (grapple backend)",
+        ROBOT_DEFAULT_PORT,
+        help="Robot WebSocket port (robot backend)",
     ),
     no_calibrate: bool = typer.Option(
         False,
         "--no-calibrate",
-        help="Skip sensor calibration on connect (grapple backend)",
+        help="Skip sensor calibration on connect (robot backend)",
     ),
     # KeyboardControlScheme options
     step: float = typer.Option(
@@ -83,33 +85,33 @@ def run(
         help="Degrees per keypress for keyboard control",
     ),
 ) -> None:
-    """Run the petcrl controller."""
+    """Run the petctl controller."""
 
     # --- Build backend ---
     if backend == "mock":
-        from petcrl.backends.mock import MockBackend
+        from petctl.backends.mock import MockBackend
         _backend = MockBackend(
             mode=mode,
             state_file=state,
             num_modules=num_modules,
         )
-    elif backend == "grapple":
-        from petcrl.backends.grapple import GrappleBackend
-        _backend = GrappleBackend(
+    elif backend == "robot":
+        from petctl.backends.robot import RobotBackend
+        _backend = RobotBackend(
             host=host,
             port=port,
             calibrate_on_connect=not no_calibrate,
         )
     else:
-        typer.echo(f"Unknown backend '{backend}'. Choose: mock, grapple", err=True)
+        typer.echo(f"Unknown backend '{backend}'. Choose: mock, robot", err=True)
         raise typer.Exit(1)
 
     # --- Build control scheme ---
     if control == "keyboard":
-        from petcrl.schemes.keyboard import KeyboardControlScheme
+        from petctl.schemes.keyboard import KeyboardControlScheme
         _scheme = KeyboardControlScheme(step_deg=step)
     elif control == "passthrough":
-        from petcrl.schemes.passthrough import PassthroughControlScheme
+        from petctl.schemes.passthrough import PassthroughControlScheme
         _scheme = PassthroughControlScheme()
     else:
         typer.echo(f"Unknown control scheme '{control}'. Choose: keyboard, passthrough", err=True)
@@ -118,11 +120,11 @@ def run(
     # --- Build visualizers ---
     _visualizers = []
     if not no_viz:
-        from petcrl.visualizers.rerun_viz import RerunVisualizer
+        from petctl.visualizers.rerun_viz import RerunVisualizer
         _visualizers.append(RerunVisualizer())
 
     # --- Run ---
-    from petcrl.controller import Controller
+    from petctl.controller import Controller
 
     async def _run() -> None:
         ctrl = Controller(
@@ -142,35 +144,27 @@ def run(
 
 @app.command()
 def info(
-    host: str = typer.Option("pet-robot.local", help="Robot hostname or IP"),
-    port: int = typer.Option(8080, help="Robot WebSocket port"),
+    host: str = typer.Option(ROBOT_DEFAULT_HOST, help="Robot hostname or IP"),
+    port: int = typer.Option(ROBOT_DEFAULT_PORT, help="Robot WebSocket port"),
 ) -> None:
     """Connect to the real robot and print discovered modules and servos."""
 
     async def _info() -> None:
-        try:
-            from grapple import GrappleRobot
-        except ImportError:
-            typer.echo(
-                "grapple-python not installed.\n"
-                "Run: pip install -e /path/to/grapple-python",
-                err=True,
-            )
-            raise typer.Exit(1)
+        from petctl.backends.robot import RobotBackend
 
-        robot = GrappleRobot(host=host, port=port)
+        backend = RobotBackend(host=host, port=port, calibrate_on_connect=False)
         typer.echo(f"Connecting to {host}:{port}...")
-        ok = await robot.connect()
+        ok = await backend.connect()
         if not ok:
             typer.echo(f"Could not connect to {host}:{port}", err=True)
             raise typer.Exit(1)
 
-        typer.echo(f"\n  Connected:        {host}:{port}")
-        typer.echo(f"  Active modules:   {sorted(robot.discovered_modules)}")
-        typer.echo(f"  Discovered servos:{sorted(robot.discovered_servos)}")
-        typer.echo(f"  Calibrated:       {robot.is_calibrated()}")
-
-        await robot.disconnect()
+        try:
+            typer.echo(f"\n  Connected:        {host}:{port}")
+            typer.echo(f"  Active modules:   {sorted(backend.discovered_modules)}")
+            typer.echo(f"  Discovered servos:{sorted(backend.discovered_servos)}")
+        finally:
+            await backend.disconnect()
 
     asyncio.run(_info())
 

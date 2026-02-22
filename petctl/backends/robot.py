@@ -1,5 +1,5 @@
 """
-GrappleBackend — connects to the PET robot using the Feetech WebSocket SDK.
+RobotBackend — connects to the PET robot using the Feetech WebSocket SDK.
 
 Uses ftservo-python-websockets (scservo_sdk) as the transport layer:
   https://github.com/robotstack-dev/ftservo-python-websockets
@@ -34,16 +34,17 @@ SENSOR DATA FORMAT
 from __future__ import annotations
 
 import asyncio
+import itertools
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 from scservo_sdk.port_handler_factory import get_port_handler
-from scservo_sdk.hls_scs import hls_scs as HlsScs
+from scservo_sdk.hls_scs import hls_scs as HlsScs, HLSS_TORQUE_SWITCH
 
-from petcrl.protocols import RobotBackend
-from petcrl.types import ModuleSensors, RobotState, ServoCommand
+from petctl.protocols import RobotBackend as _BackendBase
+from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 # Sensor fields in layout order
 _SENSOR_FIELDS = (
@@ -54,8 +55,12 @@ _SENSOR_FIELDS = (
 # Bytes per module: 6 sensors × 2 bytes each
 _BYTES_PER_MODULE = 12
 
+# Default connection parameters (also imported by cli.py to keep a single source of truth)
+ROBOT_DEFAULT_HOST = "pet-robot.local"
+ROBOT_DEFAULT_PORT = 8080
 
-class GrappleBackend(RobotBackend):
+
+class RobotBackend(_BackendBase):
     """
     Backend for the real PET robot.
 
@@ -71,8 +76,8 @@ class GrappleBackend(RobotBackend):
 
     def __init__(
         self,
-        host: str = "pet-robot.local",
-        port: int = 8080,
+        host: str = ROBOT_DEFAULT_HOST,
+        port: int = ROBOT_DEFAULT_PORT,
         calibrate_on_connect: bool = True,
         calibration_samples: int = 10,
         auto_reconnect: bool = True,
@@ -92,20 +97,20 @@ class GrappleBackend(RobotBackend):
 
         self._connected = False
         self._resolved_ip: Optional[str] = None
-        self._req_id = 0
+        self._req_id_counter = itertools.count()
 
-        self._discovered_modules: List[int] = []
-        self._discovered_servos: List[int] = []
+        self._discovered_modules: list[int] = []
+        self._discovered_servos: list[int] = []
 
         # Calibration: per-(module_id, sensor_field) baseline and range
-        self._baseline: Dict[Tuple[int, str], float] = {}
-        self._range:    Dict[Tuple[int, str], float] = {}
+        self._baseline: dict[tuple[int, str], float] = {}
+        self._range:    dict[tuple[int, str], float] = {}
         self._calibrated = False
 
         # Last known state for graceful degradation during reconnect
         self._last_state = RobotState.empty()
         # Servo positions tracked locally — updated on send, not re-read each tick
-        self._servo_positions: Dict[int, int] = {}
+        self._servo_positions: dict[int, int] = {}
 
         self._reconnecting = False
 
@@ -116,7 +121,7 @@ class GrappleBackend(RobotBackend):
     async def connect(self) -> bool:
         ip = await self._resolve_host()
         if not ip:
-            print(f"[GrappleBackend] Could not resolve {self.host}")
+            print(f"[RobotBackend] Could not resolve {self.host}")
             return False
         self._resolved_ip = ip
 
@@ -126,8 +131,10 @@ class GrappleBackend(RobotBackend):
 
         self._discovered_modules = await self._discover_modules()
         self._discovered_servos  = await self._discover_servos()
-        print(f"[GrappleBackend] Modules: {self._discovered_modules}")
-        print(f"[GrappleBackend] Servos:  {self._discovered_servos}")
+        print(f"[RobotBackend] Modules: {self._discovered_modules}")
+        print(f"[RobotBackend] Servos:  {self._discovered_servos}")
+
+        await self._enable_torques()
 
         if self.calibrate_on_connect and self._discovered_modules:
             await self._calibrate()
@@ -149,6 +156,7 @@ class GrappleBackend(RobotBackend):
                 sensors=self._last_state.sensors,
                 servo_positions=self._servo_positions,
                 active_modules=self._discovered_modules,
+                active_servo_ids=set(self._discovered_servos),
                 connected=False,
                 dt=0.0,
             )
@@ -157,6 +165,11 @@ class GrappleBackend(RobotBackend):
             if raw is None:
                 raise RuntimeError("Sensor read returned None")
 
+            # Read actual servo positions from hardware so the visualization
+            # reflects the real robot pose rather than last commanded positions.
+            read_positions = await self._read_all_servo_positions()
+            self._servo_positions.update(read_positions)
+
             sensors = self._normalize(raw)
             now = time.monotonic()
             state = RobotState(
@@ -164,6 +177,7 @@ class GrappleBackend(RobotBackend):
                 sensors=sensors,
                 servo_positions=dict(self._servo_positions),
                 active_modules=self._discovered_modules,
+                active_servo_ids=set(self._discovered_servos),
                 connected=True,
                 dt=now - self._last_state.timestamp,
             )
@@ -171,34 +185,36 @@ class GrappleBackend(RobotBackend):
             return state
 
         except Exception as e:
-            print(f"[GrappleBackend] get_state error: {e}")
+            print(f"[RobotBackend] get_state error: {e}")
             self._connected = False
             if self.auto_reconnect and not self._reconnecting:
-                asyncio.get_event_loop().create_task(self._reconnect_loop())
+                asyncio.get_running_loop().create_task(self._reconnect_loop())
             return RobotState(
                 timestamp=time.monotonic(),
                 sensors=self._last_state.sensors,
                 servo_positions=self._servo_positions,
                 active_modules=self._discovered_modules,
+                active_servo_ids=set(self._discovered_servos),
                 connected=False,
                 dt=0.0,
             )
 
-    async def send_commands(self, commands: List[ServoCommand]) -> None:
+    async def send_commands(self, commands: list[ServoCommand]) -> None:
         if not self._connected:
             return
         for cmd in commands:
             try:
                 if cmd.position is not None:
-                    await self._write_pos_ex(cmd.servo_id, cmd.position, 100, cmd.acceleration)
-                    self._servo_positions[cmd.servo_id] = cmd.position
+                    ok = await self._write_pos_ex(cmd.servo_id, cmd.position, 100, cmd.acceleration)
+                    if ok:
+                        self._servo_positions[cmd.servo_id] = cmd.position
                 elif cmd.speed is not None:
                     await self._write_speed(cmd.servo_id, cmd.speed, cmd.acceleration)
             except Exception as e:
-                print(f"[GrappleBackend] send_commands error (servo {cmd.servo_id}): {e}")
+                print(f"[RobotBackend] send_commands error (servo {cmd.servo_id}): {e}")
                 self._connected = False
                 if self.auto_reconnect and not self._reconnecting:
-                    asyncio.get_event_loop().create_task(self._reconnect_loop())
+                    asyncio.get_running_loop().create_task(self._reconnect_loop())
                 break
 
     @property
@@ -206,11 +222,11 @@ class GrappleBackend(RobotBackend):
         return self._connected
 
     @property
-    def discovered_modules(self) -> List[int]:
+    def discovered_modules(self) -> list[int]:
         return list(self._discovered_modules)
 
     @property
-    def discovered_servos(self) -> List[int]:
+    def discovered_servos(self) -> list[int]:
         return list(self._discovered_servos)
 
     # ------------------------------------------------------------------
@@ -231,7 +247,7 @@ class GrappleBackend(RobotBackend):
         if self._resolved_ip:
             return self._resolved_ip
 
-        print(f"[GrappleBackend] Resolving {self.host}...")
+        print(f"[RobotBackend] Resolving {self.host}...")
         loop = asyncio.get_running_loop()
         try:
             infos = await asyncio.wait_for(
@@ -243,16 +259,16 @@ class GrappleBackend(RobotBackend):
             )
             if infos:
                 ip = infos[0][4][0]
-                print(f"[GrappleBackend] Resolved to {ip}")
+                print(f"[RobotBackend] Resolved to {ip}")
                 return ip
         except (asyncio.TimeoutError, OSError) as e:
-            print(f"[GrappleBackend] Resolution failed: {e}")
+            print(f"[RobotBackend] Resolution failed: {e}")
         return None
 
     async def _do_connect(self, ip: str) -> bool:
         """Initialise the Feetech SDK port + packet handler, verify with ping."""
         uri = f"ws://{ip}:{self.port}"
-        print(f"[GrappleBackend] Connecting to {uri}...")
+        print(f"[RobotBackend] Connecting to {uri}...")
 
         loop = asyncio.get_running_loop()
 
@@ -269,11 +285,11 @@ class GrappleBackend(RobotBackend):
                 timeout=10.0,
             )
         except asyncio.TimeoutError:
-            print("[GrappleBackend] Connection timed out")
+            print("[RobotBackend] Connection timed out")
             return False
 
         if ph is None:
-            print("[GrappleBackend] openPort() failed")
+            print("[RobotBackend] openPort() failed")
             return False
 
         self._port_handler  = ph
@@ -283,11 +299,11 @@ class GrappleBackend(RobotBackend):
         # Verify with a ping
         pong = await self._send_text("ping", timeout=3.0)
         if pong is None:
-            print("[GrappleBackend] Ping failed")
+            print("[RobotBackend] Ping failed")
             await self.disconnect()
             return False
 
-        print("[GrappleBackend] Connected and ping OK")
+        print("[RobotBackend] Connected and ping OK")
         return True
 
     # ------------------------------------------------------------------
@@ -295,13 +311,11 @@ class GrappleBackend(RobotBackend):
     # ------------------------------------------------------------------
 
     def _next_req_id(self) -> int:
-        req_id = self._req_id
-        self._req_id = (self._req_id + 1) % 65536
-        return req_id
+        return next(self._req_id_counter) % 65536
 
     async def _send_text(
         self, command: str, timeout: float = 2.0
-    ) -> Optional[Tuple[int, str]]:
+    ) -> Optional[tuple[int, str]]:
         """
         Send "req_id:command" text frame and receive "req_id:data" text response.
         Runs in the thread executor so the synchronous SDK calls don't block the loop.
@@ -327,16 +341,22 @@ class GrappleBackend(RobotBackend):
             )
             if response and ":" in response:
                 parts = response.split(":", 1)
-                return (int(parts[0]), parts[1])
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[GrappleBackend] Text command '{command}' failed: {e}")
+                resp_id = int(parts[0])
+                if resp_id != req_id:
+                    print(f"[RobotBackend] req_id mismatch: sent {req_id}, got {resp_id}")
+                    return None
+                return (resp_id, parts[1])
+        except asyncio.TimeoutError:
+            print(f"[RobotBackend] Text command '{command}' timed out")
+        except OSError as e:
+            print(f"[RobotBackend] Text command '{command}' network error: {e}")
         return None
 
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------
 
-    async def _discover_modules(self) -> List[int]:
+    async def _discover_modules(self) -> list[int]:
         result = await self._send_text("getmodules", timeout=5.0)
         if not result:
             return []
@@ -346,30 +366,49 @@ class GrappleBackend(RobotBackend):
         except ValueError:
             return []
 
-    async def _discover_servos(self, servo_range: range = range(1, 10)) -> List[int]:
-        """Ping each servo ID; collect those that respond."""
-        found = []
+    async def _discover_servos(self, servo_range: range = range(1, 10)) -> list[int]:
+        """
+        Probe each servo ID via ReadPos; collect those that respond.
+
+        Sets a short WebSocket recv timeout (0.4 s) during discovery so that
+        missing servos fail fast instead of waiting the SDK's default ~10 s.
+        The original timeout is restored afterward.  All probes run in a
+        single blocking executor call so the worker is fully released before
+        the first sensor read.
+        """
         loop = asyncio.get_running_loop()
-        for sid in servo_range:
-            def _ping(servo_id=sid):
-                success, _model = self._packet_handler.Ping(servo_id)
-                return success
+        servo_ids = list(servo_range)
+
+        def _do() -> list[int]:
+            found: list[int] = []
+            ws = self._port_handler.websocket
+            old_timeout = ws.gettimeout()
+            ws.settimeout(0.4)
             try:
-                ok = await asyncio.wait_for(
-                    loop.run_in_executor(self._executor, _ping),
-                    timeout=0.5,
-                )
-                if ok:
-                    found.append(sid)
-            except (asyncio.TimeoutError, FuturesTimeoutError, Exception):
-                pass
-        return found
+                for sid in servo_ids:
+                    pos, comm_result, error = self._packet_handler.ReadPos(sid)
+                    if comm_result == 0:
+                        found.append(sid)
+                        self._servo_positions[sid] = pos
+            finally:
+                ws.settimeout(old_timeout)
+            return found
+
+        try:
+            # With 0.4 s per probe × 9 probes = 3.6 s worst case
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _do),
+                timeout=10.0,
+            )
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"[RobotBackend] _discover_servos error: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Sensor reading
     # ------------------------------------------------------------------
 
-    async def _read_sensors(self) -> Optional[Dict[int, Dict[str, int]]]:
+    async def _read_sensors(self) -> Optional[dict[int, dict[str, int]]]:
         """Send 'snsr 0 {n}' and parse the raw 16-bit sensor values."""
         n = len(self._discovered_modules) * _BYTES_PER_MODULE
         if n == 0:
@@ -398,7 +437,7 @@ class GrappleBackend(RobotBackend):
         touch_words    = words[:num_mod * 3]
         pressure_words = words[num_mod * 3:]
 
-        modules: Dict[int, Dict[str, int]] = {}
+        modules: dict[int, dict[str, int]] = {}
         for idx, mod_id in enumerate(self._discovered_modules):
             t = touch_words[idx * 3: idx * 3 + 3]
             p = pressure_words[idx * 3: idx * 3 + 3]
@@ -419,8 +458,8 @@ class GrappleBackend(RobotBackend):
 
     async def _calibrate(self) -> None:
         """Collect baseline samples with robot idle; record per-sensor baseline+range."""
-        print(f"[GrappleBackend] Calibrating ({self.calibration_samples} samples)...")
-        accumulated: Dict[Tuple[int, str], List[float]] = {}
+        print(f"[RobotBackend] Calibrating ({self.calibration_samples} samples)...")
+        accumulated: dict[tuple[int, str], list[float]] = {}
 
         for _ in range(self.calibration_samples):
             raw = await self._read_sensors()
@@ -431,6 +470,10 @@ class GrappleBackend(RobotBackend):
                     accumulated.setdefault((mod_id, field), []).append(float(value))
             await asyncio.sleep(0.05)
 
+        if not accumulated:
+            print("[RobotBackend] Calibration failed: no samples collected.")
+            return  # _calibrated remains False
+
         for key, samples in accumulated.items():
             baseline = sum(samples) / len(samples)
             self._baseline[key] = baseline
@@ -439,11 +482,11 @@ class GrappleBackend(RobotBackend):
             self._range[key] = max(observed_max - baseline, 6554.0)
 
         self._calibrated = True
-        print("[GrappleBackend] Calibration complete.")
+        print("[RobotBackend] Calibration complete.")
 
-    def _normalize(self, raw: Dict[int, Dict[str, int]]) -> Dict[int, ModuleSensors]:
+    def _normalize(self, raw: dict[int, dict[str, int]]) -> dict[int, ModuleSensors]:
         """Convert raw 16-bit sensor values to normalized 0-1 ModuleSensors."""
-        result: Dict[int, ModuleSensors] = {}
+        result: dict[int, ModuleSensors] = {}
         for mod_id, vals in raw.items():
             normalized = {}
             for field in _SENSOR_FIELDS:
@@ -465,16 +508,36 @@ class GrappleBackend(RobotBackend):
     async def _write_pos_ex(
         self, servo_id: int, position: int, speed: int, acc: int
     ) -> bool:
-        """Send WritePosEx servo command through the SDK."""
+        """Send WritePosEx servo command through the SDK.
+
+        Writes 8 bytes starting at HLSS_TORQUE_SWITCH (40), so torque is
+        atomically enabled with every position command:
+          [40] TORQUE_SWITCH = 1
+          [41] ACCELERATION  = acc
+          [42] TARGET_POS_L  = pos_lo
+          [43] TARGET_POS_H  = pos_hi
+          [44] TARGET_TORQUE_L = 0
+          [45] TARGET_TORQUE_H = 0
+          [46] RUNNING_SPEED_L = speed_lo
+          [47] RUNNING_SPEED_H = speed_hi
+        This ensures servos that boot with torque off respond without needing
+        a separate enable step, and survive reconnects without losing torque.
+        """
         loop = asyncio.get_running_loop()
+        ph = self._packet_handler
 
         def _do():
-            # hls_scs.WritePosEx handles direction inversion internally via
-            # the scs_toscs helper for signed values; raw position [0-4095]
-            # is treated as unsigned here. Direction inversion (odd servos)
-            # is handled in ServoCommand / Controller layer if needed.
-            comm_result, error = self._packet_handler.WritePosEx(
-                servo_id, position, speed, acc
+            txpacket = [
+                1,                        # HLSS_TORQUE_SWITCH = 1 (on)
+                acc,
+                ph.scs_lobyte(position),
+                ph.scs_hibyte(position),
+                0, 0,                     # TARGET_TORQUE (use default)
+                ph.scs_lobyte(speed),
+                ph.scs_hibyte(speed),
+            ]
+            comm_result, error = ph.writeTxRx(
+                servo_id, HLSS_TORQUE_SWITCH, len(txpacket), txpacket
             )
             return comm_result == 0 and error == 0
 
@@ -483,8 +546,11 @@ class GrappleBackend(RobotBackend):
                 loop.run_in_executor(self._executor, _do),
                 timeout=0.5,
             )
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[GrappleBackend] WritePosEx error (servo {servo_id}): {e}")
+        except asyncio.TimeoutError:
+            print(f"[RobotBackend] WritePosEx timed out (servo {servo_id})")
+            return False
+        except OSError as e:
+            print(f"[RobotBackend] WritePosEx network error (servo {servo_id}): {e}")
             return False
 
     async def _write_speed(self, servo_id: int, speed: int, acc: int) -> bool:
@@ -500,8 +566,11 @@ class GrappleBackend(RobotBackend):
                 loop.run_in_executor(self._executor, _do),
                 timeout=0.5,
             )
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[GrappleBackend] WriteSpeed error (servo {servo_id}): {e}")
+        except asyncio.TimeoutError:
+            print(f"[RobotBackend] WriteSpeed timed out (servo {servo_id})")
+            return False
+        except OSError as e:
+            print(f"[RobotBackend] WriteSpeed network error (servo {servo_id}): {e}")
             return False
 
     async def read_servo_position(self, servo_id: int) -> Optional[int]:
@@ -522,6 +591,65 @@ class GrappleBackend(RobotBackend):
         except (asyncio.TimeoutError, Exception):
             return None
 
+    async def _read_all_servo_positions(self) -> dict[int, int]:
+        """
+        Read current positions for all discovered servos in one executor call.
+
+        All reads are serialized in the single-worker executor to avoid
+        concurrent SDK calls. Returns only servos that responded successfully;
+        caller merges with last known positions as fallback.
+        """
+        if not self._discovered_servos or self._packet_handler is None:
+            return {}
+
+        loop = asyncio.get_running_loop()
+        servo_ids = list(self._discovered_servos)
+
+        def _do() -> dict[int, int]:
+            positions: dict[int, int] = {}
+            for sid in servo_ids:
+                pos, comm_result, error = self._packet_handler.ReadPos(sid)
+                if comm_result == 0:
+                    positions[sid] = pos
+            return positions
+
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _do),
+                timeout=1.0,
+            )
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"[RobotBackend] _read_all_servo_positions error: {e}")
+            return {}
+
+    async def _enable_torques(self) -> None:
+        """
+        Enable torque for every discovered servo.
+
+        Some HLS servos boot with HLSS_TORQUE_SWITCH = 0 (torque off).
+        In that state ReadPos still works and WritePosEx is accepted at the
+        protocol level (comm=0, err=0), but the motor does not move.
+        Writing 1 to HLSS_TORQUE_SWITCH causes the servo to hold its
+        current position — safe to call without setting a target first.
+        """
+        if not self._discovered_servos or self._packet_handler is None:
+            return
+        loop = asyncio.get_running_loop()
+        servo_ids = list(self._discovered_servos)
+
+        def _do() -> None:
+            for sid in servo_ids:
+                self._packet_handler.write1ByteTxRx(sid, HLSS_TORQUE_SWITCH, 1)
+
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _do),
+                timeout=5.0,
+            )
+            print(f"[RobotBackend] Torque enabled: {servo_ids}")
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"[RobotBackend] _enable_torques error: {e}")
+
     # ------------------------------------------------------------------
     # Auto-reconnect
     # ------------------------------------------------------------------
@@ -531,16 +659,16 @@ class GrappleBackend(RobotBackend):
         attempt = 0
         while not self._connected:
             attempt += 1
-            print(f"[GrappleBackend] Reconnect attempt {attempt}...")
+            print(f"[RobotBackend] Reconnect attempt {attempt}...")
             try:
                 ip = self._resolved_ip or await self._resolve_host()
                 if ip and await self._do_connect(ip):
                     self._connected = True
                     self._discovered_modules = await self._discover_modules()
-                    print("[GrappleBackend] Reconnected.")
+                    print("[RobotBackend] Reconnected.")
                     break
             except Exception as e:
-                print(f"[GrappleBackend] Reconnect error: {e}")
+                print(f"[RobotBackend] Reconnect error: {e}")
                 self._resolved_ip = None
             await asyncio.sleep(self.reconnect_delay)
         self._reconnecting = False

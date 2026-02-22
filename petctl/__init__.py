@@ -1,12 +1,12 @@
 """
-petcrl — PET Robot Control Framework
+petctl — PET Robot Control Framework
 
 Quick start (mock robot, keyboard control, Rerun visualization):
 
-    from petcrl import Controller
-    from petcrl.backends.mock import MockBackend
-    from petcrl.schemes.keyboard import KeyboardControlScheme
-    from petcrl.visualizers.rerun_viz import RerunVisualizer
+    from petctl import Controller
+    from petctl.backends.mock import MockBackend
+    from petctl.schemes.keyboard import KeyboardControlScheme
+    from petctl.visualizers.rerun_viz import RerunVisualizer
     import asyncio
 
     asyncio.run(
@@ -19,8 +19,8 @@ Quick start (mock robot, keyboard control, Rerun visualization):
 
 Custom ML control scheme:
 
-    from petcrl import Controller, ControlScheme, RobotState, ServoCommand
-    from petcrl.backends.grapple import GrappleBackend
+    from petctl import Controller, ControlScheme, RobotState, ServoCommand
+    from petctl.backends.robot import RobotBackend
     import asyncio
 
     class MyScheme(ControlScheme):
@@ -33,20 +33,20 @@ Custom ML control scheme:
 
     asyncio.run(
         Controller(
-            backend=GrappleBackend(),
+            backend=RobotBackend(),
             scheme=MyScheme(),
         ).run()
     )
 
 CLI:
-    petcrl run                      # mock backend, keyboard, Rerun viz
-    petcrl run --backend grapple    # real robot
-    petcrl info                     # print robot status
+    petctl run                      # mock backend, keyboard, Rerun viz
+    petctl run --backend robot      # real robot
+    petctl info                     # print robot status
 """
 
-from petcrl.controller import Controller
-from petcrl.protocols import ControlScheme, RobotBackend, Visualizer
-from petcrl.types import ModuleSensors, RobotState, ServoCommand
+from petctl.controller import Controller
+from petctl.protocols import ControlScheme, RobotBackend, Visualizer
+from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 __version__ = "0.1.0"
 

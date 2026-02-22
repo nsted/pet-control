@@ -2,7 +2,7 @@
 ML Control Scheme Example
 =========================
 Shows how to wrap a PyTorch model (the BiLSTM touch classifier from
-grapple_ai) into a petcrl ControlScheme.
+grapple_ai) into a petctl ControlScheme.
 
 Run with mock backend (no robot needed):
     python examples/ml_control_example.py
@@ -13,23 +13,28 @@ Run with real robot:
 
 from __future__ import annotations
 
-import sys
 import asyncio
 import argparse
+import math
+import os
+import sys
 from collections import deque
-from typing import List
 
 import numpy as np
 
-# Add grapple_ai to path so we can import the existing model
-_GRAPPLE_AI = "/Users/nsted/Dropbox/Mac/Documents/PET/code/python/grapple_ai"
-if _GRAPPLE_AI not in sys.path:
+# Add grapple_ai to path so we can import the existing model.
+# Override with GRAPPLE_AI_PATH env var for non-standard directory layouts.
+_GRAPPLE_AI = os.environ.get(
+    "GRAPPLE_AI_PATH",
+    os.path.normpath(os.path.join(os.path.dirname(__file__), "../../python/grapple_ai")),
+)
+if os.path.isdir(_GRAPPLE_AI) and _GRAPPLE_AI not in sys.path:
     sys.path.insert(0, _GRAPPLE_AI)
 
-from petcrl import Controller, ControlScheme, RobotState, ServoCommand
-from petcrl.backends.mock import MockBackend
-from petcrl.backends.grapple import GrappleBackend
-from petcrl.visualizers.rerun_viz import RerunVisualizer
+from petctl import Controller, ControlScheme, RobotState, ServoCommand  # noqa: E402
+from petctl.backends.mock import MockBackend
+from petctl.backends.robot import RobotBackend
+from petctl.visualizers.rerun_viz import RerunVisualizer
 
 # Sensor fields in the order the model expects
 _SENSOR_FIELDS = (
@@ -67,12 +72,14 @@ class TouchReactiveScheme(ControlScheme):
         # Rolling buffer of sensor frames
         self._buffer: deque = deque(maxlen=sequence_length)
         self._model = None
+        self._torch = None  # set in on_start() if torch is available
 
     def on_start(self, controller) -> None:
         try:
             import torch
             from models.touch_classifier import GrappleTouchClassifier
 
+            self._torch = torch
             self._model = GrappleTouchClassifier()
             state_dict = torch.load(self.model_path, map_location="cpu")
             self._model.load_state_dict(state_dict)
@@ -85,9 +92,9 @@ class TouchReactiveScheme(ControlScheme):
             print(f"[TouchReactiveScheme] Model file not found: {self.model_path}")
             print("  Train the model first using grapple_ai/training/train_touch_classifier.py")
 
-    def update(self, state: RobotState) -> List[ServoCommand]:
+    def update(self, state: RobotState) -> list[ServoCommand]:
         # Build a feature frame: num_modules * 6 sensors
-        frame: List[float] = []
+        frame: list[float] = []
         for mod_id in range(self.num_modules):
             sensors = state.sensors.get(mod_id)
             if sensors:
@@ -97,10 +104,10 @@ class TouchReactiveScheme(ControlScheme):
 
         self._buffer.append(frame)
 
-        if self._model is None or len(self._buffer) < self.sequence_length:
+        if self._model is None or self._torch is None or len(self._buffer) < self.sequence_length:
             return []  # Not ready yet
 
-        import torch
+        torch = self._torch
 
         # Shape: (1, sequence_length, num_modules * 6)
         x = torch.tensor(list(self._buffer), dtype=torch.float32).unsqueeze(0)
@@ -136,8 +143,7 @@ class SineWaveScheme(ControlScheme):
         self.hz = hz
         self._t = 0.0
 
-    def update(self, state: RobotState) -> List[ServoCommand]:
-        import math
+    def update(self, state: RobotState) -> list[ServoCommand]:
         self._t += state.dt
         commands = []
         for i in range(8):
@@ -152,8 +158,8 @@ class SineWaveScheme(ControlScheme):
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="petcrl ML control example")
-    parser.add_argument("--real", action="store_true", help="Use real robot (GrappleBackend)")
+    parser = argparse.ArgumentParser(description="petctl ML control example")
+    parser.add_argument("--real", action="store_true", help="Use real robot (RobotBackend)")
     parser.add_argument("--host", default="pet-robot.local", help="Robot hostname")
     parser.add_argument(
         "--scheme", choices=["touch", "sine"], default="sine",
@@ -167,7 +173,7 @@ def main() -> None:
 
     # Backend
     if args.real:
-        backend = GrappleBackend(host=args.host)
+        backend = RobotBackend(host=args.host)
     else:
         backend = MockBackend(mode="sine", num_modules=4)
 

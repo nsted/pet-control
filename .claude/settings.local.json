@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(petctl info:*)",
+      "Bash(python3:*)",
+      "Bash(echo done:*)",
+      "Bash(petctl run:*)",
+      "Bash(python:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

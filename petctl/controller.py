@@ -1,5 +1,5 @@
 """
-Controller — the central hub of petcrl.
+Controller — the central hub of petctl.
 
 Owns a RobotBackend, a ControlScheme, and a list of Visualizers.
 Runs a single async loop:
@@ -12,10 +12,10 @@ Runs a single async loop:
 
 Usage:
 
-  from petcrl import Controller
-  from petcrl.backends.mock import MockBackend
-  from petcrl.schemes.keyboard import KeyboardControlScheme
-  from petcrl.visualizers.rerun_viz import RerunVisualizer
+  from petctl import Controller
+  from petctl.backends.mock import MockBackend
+  from petctl.schemes.keyboard import KeyboardControlScheme
+  from petctl.visualizers.rerun_viz import RerunVisualizer
 
   async def main():
       ctrl = Controller(
@@ -33,18 +33,18 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
-from typing import List, Optional
+from typing import Optional
 
-from petcrl.protocols import ControlScheme, RobotBackend, Visualizer
-from petcrl.types import RobotState
+from petctl.protocols import ControlScheme, RobotBackend, Visualizer
+from petctl.types import RobotState
 
 
 class Controller:
     """
-    Central coordinator for petcrl.
+    Central coordinator for petctl.
 
     Args:
-        backend:      A RobotBackend (GrappleBackend, MockBackend, etc.)
+        backend:      A RobotBackend (RobotBackend, MockBackend, etc.)
         scheme:       A ControlScheme (keyboard, AI, passthrough, etc.)
         visualizers:  List of Visualizer instances (Rerun, etc.)
         poll_hz:      How often to run the control loop (default: 20 Hz)
@@ -56,19 +56,21 @@ class Controller:
         self,
         backend: RobotBackend,
         scheme: ControlScheme,
-        visualizers: Optional[List[Visualizer]] = None,
+        visualizers: Optional[list[Visualizer]] = None,
         poll_hz: float = 20.0,
         dry_run: bool = False,
     ) -> None:
         self.backend = backend
         self.scheme = scheme
-        self.visualizers: List[Visualizer] = visualizers or []
+        self.visualizers: list[Visualizer] = visualizers or []
         self.poll_interval = 1.0 / poll_hz
         self.dry_run = dry_run
 
         self._state: RobotState = RobotState.empty()
         self._running = False
-        self._stop_event = asyncio.Event()
+        # Created inside run() to bind to the correct event loop
+        self._stop_event: Optional[asyncio.Event] = None
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -86,14 +88,19 @@ class Controller:
         Calls on_stop() on the current scheme and on_start() on the new one
         without dropping the backend connection.
         """
-        self.scheme.on_stop()
+        if self._running:
+            self.scheme.on_stop()
         self.scheme = scheme
         if self._running:
             scheme.on_start(self)
 
     def stop(self) -> None:
-        """Request a graceful shutdown of the control loop."""
-        self._stop_event.set()
+        """Request a graceful shutdown of the control loop.
+
+        Thread-safe: may be called from any thread (e.g. keyboard listener).
+        """
+        if self._stop_event is not None and self._event_loop is not None:
+            self._event_loop.call_soon_threadsafe(self._stop_event.set)
 
     async def run(self) -> None:
         """
@@ -108,7 +115,8 @@ class Controller:
             return
 
         self._running = True
-        self._stop_event.clear()
+        self._event_loop = asyncio.get_running_loop()
+        self._stop_event = asyncio.Event()
 
         # Activate scheme and visualizers
         self.scheme.on_start(self)
@@ -117,11 +125,13 @@ class Controller:
 
         print("[Controller] Running. Press Ctrl-C to stop.")
 
-        # Install signal handler so Ctrl-C triggers graceful shutdown
+        # Install signal handlers so Ctrl-C triggers graceful shutdown
         loop = asyncio.get_running_loop()
+        registered_signals: list[signal.Signals] = []
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, self.stop)
+                registered_signals.append(sig)
             except NotImplementedError:
                 # Windows doesn't support add_signal_handler for all signals
                 pass
@@ -129,6 +139,11 @@ class Controller:
         try:
             await self._loop()
         finally:
+            for sig in registered_signals:
+                try:
+                    loop.remove_signal_handler(sig)
+                except Exception:
+                    pass
             await self._shutdown()
 
     # ------------------------------------------------------------------
@@ -136,6 +151,7 @@ class Controller:
     # ------------------------------------------------------------------
 
     async def _loop(self) -> None:
+        assert self._stop_event is not None
         while not self._stop_event.is_set():
             tick_start = time.monotonic()
 
@@ -143,11 +159,18 @@ class Controller:
             self._state = await self.backend.get_state()
 
             # 2. Run control scheme
-            commands = self.scheme.update(self._state)
+            try:
+                commands = self.scheme.update(self._state)
+            except Exception as e:
+                print(f"[Controller] Scheme '{self.scheme.name}' error: {e}")
+                commands = []
 
             # 3. Send commands (unless dry run)
             if not self.dry_run and commands:
-                await self.backend.send_commands(commands)
+                try:
+                    await self.backend.send_commands(commands)
+                except Exception as e:
+                    print(f"[Controller] Backend send_commands error: {e}")
 
             # 4. Update visualizers
             for viz in self.visualizers:

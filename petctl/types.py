@@ -1,5 +1,5 @@
 """
-Core data types for petcrl.
+Core data types for petctl.
 
 These are the contracts that flow between backends, control schemes,
 and visualizers. Everything is kept in plain dataclasses so there are
@@ -8,10 +8,9 @@ no circular imports and types remain trivially serializable.
 
 from __future__ import annotations
 
+import math
 import time
-from dataclasses import dataclass, field
-from math import pi
-from typing import Dict, List, Optional
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass
@@ -34,15 +33,11 @@ class ModuleSensors:
     def pressure_total(self) -> float:
         return self.pressure_middle + self.pressure_left + self.pressure_right
 
-    def as_dict(self) -> Dict[str, float]:
-        return {
-            "touch_middle": self.touch_middle,
-            "touch_left": self.touch_left,
-            "touch_right": self.touch_right,
-            "pressure_middle": self.pressure_middle,
-            "pressure_left": self.pressure_left,
-            "pressure_right": self.pressure_right,
-        }
+    def as_dict(self) -> dict[str, float]:
+        """Return sensor values as a dict (excludes module_id)."""
+        d = asdict(self)
+        d.pop("module_id", None)
+        return d
 
 
 @dataclass
@@ -54,11 +49,14 @@ class RobotState:
 
     timestamp: float = field(default_factory=time.monotonic)
     # Keyed by module_id (int). Sensor values are normalized 0-1.
-    sensors: Dict[int, ModuleSensors] = field(default_factory=dict)
+    sensors: dict[int, ModuleSensors] = field(default_factory=dict)
     # Keyed by servo_id (int). Raw position 0-4095.
-    servo_positions: Dict[int, int] = field(default_factory=dict)
+    servo_positions: dict[int, int] = field(default_factory=dict)
     # Module IDs currently detected on the robot
-    active_modules: List[int] = field(default_factory=list)
+    active_modules: list[int] = field(default_factory=list)
+    # Servo IDs confirmed to exist — used by schemes to avoid sending commands
+    # to non-existent servos (which cause protocol timeouts).
+    active_servo_ids: set[int] = field(default_factory=set)
     connected: bool = False
     # Seconds since last update — useful for time-based control schemes
     dt: float = 0.0
@@ -82,8 +80,8 @@ class ServoCommand:
     """
 
     servo_id: int
-    position: Optional[int] = None   # raw 0-4095
-    speed: Optional[int] = None      # signed, for wheel/speed mode
+    position: int | None = None   # raw 0-4095
+    speed: int | None = None      # signed, for wheel/speed mode
     acceleration: int = 50
 
     @classmethod
@@ -110,4 +108,4 @@ class ServoCommand:
 
     @staticmethod
     def position_to_radians(raw: int) -> float:
-        return ServoCommand.position_to_angle(raw) * pi / 180.0
+        return ServoCommand.position_to_angle(raw) * math.pi / 180.0

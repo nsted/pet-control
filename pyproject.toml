@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "petcrl"
+name = "petctl"
 version = "0.1.0"
 description = "Modular control framework for the PET robot"
 requires-python = ">=3.10"
@@ -19,9 +19,15 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = ["torch>=2.0.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.8",
+    "ruff>=0.3",
+]
 
 [project.scripts]
-petcrl = "petcrl.cli:main"
+petctl = "petctl.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["petcrl*"]
+include = ["petctl*"]

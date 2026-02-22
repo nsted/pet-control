@@ -26,26 +26,25 @@ from __future__ import annotations
 import json
 import math
 import os
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from petcrl.protocols import Visualizer
-from petcrl.types import RobotState, ServoCommand
+from petctl.protocols import Visualizer
+from petctl.types import RobotState, ServoCommand
 
 if TYPE_CHECKING:
-    from petcrl.controller import Controller
+    from petctl.controller import Controller
 
-# petcrl-local assembly (source of truth for module count / geometry)
+# petctl-local assembly (source of truth for module count / geometry)
 _DEFAULT_ASSEMBLY = os.path.normpath(os.path.join(
     os.path.dirname(__file__),
     "../assets/robot_assembly.json",
 ))
 
-# 3D model files live in grapple_ai (not duplicated into petcrl)
 _MODELS_DIR = os.path.normpath(os.path.join(
     os.path.dirname(__file__),
-    "../../../python/grapple_ai/3d_models/prisms",
+    "../assets/3d_models",
 ))
 
 
@@ -55,8 +54,8 @@ class RerunVisualizer(Visualizer):
 
     Args:
         app_name:       Rerun application name (shown in viewer title bar)
-        assembly_file:  Path to robot_assembly.json.  Defaults to petcrl/assets one.
-        models_dir:     Directory containing the .obj files.
+        assembly_file:  Path to robot_assembly.json.  Defaults to petctl/assets/robot_assembly.json.
+        models_dir:     Directory containing the .obj files.  Defaults to petctl/assets/3d_models/.
         show_sensors:   Log sensor time-series charts (default: True)
         show_3d:        Log 3D robot pose (default: True)
     """
@@ -65,7 +64,7 @@ class RerunVisualizer(Visualizer):
 
     def __init__(
         self,
-        app_name: str = "petcrl",
+        app_name: str = "petctl",
         assembly_file: Optional[str] = None,
         models_dir: Optional[str] = None,
         show_sensors: bool = True,
@@ -77,9 +76,12 @@ class RerunVisualizer(Visualizer):
         self.show_sensors = show_sensors
         self.show_3d = show_3d
 
-        self._module_meta: List[dict] = []
+        self._module_meta: list[dict] = []
         # Pre-computed HPR rotation matrices keyed by module_id
-        self._hpr_mats: Dict[int, np.ndarray] = {}
+        self._hpr_mats: dict[int, np.ndarray] = {}
+        # Cached parent map and entity paths — built once in _load_assembly()
+        self._parent_map: dict[int, Optional[int]] = {}
+        self._entity_path_cache: dict[int, str] = {}
         self._rr = None
 
     # ------------------------------------------------------------------
@@ -120,14 +122,18 @@ class RerunVisualizer(Visualizer):
     def _log_sensors(self, rr, state: RobotState) -> None:
         for mod_id, sensors in state.sensors.items():
             base = f"sensors/module_{mod_id}"
-            rr.log(f"{base}/touch/middle",    rr.Scalars(sensors.touch_middle))
-            rr.log(f"{base}/touch/left",      rr.Scalars(sensors.touch_left))
-            rr.log(f"{base}/touch/right",     rr.Scalars(sensors.touch_right))
-            rr.log(f"{base}/pressure/middle", rr.Scalars(sensors.pressure_middle))
-            rr.log(f"{base}/pressure/left",   rr.Scalars(sensors.pressure_left))
-            rr.log(f"{base}/pressure/right",  rr.Scalars(sensors.pressure_right))
-            rr.log(f"{base}/touch/total",     rr.Scalars(sensors.touch_total))
-            rr.log(f"{base}/pressure/total",  rr.Scalars(sensors.pressure_total))
+            sensor_values = {
+                f"{base}/touch/middle":    sensors.touch_middle,
+                f"{base}/touch/left":      sensors.touch_left,
+                f"{base}/touch/right":     sensors.touch_right,
+                f"{base}/pressure/middle": sensors.pressure_middle,
+                f"{base}/pressure/left":   sensors.pressure_left,
+                f"{base}/pressure/right":  sensors.pressure_right,
+                f"{base}/touch/total":     sensors.touch_total,
+                f"{base}/pressure/total":  sensors.pressure_total,
+            }
+            for path, value in sensor_values.items():
+                rr.log(path, rr.Scalars(value))
 
     # ------------------------------------------------------------------
     # 3D setup and pose logging
@@ -146,6 +152,18 @@ class RerunVisualizer(Visualizer):
             mod_id = int(mod["id"])
             euler = mod.get("rotation", [0.0, 0.0, 0.0])
             self._hpr_mats[mod_id] = _hpr_to_mat3(*euler)
+
+        # Cache parent map once — avoids rebuilding it per tick per module
+        self._parent_map = {
+            int(mod["id"]): (int(mod["parent"]) if mod.get("parent") is not None else None)
+            for mod in self._module_meta
+        }
+
+        # Pre-compute entity path strings (avoids string joins at 20 Hz)
+        self._entity_path_cache = {
+            int(mod["id"]): self._entity_path(int(mod["id"]))
+            for mod in self._module_meta
+        }
 
         print(f"[RerunVisualizer] Loaded assembly with {len(self._module_meta)} modules")
 
@@ -190,7 +208,7 @@ class RerunVisualizer(Visualizer):
 
         for mod in self._module_meta:
             mod_id = int(mod["id"])
-            joint_path = self._entity_path(mod_id)
+            joint_path = self._entity_path_cache.get(mod_id) or self._entity_path(mod_id)
             offset = mod.get("offset", [0.0, 0.0, 0.0])
 
             joint_axis = mod.get("joint", {}).get("axis", [0, 0, 1])
@@ -215,19 +233,13 @@ class RerunVisualizer(Visualizer):
         chain = self._ancestor_chain(mod_id)
         return "/".join(["robot"] + [f"module_{m}" for m in chain])
 
-    def _ancestor_chain(self, mod_id: int) -> List[int]:
+    def _ancestor_chain(self, mod_id: int) -> list[int]:
         """Return module IDs from root to mod_id (inclusive)."""
-        parent_map: Dict[int, Optional[int]] = {}
-        for mod in self._module_meta:
-            mid = int(mod["id"])
-            parent = mod.get("parent")
-            parent_map[mid] = int(parent) if parent is not None else None
-
-        chain: List[int] = []
+        chain: list[int] = []
         current: Optional[int] = mod_id
         while current is not None:
             chain.append(current)
-            current = parent_map.get(current)
+            current = self._parent_map.get(current)
         chain.reverse()
         return chain
 

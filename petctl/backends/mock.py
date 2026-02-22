@@ -1,5 +1,5 @@
 """
-MockBackend — run petcrl with no robot connected.
+MockBackend — run petctl with no robot connected.
 
 Two primary modes:
 
@@ -46,10 +46,10 @@ import math
 import os
 import random
 import time
-from typing import Dict, List, Literal, Optional
+from typing import Literal, Optional
 
-from petcrl.protocols import RobotBackend
-from petcrl.types import ModuleSensors, RobotState, ServoCommand
+from petctl.protocols import RobotBackend
+from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 _SENSOR_FIELDS = (
     "touch_middle", "touch_left", "touch_right",
@@ -88,7 +88,7 @@ class MockBackend(RobotBackend):
         self.sine_hz = sine_hz
 
         # Internal servo positions updated by send_commands()
-        self._servo_positions: Dict[int, int] = {
+        self._servo_positions: dict[int, int] = {
             i + 1: 2048 for i in range(num_servos)
         }
 
@@ -126,18 +126,19 @@ class MockBackend(RobotBackend):
             self._reload_file_if_changed()
 
         sensors = self._build_sensors(elapsed)
-        servo_positions = self._build_servo_positions()
+        servo_positions = self._build_servo_positions(elapsed)
 
         return RobotState(
             timestamp=now,
             sensors=sensors,
             servo_positions=servo_positions,
             active_modules=list(sensors.keys()),
+            active_servo_ids=set(self._servo_positions.keys()),
             connected=self._connected,
             dt=dt,
         )
 
-    async def send_commands(self, commands: List[ServoCommand]) -> None:
+    async def send_commands(self, commands: list[ServoCommand]) -> None:
         """Update internal servo state. In 'file' mode servos are still
         tracked so the scheme can read back its own commands."""
         for cmd in commands:
@@ -158,8 +159,8 @@ class MockBackend(RobotBackend):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_sensors(self, elapsed: float) -> Dict[int, ModuleSensors]:
-        sensors: Dict[int, ModuleSensors] = {}
+    def _build_sensors(self, elapsed: float) -> dict[int, ModuleSensors]:
+        sensors: dict[int, ModuleSensors] = {}
 
         # Determine how many modules to produce
         module_ids = list(range(self.num_modules))
@@ -199,8 +200,7 @@ class MockBackend(RobotBackend):
 
         return sensors
 
-    def _build_servo_positions(self) -> Dict[int, int]:
-        elapsed = time.monotonic() - self._start_time
+    def _build_servo_positions(self, elapsed: float) -> dict[int, int]:
         if self.mode == "sine":
             # Animate servos with staggered sine waves (±30° around center)
             amplitude = 4095 * 30 / 360  # 30 degrees in raw units
@@ -236,7 +236,7 @@ class MockBackend(RobotBackend):
             return
         try:
             mtime = os.path.getmtime(self.state_file)
-            if mtime != self._file_mtime:
+            if mtime > self._file_mtime:
                 self._reload_file()
         except OSError:
             pass

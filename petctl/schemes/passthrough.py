@@ -16,10 +16,10 @@ Useful for:
 from __future__ import annotations
 
 import threading
-from typing import List
+from collections import deque
 
-from petcrl.protocols import ControlScheme
-from petcrl.types import RobotState, ServoCommand
+from petctl.protocols import ControlScheme
+from petctl.types import RobotState, ServoCommand
 
 
 class PassthroughControlScheme(ControlScheme):
@@ -33,7 +33,7 @@ class PassthroughControlScheme(ControlScheme):
     name = "passthrough"
 
     def __init__(self) -> None:
-        self._queue: List[ServoCommand] = []
+        self._queue: deque[ServoCommand] = deque()
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -70,7 +70,7 @@ class PassthroughControlScheme(ControlScheme):
     # ControlScheme interface
     # ------------------------------------------------------------------
 
-    def update(self, state: RobotState) -> List[ServoCommand]:
+    def update(self, state: RobotState) -> list[ServoCommand]:
         with self._lock:
             commands = list(self._queue)
             self._queue.clear()
