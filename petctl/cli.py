@@ -62,7 +62,7 @@ def run(
         help="Path to mock_state.json for file/interactive modes",
     ),
     num_modules: int = typer.Option(
-        4,
+        8,
         help="Number of simulated modules (mock backend only)",
     ),
     # RobotBackend options

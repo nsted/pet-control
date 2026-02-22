@@ -47,6 +47,49 @@ _MODELS_DIR = os.path.normpath(os.path.join(
     "../assets/3d_models",
 ))
 
+# ------------------------------------------------------------------
+# Sensor-overlay geometry (in model-local coordinates, units: cm)
+#
+# Three prism faces, derived from the OBJ/STL mesh:
+#   left   x = -3.5 flat face  (normal: -X)
+#   right  x = +3.5 flat face  (normal: +X)
+#   middle angled back surface  (normal: approx +0.83Y - 0.56Z)
+#          centroid ≈ (0, 2.3, -2.1), slopes from (y=3.5,z=0) toward (y=-3.5,z=-7)
+#
+# Quaternions orient the disc Z-axis onto the face normal (xyzw format):
+#   right:   90° around +Y  → Z → +X
+#   left:   -90° around +Y  → Z → -X
+#   middle: 135° around -X → Z → (0, 0.707, -0.707)  (45° slope)
+# ------------------------------------------------------------------
+_INV_SQRT2 = 1.0 / math.sqrt(2.0)
+
+_SENSOR_FACES: dict[str, dict] = {
+    "middle": {
+        # Angled back face. 45° slope: normal = (0, 1/√2, -1/√2).
+        # Rotation: 135° around -X from Z=(0,0,1) to (0,0.707,-0.707)
+        "center":     [0.0, 0.9, -4.6],
+        "quaternion": [-0.924, 0.0, 0.0, 0.383],
+    },
+    "right": {
+        "center":     [3.51, -0.75, -2.75],
+        "quaternion": [0.0, _INV_SQRT2, 0.0, _INV_SQRT2],
+    },
+    "left": {
+        "center":     [-3.51, -0.75, -2.75],
+        "quaternion": [0.0, -_INV_SQRT2, 0.0, _INV_SQRT2],
+    },
+}
+
+_TOUCH_RADIUS    = 1.3   # cm — larger circle for touch
+_PRESSURE_RADIUS = 0.9   # cm — smaller circle for pressure
+_DISC_THICKNESS  = 0.05  # cm
+
+# Base RGB colours; alpha is proportional to sensor level (min 30 so discs are
+# always faintly visible even when sensors read zero)
+_TOUCH_COLOR_RGB    = (50, 180, 220)   # cyan-blue
+_PRESSURE_COLOR_RGB = (230, 100, 20)   # warm orange
+_MIN_ALPHA = 30
+
 
 class RerunVisualizer(Visualizer):
     """
@@ -111,6 +154,7 @@ class RerunVisualizer(Visualizer):
             self._log_sensors(rr, state)
         if self.show_3d:
             self._log_3d_pose(rr, state)
+            self._log_sensor_overlays(rr, state)
 
     def on_stop(self) -> None:
         pass  # Rerun viewer stays open after the script exits (by design)
@@ -134,6 +178,48 @@ class RerunVisualizer(Visualizer):
             }
             for path, value in sensor_values.items():
                 rr.log(path, rr.Scalars(value))
+
+    def _log_sensor_overlays(self, rr, state: RobotState) -> None:
+        """
+        Log two diffuse-coloured discs on each prism face (left / right / middle)
+        for every module.  Touch = larger cyan disc; pressure = smaller orange disc.
+        Alpha is proportional to the sensor value (0 → transparent, 1 → opaque).
+        Discs are logged as children of the module's joint entity so they ride
+        along automatically as the robot articulates.
+        """
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            sensors = state.sensors.get(mod_id)
+            if sensors is None:
+                continue
+
+            entity_base = self._entity_path_cache.get(mod_id) or self._entity_path(mod_id)
+
+            for face_name, face in _SENSOR_FACES.items():
+                touch_val    = float(getattr(sensors, f"touch_{face_name}",    0.0))
+                pressure_val = float(getattr(sensors, f"pressure_{face_name}", 0.0))
+
+                center = face["center"]
+                quat   = face["quaternion"]
+                face_path = f"{entity_base}/sensor_overlay/{face_name}"
+
+                touch_alpha    = _MIN_ALPHA + int(min(1.0, max(0.0, touch_val))    * (255 - _MIN_ALPHA))
+                pressure_alpha = _MIN_ALPHA + int(min(1.0, max(0.0, pressure_val)) * (255 - _MIN_ALPHA))
+
+                rr.log(f"{face_path}/touch", rr.Ellipsoids3D(
+                    centers=[center],
+                    half_sizes=[[_TOUCH_RADIUS, _TOUCH_RADIUS, _DISC_THICKNESS]],
+                    quaternions=[rr.Quaternion(xyzw=quat)],
+                    colors=[(*_TOUCH_COLOR_RGB, touch_alpha)],
+                    fill_mode="solid",
+                ))
+                rr.log(f"{face_path}/pressure", rr.Ellipsoids3D(
+                    centers=[center],
+                    half_sizes=[[_PRESSURE_RADIUS, _PRESSURE_RADIUS, _DISC_THICKNESS]],
+                    quaternions=[rr.Quaternion(xyzw=quat)],
+                    colors=[(*_PRESSURE_COLOR_RGB, pressure_alpha)],
+                    fill_mode="solid",
+                ))
 
     # ------------------------------------------------------------------
     # 3D setup and pose logging

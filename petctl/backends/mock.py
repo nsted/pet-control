@@ -77,7 +77,7 @@ class MockBackend(RobotBackend):
         self,
         mode: Literal["interactive", "file", "sine", "noise"] = "interactive",
         state_file: Optional[str] = None,
-        num_modules: int = 4,
+        num_modules: int = 8,
         num_servos: int = 8,
         sine_hz: float = 0.2,
     ) -> None:
