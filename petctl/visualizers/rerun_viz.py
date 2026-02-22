@@ -80,9 +80,10 @@ _SENSOR_FACES: dict[str, dict] = {
     },
 }
 
-_TOUCH_RADIUS    = 1.3   # cm — larger circle for touch
-_PRESSURE_RADIUS = 0.9   # cm — smaller circle for pressure
-_DISC_THICKNESS  = 0.05  # cm
+_TOUCH_RADIUS       = 1.3   # cm — larger circle for touch
+_PRESSURE_RADIUS    = 0.75  # cm — smaller circle for pressure
+_DISC_THICKNESS     = 0.05  # cm
+_PRESSURE_THICKNESS = 0.15  # cm — thicker so pressure surface sits in front of touch
 
 # Base RGB colours; alpha is proportional to sensor level (min 30 so discs are
 # always faintly visible even when sensors read zero)
@@ -182,7 +183,7 @@ class RerunVisualizer(Visualizer):
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
         Log two diffuse-coloured discs on each prism face (left / right / middle)
-        for every module.  Touch = larger cyan disc; pressure = smaller orange disc.
+        for every module.  Touch = larger cyan disc; pressure = smaller orange disc on top.
         Alpha is proportional to the sensor value (0 → transparent, 1 → opaque).
         Discs are logged as children of the module's joint entity so they ride
         along automatically as the robot articulates.
@@ -215,7 +216,7 @@ class RerunVisualizer(Visualizer):
                 ))
                 rr.log(f"{face_path}/pressure", rr.Ellipsoids3D(
                     centers=[center],
-                    half_sizes=[[_PRESSURE_RADIUS, _PRESSURE_RADIUS, _DISC_THICKNESS]],
+                    half_sizes=[[_PRESSURE_RADIUS, _PRESSURE_RADIUS, _PRESSURE_THICKNESS]],
                     quaternions=[rr.Quaternion(xyzw=quat)],
                     colors=[(*_PRESSURE_COLOR_RGB, pressure_alpha)],
                     fill_mode="solid",
