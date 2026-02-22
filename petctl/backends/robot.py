@@ -82,13 +82,20 @@ class RobotBackend(_BackendBase):
         calibration_samples: int = 10,
         auto_reconnect: bool = True,
         reconnect_delay: float = 2.0,
+        torque_limit: int = 100,
     ) -> None:
+        """
+        torque_limit: TARGET_TORQUE value written with every position command
+            (6.5 mA units; 100 ≈ 650 mA, 980 = MAX_TORQUE / full rated torque).
+            Firmware v43+ interprets 0 as "no torque", so this must be > 0.
+        """
         self.host = host
         self.port = port
         self.calibrate_on_connect = calibrate_on_connect
         self.calibration_samples = calibration_samples
         self.auto_reconnect = auto_reconnect
         self.reconnect_delay = reconnect_delay
+        self.torque_limit = torque_limit
 
         self._port_handler = None
         self._packet_handler: Optional[HlsScs] = None
@@ -516,23 +523,29 @@ class RobotBackend(_BackendBase):
           [41] ACCELERATION  = acc
           [42] TARGET_POS_L  = pos_lo
           [43] TARGET_POS_H  = pos_hi
-          [44] TARGET_TORQUE_L = 0
-          [45] TARGET_TORQUE_H = 0
+          [44] TARGET_TORQUE_L = torque_lo  (rated torque = 980)
+          [45] TARGET_TORQUE_H = torque_hi
           [46] RUNNING_SPEED_L = speed_lo
           [47] RUNNING_SPEED_H = speed_hi
         This ensures servos that boot with torque off respond without needing
         a separate enable step, and survive reconnects without losing torque.
+
+        TARGET_TORQUE must be non-zero: firmware v43 changed the semantics so
+        that TARGET_TORQUE=0 means "apply zero torque" rather than "use default".
+        We write MAX_TORQUE (980) so both v42 and v43 servos apply full torque.
         """
         loop = asyncio.get_running_loop()
         ph = self._packet_handler
+        torque_limit = self.torque_limit
 
         def _do():
             txpacket = [
-                1,                        # HLSS_TORQUE_SWITCH = 1 (on)
+                1,                                  # HLSS_TORQUE_SWITCH = 1 (on)
                 acc,
                 ph.scs_lobyte(position),
                 ph.scs_hibyte(position),
-                0, 0,                     # TARGET_TORQUE (use default)
+                ph.scs_lobyte(torque_limit),        # TARGET_TORQUE lo — must be non-zero on v43
+                ph.scs_hibyte(torque_limit),        # TARGET_TORQUE hi
                 ph.scs_lobyte(speed),
                 ph.scs_hibyte(speed),
             ]
