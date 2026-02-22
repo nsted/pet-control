@@ -106,7 +106,7 @@ class KeyboardControlScheme(ControlScheme):
                     continue
                 self._angles[mod] = ServoCommand.position_to_angle(raw)
             current = self._angles[mod]
-            new_angle = max(-self.angle_limit, min(self.angle_limit, current + delta))
+            new_angle = current + delta
             self._angles[mod] = new_angle
             commands.append(ServoCommand.from_angle(servo_id, new_angle))
 
