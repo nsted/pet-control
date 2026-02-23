@@ -51,6 +51,11 @@ def run(
         False,
         help="Read sensors and run scheme but do NOT send servo commands",
     ),
+    limp: bool = typer.Option(
+        False,
+        "--limp",
+        help="Disable motor torque after connect so joints move freely; visualizer still updates from read positions",
+    ),
     # MockBackend options
     mode: str = typer.Option(
         "interactive",
@@ -133,6 +138,7 @@ def run(
             visualizers=_visualizers,
             poll_hz=hz,
             dry_run=dry_run,
+            limp=limp,
         )
         await ctrl.run()
 

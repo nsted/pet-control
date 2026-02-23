@@ -77,6 +77,14 @@ class RobotBackend(ABC):
         """True while the backend has an active connection."""
         ...
 
+    async def disable_torques(self) -> None:
+        """
+        Release motor torque so joints can be moved freely by hand.
+
+        Default implementation is a no-op (e.g. MockBackend).
+        RobotBackend overrides this to write HLSS_TORQUE_SWITCH = 0 to every servo.
+        """
+
 
 # ---------------------------------------------------------------------------
 # ControlScheme

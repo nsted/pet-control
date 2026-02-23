@@ -635,6 +635,29 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] _read_all_servo_positions error: {e}")
             return {}
 
+    async def disable_torques(self) -> None:
+        """
+        Release torque on every discovered servo so joints can be moved freely by hand.
+        Servo positions are still readable; the visualizer continues to update.
+        """
+        if not self._discovered_servos or self._packet_handler is None:
+            return
+        loop = asyncio.get_running_loop()
+        servo_ids = list(self._discovered_servos)
+
+        def _do() -> None:
+            for sid in servo_ids:
+                self._packet_handler.write1ByteTxRx(sid, HLSS_TORQUE_SWITCH, 0)
+
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _do),
+                timeout=5.0,
+            )
+            print(f"[RobotBackend] Torque disabled (limp): {servo_ids}")
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"[RobotBackend] disable_torques error: {e}")
+
     async def _enable_torques(self) -> None:
         """
         Enable torque for every discovered servo.

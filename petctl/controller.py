@@ -50,6 +50,9 @@ class Controller:
         poll_hz:      How often to run the control loop (default: 20 Hz)
         dry_run:      If True, read sensors and run the scheme but never
                       send servo commands.  Useful for testing.
+        limp:         If True, disable motor torque after connecting so joints
+                      can be moved freely by hand.  Implies dry_run=True so
+                      commands never re-enable torque during the session.
     """
 
     def __init__(
@@ -59,12 +62,14 @@ class Controller:
         visualizers: Optional[list[Visualizer]] = None,
         poll_hz: float = 20.0,
         dry_run: bool = False,
+        limp: bool = False,
     ) -> None:
         self.backend = backend
         self.scheme = scheme
         self.visualizers: list[Visualizer] = visualizers or []
         self.poll_interval = 1.0 / poll_hz
-        self.dry_run = dry_run
+        self.dry_run = dry_run or limp  # limp implies no commands
+        self.limp = limp
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -113,6 +118,10 @@ class Controller:
         if not ok:
             print("[Controller] Backend failed to connect. Exiting.")
             return
+
+        if self.limp:
+            print("[Controller] Limp mode: disabling torques — move joints freely by hand.")
+            await self.backend.disable_torques()
 
         self._running = True
         self._event_loop = asyncio.get_running_loop()
