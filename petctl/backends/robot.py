@@ -484,11 +484,14 @@ class RobotBackend(_BackendBase):
         for key, samples in accumulated.items():
             baseline = sum(samples) / len(samples)
             self._baseline[key] = baseline
-            # Seed range from idle noise, floored at 50 counts.
-            # _normalize() expands this upward adaptively as larger signals
-            # are observed, so each sensor self-scales to its actual range.
+            # Seed range from idle noise with a type-appropriate floor.
+            # Touch: 50 counts — subtle contact, low idle noise.
+            # Pressure: 200 counts — under continuous gravity load, noisier at idle.
+            # _normalize() expands both upward adaptively to observed maximum.
+            _, field = key
+            floor = 200.0 if field.startswith("pressure") else 50.0
             observed_max = max(samples)
-            self._range[key] = max(observed_max - baseline, 50.0)
+            self._range[key] = max(observed_max - baseline, floor)
 
         self._calibrated = True
         print("[RobotBackend] Calibration complete.")
@@ -509,7 +512,8 @@ class RobotBackend(_BackendBase):
                     key = (mod_id, field)
                     baseline = self._baseline.get(key, 0.0)
                     delta = value - baseline
-                    rng = self._range.get(key, 50.0)
+                    floor = 200.0 if field.startswith("pressure") else 50.0
+                    rng = self._range.get(key, floor)
                     if delta > rng:
                         self._range[key] = delta
                         rng = delta
