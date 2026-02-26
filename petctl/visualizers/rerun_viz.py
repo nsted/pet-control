@@ -143,6 +143,7 @@ class RerunVisualizer(Visualizer):
         rr.init(self.app_name, spawn=True)
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
+        self._send_blueprint()
         if self.show_sensors:
             self._setup_sensor_series()
         if self.show_3d:
@@ -165,6 +166,18 @@ class RerunVisualizer(Visualizer):
     # ------------------------------------------------------------------
     # Sensor logging
     # ------------------------------------------------------------------
+
+    def _send_blueprint(self) -> None:
+        """Send a blueprint with a 3D spatial view and a time-series sensor view."""
+        import rerun.blueprint as rrb
+        rr = self._rr
+        views = []
+        if self.show_3d:
+            views.append(rrb.Spatial3DView(origin="robot", name="Robot"))
+        if self.show_sensors:
+            views.append(rrb.TimeSeriesView(origin="sensors", name="Sensors"))
+        if views:
+            rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views)))
 
     def _setup_sensor_series(self) -> None:
         """Log static SeriesLines to each sensor path so Rerun can render them."""
