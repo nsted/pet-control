@@ -153,7 +153,7 @@ class RerunVisualizer(Visualizer):
         if self._rr is None:
             return
         rr = self._rr
-        rr.set_time("time", timestamp=state.timestamp)
+        rr.set_time("time", duration=state.timestamp)
         if self.show_sensors:
             self._log_sensors(rr, state)
         if self.show_3d:
