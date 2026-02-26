@@ -485,11 +485,13 @@ class RobotBackend(_BackendBase):
             baseline = sum(samples) / len(samples)
             self._baseline[key] = baseline
             # Seed range from idle noise with a type-appropriate floor.
-            # Touch: 50 counts — subtle contact, low idle noise.
+            # Touch: 10 counts — just enough to suppress sub-noise fluctuations;
+            #   each face adapts independently so less-sensitive faces still
+            #   reach full scale.
             # Pressure: 200 counts — under continuous gravity load, noisier at idle.
             # _normalize() expands both upward adaptively to observed maximum.
             _, field = key
-            floor = 200.0 if field.startswith("pressure") else 50.0
+            floor = 200.0 if field.startswith("pressure") else 10.0
             observed_max = max(samples)
             self._range[key] = max(observed_max - baseline, floor)
 
@@ -512,7 +514,7 @@ class RobotBackend(_BackendBase):
                     key = (mod_id, field)
                     baseline = self._baseline.get(key, 0.0)
                     delta = value - baseline
-                    floor = 200.0 if field.startswith("pressure") else 50.0
+                    floor = 200.0 if field.startswith("pressure") else 10.0
                     rng = self._range.get(key, floor)
                     if delta > rng:
                         self._range[key] = delta
