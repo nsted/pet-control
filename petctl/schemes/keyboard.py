@@ -59,6 +59,7 @@ class KeyboardControlScheme(ControlScheme):
         # Pending angle deltas to apply on next update()
         self._pending: dict[int, float] = {}
         self._reset_requested: bool = False
+        self._save_home_requested: bool = False
         self._lock = threading.Lock()
 
         self._controller: Optional["Controller"] = None
@@ -73,7 +74,7 @@ class KeyboardControlScheme(ControlScheme):
         self._start_listener()
         print(
             "[Keyboard] Ready.\n"
-            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  q/Esc: quit"
+            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  s: save home  |  q/Esc: quit"
         )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
@@ -134,6 +135,13 @@ class KeyboardControlScheme(ControlScheme):
         with self._lock:
             return dict(self._angles)
 
+    def take_save_home(self) -> bool:
+        """Consume and return the save-home request flag (set by 's' key)."""
+        with self._lock:
+            val = self._save_home_requested
+            self._save_home_requested = False
+        return val
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -156,6 +164,9 @@ class KeyboardControlScheme(ControlScheme):
                         return
                     if char in ("r", "R"):
                         self._reset_requested = True
+                        return
+                    if char in ("s", "S"):
+                        self._save_home_requested = True
                         return
                     if char in ("q", "Q"):
                         stop_requested = True

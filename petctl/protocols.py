@@ -85,6 +85,13 @@ class RobotBackend(ABC):
         RobotBackend overrides this to write HLSS_TORQUE_SWITCH = 0 to every servo.
         """
 
+    async def write_home_offsets(self) -> None:
+        """
+        Write EEPROM offset registers so each servo's current position becomes
+        the new center (0° = raw 2048).  Default is a no-op.
+        RobotBackend overrides this to write HLSS_OFS_L/H for every servo.
+        """
+
 
 # ---------------------------------------------------------------------------
 # ControlScheme

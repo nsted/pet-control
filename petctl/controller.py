@@ -181,6 +181,15 @@ class Controller:
                 except Exception as e:
                     print(f"[Controller] Backend send_commands error: {e}")
 
+            # 3b. Save-home: write EEPROM offsets if scheme requested it (e.g. 's' key)
+            take_save_home = getattr(self.scheme, "take_save_home", None)
+            if take_save_home is not None and take_save_home():
+                print("[Controller] Saving current positions as home (EEPROM offsets)...")
+                try:
+                    await self.backend.write_home_offsets()
+                except Exception as e:
+                    print(f"[Controller] write_home_offsets error: {e}")
+
             # 4. Update visualizers
             for viz in self.visualizers:
                 try:

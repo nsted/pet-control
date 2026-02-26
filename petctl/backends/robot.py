@@ -41,7 +41,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from scservo_sdk.port_handler_factory import get_port_handler
-from scservo_sdk.hls_scs import hls_scs as HlsScs, HLSS_TORQUE_SWITCH
+from scservo_sdk.hls_scs import hls_scs as HlsScs, HLSS_TORQUE_SWITCH, HLSS_OFS_L
 
 from petctl.protocols import RobotBackend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
@@ -674,6 +674,52 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] Torque disabled (limp): {servo_ids}")
         except (asyncio.TimeoutError, Exception) as e:
             print(f"[RobotBackend] disable_torques error: {e}")
+
+    async def write_home_offsets(self) -> None:
+        """
+        Write each servo's EEPROM offset register (HLSS_OFS_L/H at address 31)
+        so its current physical position becomes the new center (0° = raw 2048).
+
+        Offset formula: new_offset = 2048 - current_reported_pos
+        After writing, the servo will report 2048 for the position it is
+        currently in — correcting for gear skips without re-assembling the robot.
+
+        Call in limp mode after manually positioning the robot at its desired home.
+        """
+        if not self._discovered_servos or self._packet_handler is None:
+            print("[RobotBackend] write_home_offsets: not connected or no servos")
+            return
+
+        positions = await self._read_all_servo_positions()
+        if not positions:
+            print("[RobotBackend] write_home_offsets: could not read servo positions")
+            return
+
+        loop = asyncio.get_running_loop()
+        ph = self._packet_handler
+
+        def _do() -> list[tuple]:
+            results = []
+            for sid, pos in positions.items():
+                offset = 2048 - pos          # signed 16-bit; Python & / >> handles two's complement
+                lo = offset & 0xFF
+                hi = (offset >> 8) & 0xFF
+                comm_result, error = ph.writeTxRx(sid, HLSS_OFS_L, 2, [lo, hi])
+                results.append((sid, pos, offset, comm_result, error))
+            return results
+
+        try:
+            results = await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _do),
+                timeout=10.0,
+            )
+            for sid, pos, offset, comm, err in results:
+                if comm == 0 and err == 0:
+                    print(f"[RobotBackend] Servo {sid}: pos={pos}, wrote offset={offset:+d} → new center")
+                else:
+                    print(f"[RobotBackend] Servo {sid}: EEPROM write failed (comm={comm}, err={err})")
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"[RobotBackend] write_home_offsets error: {e}")
 
     async def _enable_torques(self) -> None:
         """
