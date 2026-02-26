@@ -701,11 +701,21 @@ class RobotBackend(_BackendBase):
         def _do() -> list[tuple]:
             results = []
             for sid, pos in positions.items():
-                offset = 2048 - pos          # signed 16-bit; Python & / >> handles two's complement
-                lo = offset & 0xFF
-                hi = (offset >> 8) & 0xFF
+                # Read the existing EEPROM offset so we can factor it in.
+                # reported_pos = physical_pos + old_offset
+                # We want: physical_pos + new_offset = 2048
+                #   → new_offset = old_offset + (2048 - reported_pos)
+                data, comm_r, comm_e = ph.readTxRx(sid, HLSS_OFS_L, 2)
+                if comm_r != 0:
+                    results.append((sid, pos, None, comm_r, comm_e, "read failed"))
+                    continue
+                raw16 = data[0] | (data[1] << 8)
+                old_offset = raw16 if raw16 < 32768 else raw16 - 65536   # to signed
+                new_offset = old_offset + (2048 - pos)
+                lo = new_offset & 0xFF
+                hi = (new_offset >> 8) & 0xFF
                 comm_result, error = ph.writeTxRx(sid, HLSS_OFS_L, 2, [lo, hi])
-                results.append((sid, pos, offset, comm_result, error))
+                results.append((sid, pos, old_offset, new_offset, comm_result, error))
             return results
 
         try:
@@ -713,11 +723,16 @@ class RobotBackend(_BackendBase):
                 loop.run_in_executor(self._executor, _do),
                 timeout=10.0,
             )
-            for sid, pos, offset, comm, err in results:
-                if comm == 0 and err == 0:
-                    print(f"[RobotBackend] Servo {sid}: pos={pos}, wrote offset={offset:+d} → new center")
+            for row in results:
+                if len(row) == 6 and isinstance(row[2], str):
+                    sid, pos, _, comm, err, reason = row
+                    print(f"[RobotBackend] Servo {sid}: {reason} (comm={comm}, err={err})")
                 else:
-                    print(f"[RobotBackend] Servo {sid}: EEPROM write failed (comm={comm}, err={err})")
+                    sid, pos, old_off, new_off, comm, err = row
+                    if comm == 0 and err == 0:
+                        print(f"[RobotBackend] Servo {sid}: pos={pos}, offset {old_off:+d} → {new_off:+d}")
+                    else:
+                        print(f"[RobotBackend] Servo {sid}: EEPROM write failed (comm={comm}, err={err})")
         except (asyncio.TimeoutError, Exception) as e:
             print(f"[RobotBackend] write_home_offsets error: {e}")
 
