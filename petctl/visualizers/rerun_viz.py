@@ -333,7 +333,9 @@ class RerunVisualizer(Visualizer):
             offset = mod.get("offset", [0.0, 0.0, 0.0])
 
             joint_axis = mod.get("joint", {}).get("axis", [0, 0, 1])
-            angle_rad = self._servo_angle_rad(mod_id, state)
+            # Negate: Dynamixel CCW positive convention is opposite the viz's
+            # right-hand-rule Z rotation, so the viz was a mirror of the real robot.
+            angle_rad = -self._servo_angle_rad(mod_id, state)
 
             R = self._hpr_mats[mod_id] @ _axis_angle_to_mat3(joint_axis, angle_rad)
 
