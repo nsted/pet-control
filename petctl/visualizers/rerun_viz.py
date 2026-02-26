@@ -143,6 +143,8 @@ class RerunVisualizer(Visualizer):
         rr.init(self.app_name, spawn=True)
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
+        if self.show_sensors:
+            self._setup_sensor_series()
         if self.show_3d:
             self._setup_3d_geometry()
 
@@ -163,6 +165,25 @@ class RerunVisualizer(Visualizer):
     # ------------------------------------------------------------------
     # Sensor logging
     # ------------------------------------------------------------------
+
+    def _setup_sensor_series(self) -> None:
+        """Log static SeriesLines to each sensor path so Rerun can render them."""
+        rr = self._rr
+        _SERIES_PATHS = (
+            ("touch/middle", "touch middle"),
+            ("touch/left",   "touch left"),
+            ("touch/right",  "touch right"),
+            ("touch/total",  "touch total"),
+            ("pressure/middle", "pressure middle"),
+            ("pressure/left",   "pressure left"),
+            ("pressure/right",  "pressure right"),
+            ("pressure/total",  "pressure total"),
+        )
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            base = f"sensors/module_{mod_id}"
+            for suffix, name in _SERIES_PATHS:
+                rr.log(f"{base}/{suffix}", rr.SeriesLines(names=name), static=True)
 
     def _log_sensors(self, rr, state: RobotState) -> None:
         for mod_id, sensors in state.sensors.items():
