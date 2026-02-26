@@ -484,9 +484,12 @@ class RobotBackend(_BackendBase):
         for key, samples in accumulated.items():
             baseline = sum(samples) / len(samples)
             self._baseline[key] = baseline
-            # Range: 10% of full 16-bit scale or observed headroom, whichever is larger
+            # Range: observed idle headroom, floored at 200 counts to prevent
+            # noise amplification. Touch sensors respond with ~100-500 count
+            # changes; pressure sensors with thousands. 6554 (10% of 16-bit)
+            # was too large and suppressed touch signals to near-zero.
             observed_max = max(samples)
-            self._range[key] = max(observed_max - baseline, 6554.0)
+            self._range[key] = max(observed_max - baseline, 200.0)
 
         self._calibrated = True
         print("[RobotBackend] Calibration complete.")
