@@ -484,18 +484,22 @@ class RobotBackend(_BackendBase):
         for key, samples in accumulated.items():
             baseline = sum(samples) / len(samples)
             self._baseline[key] = baseline
-            # Range: observed idle headroom, floored at 200 counts to prevent
-            # noise amplification. Touch sensors respond with ~100-500 count
-            # changes; pressure sensors with thousands. 6554 (10% of 16-bit)
-            # was too large and suppressed touch signals to near-zero.
+            # Seed range from idle noise, floored at 50 counts.
+            # _normalize() expands this upward adaptively as larger signals
+            # are observed, so each sensor self-scales to its actual range.
             observed_max = max(samples)
-            self._range[key] = max(observed_max - baseline, 200.0)
+            self._range[key] = max(observed_max - baseline, 50.0)
 
         self._calibrated = True
         print("[RobotBackend] Calibration complete.")
 
     def _normalize(self, raw: dict[int, dict[str, int]]) -> dict[int, ModuleSensors]:
-        """Convert raw 16-bit sensor values to normalized 0-1 ModuleSensors."""
+        """Convert raw 16-bit sensor values to normalized 0-1 ModuleSensors.
+
+        Range is adapted upward whenever a new per-sensor maximum is observed,
+        so all sensors self-scale to their actual physical response range over
+        the first few seconds of use.
+        """
         result: dict[int, ModuleSensors] = {}
         for mod_id, vals in raw.items():
             normalized = {}
@@ -504,8 +508,12 @@ class RobotBackend(_BackendBase):
                 if self._calibrated:
                     key = (mod_id, field)
                     baseline = self._baseline.get(key, 0.0)
-                    rng = self._range.get(key, 6554.0)
-                    normalized[field] = max(0.0, min(1.0, (value - baseline) / rng))
+                    delta = value - baseline
+                    rng = self._range.get(key, 50.0)
+                    if delta > rng:
+                        self._range[key] = delta
+                        rng = delta
+                    normalized[field] = max(0.0, min(1.0, delta / rng))
                 else:
                     normalized[field] = value / 65535.0
             result[mod_id] = ModuleSensors(module_id=mod_id, **normalized)
