@@ -6,7 +6,7 @@ Controls:
   ↑ / ↑      Increase angle by step_deg
   ↓ / ↓      Decrease angle by step_deg
   r          Reset all servos to 0°
-  Ctrl+S     Save current positions as EEPROM home
+  `          Save current positions as EEPROM home
   q / Esc    Request controller shutdown
 
 Uses pynput for cross-platform keyboard capture in a background thread,
@@ -65,7 +65,6 @@ class KeyboardControlScheme(ControlScheme):
 
         self._controller: Optional["Controller"] = None
         self._listener = None
-        self._ctrl_held: bool = False
 
     # ------------------------------------------------------------------
     # ControlScheme interface
@@ -76,7 +75,7 @@ class KeyboardControlScheme(ControlScheme):
         self._start_listener()
         print(
             "[Keyboard] Ready.\n"
-            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Ctrl+S: save home  |  q/Esc: quit"
+            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  `: save home  |  q/Esc: quit"
         )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
@@ -155,15 +154,9 @@ class KeyboardControlScheme(ControlScheme):
             print("[Keyboard] pynput not installed. Run: pip install pynput")
             return
 
-        _CTRL_KEYS = {keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
-
         def on_press(key):
             stop_requested = False
             with self._lock:
-                if key in _CTRL_KEYS:
-                    self._ctrl_held = True
-                    return
-
                 # Character keys — select module, reset, or quit
                 try:
                     char = key.char
@@ -173,7 +166,7 @@ class KeyboardControlScheme(ControlScheme):
                     if char in ("r", "R"):
                         self._reset_requested = True
                         return
-                    if char in ("s", "S") and self._ctrl_held:
+                    if char == "`":
                         self._save_home_requested = True
                         return
                     if char in ("q", "Q"):
@@ -199,11 +192,6 @@ class KeyboardControlScheme(ControlScheme):
             if stop_requested and self._controller:
                 self._controller.stop()
 
-        def on_release(key):
-            if key in _CTRL_KEYS:
-                with self._lock:
-                    self._ctrl_held = False
-
-        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self._listener = keyboard.Listener(on_press=on_press)
         self._listener.daemon = True
         self._listener.start()
