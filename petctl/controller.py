@@ -76,6 +76,7 @@ class Controller:
         # Created inside run() to bind to the correct event loop
         self._stop_event: Optional[asyncio.Event] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._last_pos_print: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -181,10 +182,10 @@ class Controller:
                 except Exception as e:
                     print(f"[Controller] Backend send_commands error: {e}")
 
-            # 3b. Save-home: write EEPROM offsets if scheme requested it (e.g. 's' key)
+            # 3b. Save-home: write EEPROM offsets so current position reports as 0
             take_save_home = getattr(self.scheme, "take_save_home", None)
             if take_save_home is not None and take_save_home():
-                print("[Controller] Saving current positions as home (EEPROM offsets)...")
+                print("[Controller] Saving home offsets to EEPROM...")
                 try:
                     await self.backend.write_home_offsets()
                 except Exception as e:
@@ -196,6 +197,14 @@ class Controller:
                     viz.update(self._state)
                 except Exception as e:
                     print(f"[Controller] Visualizer {viz.name} error: {e}")
+
+            # 4b. Periodically print servo positions for debugging
+            now = time.monotonic()
+            if now - self._last_pos_print >= 2.0:
+                pos = self._state.servo_positions
+                if pos:
+                    print("[positions] " + "  ".join(f"{sid}:{p}" for sid, p in sorted(pos.items())))
+                self._last_pos_print = now
 
             # 5. Sleep for remainder of tick
             elapsed = time.monotonic() - tick_start

@@ -22,7 +22,7 @@ BINARY CHANNEL  (WebSocket binary frames — handled by hls_scs packet handler)
 
 SENSOR DATA FORMAT
   All touch sensors first, then all pressure sensors.
-  Each sensor value is 2 bytes big-endian in the CSV stream:
+  Each value is packed as 2 bytes big-endian (touch: 16-bit; pressure: 12-bit):
     [tM_hi, tM_lo, tL_hi, tL_lo, tR_hi, tR_lo,  ← module 0 touch
      tM_hi, tM_lo, ...                             ← module 1 touch
      ...
@@ -521,7 +521,9 @@ class RobotBackend(_BackendBase):
                         rng = delta
                     normalized[field] = max(0.0, min(1.0, delta / rng))
                 else:
-                    normalized[field] = value / 65535.0
+                    # Touch is 16-bit (max 65535); pressure is 12-bit (max 4095)
+                    max_raw = 4095.0 if field.startswith("pressure") else 65535.0
+                    normalized[field] = value / max_raw
             result[mod_id] = ModuleSensors(module_id=mod_id, **normalized)
         return result
 
@@ -680,9 +682,11 @@ class RobotBackend(_BackendBase):
         Write each servo's EEPROM offset register (HLSS_OFS_L/H at address 31)
         so its current physical position becomes the new center (0° = raw 2048).
 
-        Offset formula: new_offset = 2048 - current_reported_pos
-        After writing, the servo will report 2048 for the position it is
-        currently in — correcting for gear skips without re-assembling the robot.
+        Procedure per servo:
+          1. Unlock EEPROM, write 0 to offset, lock EEPROM.
+          2. Read position — HLS applies offset=0 automatically, so reported = raw_encoder.
+          3. new_offset = -raw_encoder  (so raw_encoder + offset = 0 at home).
+          4. Encode as Feetech sign-magnitude (scs_toscs) and write to EEPROM.
 
         Call in limp mode after manually positioning the robot at its desired home.
         """
@@ -690,32 +694,39 @@ class RobotBackend(_BackendBase):
             print("[RobotBackend] write_home_offsets: not connected or no servos")
             return
 
-        positions = await self._read_all_servo_positions()
-        if not positions:
-            print("[RobotBackend] write_home_offsets: could not read servo positions")
-            return
-
         loop = asyncio.get_running_loop()
         ph = self._packet_handler
+        servo_ids = list(self._discovered_servos)
 
         def _do() -> list[tuple]:
             results = []
-            for sid, pos in positions.items():
-                # Read the existing EEPROM offset so we can factor it in.
-                # reported_pos = physical_pos + old_offset
-                # We want: physical_pos + new_offset = 2048
-                #   → new_offset = old_offset + (2048 - reported_pos)
-                data, comm_r, comm_e = ph.readTxRx(sid, HLSS_OFS_L, 2)
-                if comm_r != 0:
-                    results.append((sid, pos, None, comm_r, comm_e, "read failed"))
+            for sid in servo_ids:
+                # Step 1: zero the offset so HLS reports raw encoder position.
+                ph.unLockEprom(sid)
+                c, e = ph.writeTxRx(sid, HLSS_OFS_L, 2, [0, 0])
+                ph.LockEprom(sid)
+                if c != 0 or e != 0:
+                    results.append((sid, None, None, c, e))
                     continue
-                raw16 = data[0] | (data[1] << 8)
-                old_offset = raw16 if raw16 < 32768 else raw16 - 65536   # to signed
-                new_offset = old_offset + (2048 - pos)
-                lo = new_offset & 0xFF
-                hi = (new_offset >> 8) & 0xFF
-                comm_result, error = ph.writeTxRx(sid, HLSS_OFS_L, 2, [lo, hi])
-                results.append((sid, pos, old_offset, new_offset, comm_result, error))
+
+                # Step 2: read position — HLS applies offset=0, so this is raw_encoder.
+                raw_pos, cr, _ = ph.ReadPos(sid)
+                if cr != 0:
+                    results.append((sid, None, None, cr, 0))
+                    continue
+
+                # Step 3: new offset makes this position read as 0.
+                # Convention: reported = raw - offset, so offset = raw_pos.
+                new_offset = raw_pos
+
+                # Step 4: encode sign-magnitude and write.
+                encoded = ph.scs_toscs(new_offset, 15)
+                lo = ph.scs_lobyte(encoded)
+                hi = ph.scs_hibyte(encoded)
+                ph.unLockEprom(sid)
+                c, e = ph.writeTxRx(sid, HLSS_OFS_L, 2, [lo, hi])
+                ph.LockEprom(sid)
+                results.append((sid, raw_pos, new_offset, c, e))
             return results
 
         try:
@@ -724,15 +735,13 @@ class RobotBackend(_BackendBase):
                 timeout=10.0,
             )
             for row in results:
-                if len(row) == 6 and isinstance(row[2], str):
-                    sid, pos, _, comm, err, reason = row
-                    print(f"[RobotBackend] Servo {sid}: {reason} (comm={comm}, err={err})")
+                sid, raw_pos, new_off, comm, err = row
+                if raw_pos is None:
+                    print(f"[RobotBackend] Servo {sid}: write_home_offsets failed (comm={comm})")
+                elif comm == 0 and err == 0:
+                    print(f"[RobotBackend] Servo {sid}: raw_pos={raw_pos}, new_offset={new_off:+d}")
                 else:
-                    sid, pos, old_off, new_off, comm, err = row
-                    if comm == 0 and err == 0:
-                        print(f"[RobotBackend] Servo {sid}: pos={pos}, offset {old_off:+d} → {new_off:+d}")
-                    else:
-                        print(f"[RobotBackend] Servo {sid}: EEPROM write failed (comm={comm}, err={err})")
+                    print(f"[RobotBackend] Servo {sid}: EEPROM write failed (comm={comm}, err={err})")
         except (asyncio.TimeoutError, Exception) as e:
             print(f"[RobotBackend] write_home_offsets error: {e}")
 

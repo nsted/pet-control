@@ -186,17 +186,21 @@ class RerunVisualizer(Visualizer):
             ("touch/middle", "touch middle"),
             ("touch/left",   "touch left"),
             ("touch/right",  "touch right"),
-            ("touch/total",  "touch total"),
             ("pressure/middle", "pressure middle"),
             ("pressure/left",   "pressure left"),
             ("pressure/right",  "pressure right"),
-            ("pressure/total",  "pressure total"),
+        )
+        _TOTAL_PATHS = (
+            ("touch/total",    "touch total"),
+            ("pressure/total", "pressure total"),
         )
         for mod in self._module_meta:
             mod_id = int(mod["id"])
             base = f"sensors/module_{mod_id}"
             for suffix, name in _SERIES_PATHS:
                 rr.log(f"{base}/{suffix}", rr.SeriesLines(names=name), static=True)
+            for suffix, name in _TOTAL_PATHS:
+                rr.log(f"{base}/{suffix}", rr.SeriesLines(names=name, widths=3.0), static=True)
 
     def _log_sensors(self, rr, state: RobotState) -> None:
         for mod_id, sensors in state.sensors.items():
