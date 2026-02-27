@@ -371,7 +371,7 @@ class RerunVisualizer(Visualizer):
 
     @staticmethod
     def _servo_angle_rad(servo_id: int, state: RobotState) -> float:
-        raw = state.servo_positions.get(servo_id, 2048)
+        raw = state.servo_positions.get(servo_id, 0)
         return ServoCommand.position_to_radians(raw)
 
 

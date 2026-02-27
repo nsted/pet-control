@@ -89,7 +89,7 @@ class MockBackend(RobotBackend):
 
         # Internal servo positions updated by send_commands()
         self._servo_positions: dict[int, int] = {
-            i + 1: 2048 for i in range(num_servos)
+            i + 1: 0 for i in range(num_servos)
         }
 
         # File cache
@@ -146,7 +146,7 @@ class MockBackend(RobotBackend):
                 self._servo_positions[cmd.servo_id] = max(0, min(4095, cmd.position))
             elif cmd.speed is not None:
                 # In speed mode just nudge position proportionally
-                current = self._servo_positions.get(cmd.servo_id, 2048)
+                current = self._servo_positions.get(cmd.servo_id, 0)
                 self._servo_positions[cmd.servo_id] = max(
                     0, min(4095, current + cmd.speed)
                 )

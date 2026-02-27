@@ -12,7 +12,7 @@
         "scale": 1.0,
         "color": [0.98, 0.96, 0.85, 1.0],
         "offset": [0, 14.3, 14.3],
-        "rotation": [180, 0, 180],
+        "rotation": [0, 0, 180],
         "joint": {
           "type": "revolute",
           "axis": [0, 0, 1]
@@ -25,7 +25,7 @@
         "model": "prism simplified v5.obj",
         "scale": 1,
         "color": [0.98, 0.96, 0.85, 1.0],
-        "rotation": [180, 0, 180],
+        "rotation": [0, 0, 180],
         "offset": [0, 0, 0.4],
         "joint": {
           "type": "revolute",
@@ -39,7 +39,7 @@
         "model": "prism simplified v5.obj",
         "scale": 1,
         "color": [0.98, 0.96, 0.85, 1.0],
-        "rotation": [0, 90, 180],
+        "rotation": [0, -90, 0],
         "offset": [0, -3.7, -3.5],
         "joint": {
           "type": "revolute",
@@ -53,7 +53,7 @@
         "model": "prism simplified v5.obj",
         "scale": 1,
         "color": [0.98, 0.96, 0.85, 1.0],
-        "rotation": [0, 90, 180],
+        "rotation": [0, -90, 0],
         "offset": [0, -3.7, -3.5],
         "joint": {
           "type": "revolute",
@@ -67,7 +67,7 @@
         "model": "prism simplified v5.obj",
         "scale": 1,
         "color": [0.98, 0.96, 0.85, 1.0],
-        "rotation": [0, 90, 180],
+        "rotation": [0, -90, 0],
         "offset": [0, -3.7, -3.5],
         "joint": {
           "type": "revolute",
@@ -81,7 +81,7 @@
         "model": "prism simplified v5.obj",
         "scale": 1,
         "color": [0.98, 0.96, 0.85, 1.0],
-        "rotation": [0, 90, 180],
+        "rotation": [0, -90, 0],
         "offset": [0, -3.7, -3.5],
         "joint": {
           "type": "revolute",
@@ -95,7 +95,7 @@
         "model": "prism simplified v5.obj",
         "scale": 1,
         "color": [0.98, 0.96, 0.85, 1.0],
-        "rotation": [0, 90, 180],
+        "rotation": [0, -90, 0],
         "offset": [0, -3.7, -3.5],
         "joint": {
           "type": "revolute",
@@ -109,7 +109,7 @@
         "model": "prism tail simplified v2.obj",
         "scale": 1,
         "color": [0.98, 0.96, 0.85, 1.0],
-        "rotation": [0, 90, 180],
+        "rotation": [0, -90, 0],
         "offset": [0, -3.7, -3.5],
         "joint": {
           "type": "revolute",
