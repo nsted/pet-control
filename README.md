@@ -8,6 +8,7 @@ Modular Python control framework for the PET robot. Supports swappable control s
 pip install -e .
 petctl run                          # mock robot, keyboard control, Rerun viz
 petctl run --backend robot          # real robot
+petctl run --backend robot --limp   # limp mode — joints move freely for calibration
 petctl run --backend mock --mode sine  # animated demo, no robot needed
 petctl info                         # connect and print robot status
 ```
@@ -30,9 +31,21 @@ All three components are swappable ABCs. Control schemes never touch the backend
 | `0`–`8` | Select module |
 | `↑` / `↓` | Rotate selected joint ±5° |
 | `r` | Reset all to 0° |
+| `Cmd+`` ` `` ` | Save current positions as EEPROM home |
 | `q` / `Esc` | Stop |
 
 > macOS: grant Accessibility permission to your terminal for keyboard capture to work.
+
+## Home calibration
+
+The robot's home pose is defined as all servos at position 0. To calibrate:
+
+1. Run in limp mode: `petctl run --backend robot --limp`
+2. Physically position the robot at its desired home pose
+3. Press **Cmd+`` ` ``** to write EEPROM offsets — each servo's current physical position is recorded as its new zero
+4. Power-cycle the robot; all servos will now report 0 at the home pose
+
+The `robot_assembly.json` kinematic chain is built around position 0 = home, so after calibration the Rerun visualizer will match the physical robot at rest.
 
 ## Custom ML control scheme
 
