@@ -145,6 +145,14 @@ class ControlScheme(ABC):
         """Called on shutdown or when scheme is swapped out."""
         ...
 
+    def take_save_home(self) -> bool:
+        """Return True (and reset the flag) when a save-home should be triggered.
+
+        Override in schemes that support user-triggered EEPROM home-saving.
+        The default always returns False.
+        """
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Visualizer

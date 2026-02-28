@@ -119,8 +119,8 @@ class KeyboardControlScheme(ControlScheme):
         if self._listener is not None:
             try:
                 self._listener.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Keyboard] Warning: listener teardown error: {e}")
         self._listener = None
 
     # ------------------------------------------------------------------
@@ -138,7 +138,11 @@ class KeyboardControlScheme(ControlScheme):
             return dict(self._angles)
 
     def take_save_home(self) -> bool:
-        """Consume and return the save-home request flag (set by 's' key)."""
+        """Consume and return the save-home request flag (set by Cmd+` key).
+
+        Returns True exactly once per key event; subsequent calls return False
+        until the user presses the shortcut again.
+        """
         with self._lock:
             val = self._save_home_requested
             self._save_home_requested = False
@@ -155,12 +159,12 @@ class KeyboardControlScheme(ControlScheme):
             print("[Keyboard] pynput not installed. Run: pip install pynput")
             return
 
-        _CMD_KEYS = {keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r}
+        cmd_keys = frozenset({keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r})
 
         def on_press(key):
             stop_requested = False
             with self._lock:
-                if key in _CMD_KEYS:
+                if key in cmd_keys:
                     self._cmd_held = True
                     return
 
@@ -200,7 +204,7 @@ class KeyboardControlScheme(ControlScheme):
                 self._controller.stop()
 
         def on_release(key):
-            if key in _CMD_KEYS:
+            if key in cmd_keys:
                 with self._lock:
                     self._cmd_held = False
 

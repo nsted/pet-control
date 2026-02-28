@@ -91,6 +91,19 @@ _TOUCH_COLOR_RGB    = (50, 180, 220)   # cyan-blue
 _PRESSURE_COLOR_RGB = (230, 100, 20)   # warm orange
 _MIN_ALPHA = 30
 
+# Sensor attribute name → path suffix mapping, used in _log_sensors each tick.
+# Defined at module level to avoid rebuilding the tuple on every call.
+_SENSOR_SUFFIXES: tuple[tuple[str, str], ...] = (
+    ("touch/middle",    "touch_middle"),
+    ("touch/left",      "touch_left"),
+    ("touch/right",     "touch_right"),
+    ("pressure/middle", "pressure_middle"),
+    ("pressure/left",   "pressure_left"),
+    ("pressure/right",  "pressure_right"),
+    ("touch/total",     "touch_total"),
+    ("pressure/total",  "pressure_total"),
+)
+
 
 class RerunVisualizer(Visualizer):
     """
@@ -123,6 +136,8 @@ class RerunVisualizer(Visualizer):
         self._module_meta: list[dict] = []
         # Pre-computed HPR rotation matrices keyed by module_id
         self._hpr_mats: dict[int, np.ndarray] = {}
+        # Pre-normalized joint axes — computed once in _load_assembly()
+        self._joint_axes: dict[int, tuple[float, float, float]] = {}
         # Cached parent map and entity paths — built once in _load_assembly()
         self._parent_map: dict[int, Optional[int]] = {}
         self._entity_path_cache: dict[int, str] = {}
@@ -205,18 +220,8 @@ class RerunVisualizer(Visualizer):
     def _log_sensors(self, rr, state: RobotState) -> None:
         for mod_id, sensors in state.sensors.items():
             base = f"sensors/module_{mod_id}"
-            sensor_values = {
-                f"{base}/touch/middle":    sensors.touch_middle,
-                f"{base}/touch/left":      sensors.touch_left,
-                f"{base}/touch/right":     sensors.touch_right,
-                f"{base}/pressure/middle": sensors.pressure_middle,
-                f"{base}/pressure/left":   sensors.pressure_left,
-                f"{base}/pressure/right":  sensors.pressure_right,
-                f"{base}/touch/total":     sensors.touch_total,
-                f"{base}/pressure/total":  sensors.pressure_total,
-            }
-            for path, value in sensor_values.items():
-                rr.log(path, rr.Scalars(value))
+            for suffix, attr in _SENSOR_SUFFIXES:
+                rr.log(f"{base}/{suffix}", rr.Scalars(getattr(sensors, attr)))
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
@@ -272,11 +277,18 @@ class RerunVisualizer(Visualizer):
             data = json.load(f)
         self._module_meta = data.get("assembly", {}).get("modules", [])
 
-        # Pre-compute HPR rotation matrices (used each tick in _log_3d_pose)
+        # Pre-compute HPR rotation matrices and normalized joint axes (used each tick)
         for mod in self._module_meta:
             mod_id = int(mod["id"])
             euler = mod.get("rotation", [0.0, 0.0, 0.0])
             self._hpr_mats[mod_id] = _hpr_to_mat3(*euler)
+
+            raw = mod.get("joint", {}).get("axis", [0, 0, 1])
+            ax, ay, az = float(raw[0]), float(raw[1]), float(raw[2])
+            norm = math.sqrt(ax*ax + ay*ay + az*az)
+            if norm > 1e-9:
+                ax, ay, az = ax/norm, ay/norm, az/norm
+            self._joint_axes[mod_id] = (ax, ay, az)
 
         # Cache parent map once — avoids rebuilding it per tick per module
         self._parent_map = {
@@ -336,12 +348,11 @@ class RerunVisualizer(Visualizer):
             joint_path = self._entity_path_cache.get(mod_id) or self._entity_path(mod_id)
             offset = mod.get("offset", [0.0, 0.0, 0.0])
 
-            joint_axis = mod.get("joint", {}).get("axis", [0, 0, 1])
             # Negate: Dynamixel CCW positive convention is opposite the viz's
             # right-hand-rule Z rotation, so the viz was a mirror of the real robot.
             angle_rad = -self._servo_angle_rad(mod_id, state)
 
-            R = self._hpr_mats[mod_id] @ _axis_angle_to_mat3(joint_axis, angle_rad)
+            R = self._hpr_mats[mod_id] @ _axis_angle_to_mat3(self._joint_axes[mod_id], angle_rad)
 
             rr.log(joint_path, rr.Transform3D(
                 translation=offset,
@@ -406,14 +417,9 @@ def _hpr_to_mat3(h_deg: float, p_deg: float, r_deg: float) -> np.ndarray:
     return Rz @ Rx @ Ry
 
 
-def _axis_angle_to_mat3(axis, angle_rad: float) -> np.ndarray:
-    """Rodrigues' rotation formula: rotation by angle_rad around unit axis."""
-    ax, ay, az = [float(v) for v in axis]
-    norm = math.sqrt(ax*ax + ay*ay + az*az)
-    if norm < 1e-9:
-        return np.eye(3, dtype=np.float32)
-    ax, ay, az = ax/norm, ay/norm, az/norm
-
+def _axis_angle_to_mat3(axis: tuple[float, float, float], angle_rad: float) -> np.ndarray:
+    """Rodrigues' rotation formula: rotation by angle_rad around a pre-normalized unit axis."""
+    ax, ay, az = axis
     c = math.cos(angle_rad)
     s = math.sin(angle_rad)
     t = 1.0 - c
