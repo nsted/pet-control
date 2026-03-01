@@ -2,7 +2,7 @@
 RerunVisualizer — real-time visualization via Rerun.io.
 
 Displays two things simultaneously in the Rerun viewer:
-  1. Sensor time-series (touch + pressure per module) as live charts
+  1. Servo health time-series (temperature, current, voltage per servo)
   2. 3D robot pose from actual OBJ mesh files, forward-kinematics driven
 
 3D hierarchy per module:
@@ -92,29 +92,15 @@ _TOUCH_COLOR_RGB    = (50, 180, 220)   # cyan-blue
 _PRESSURE_COLOR_RGB = (230, 100, 20)   # warm orange
 _MIN_ALPHA = 30
 
-# Sensor attribute name → path suffix mapping, used in _log_sensors each tick.
-# Defined at module level to avoid rebuilding the tuple on every call.
-_SENSOR_SUFFIXES: tuple[tuple[str, str], ...] = (
-    ("touch/middle",    "touch_middle"),
-    ("touch/left",      "touch_left"),
-    ("touch/right",     "touch_right"),
-    ("pressure/middle", "pressure_middle"),
-    ("pressure/left",   "pressure_left"),
-    ("pressure/right",  "pressure_right"),
-    ("touch/total",     "touch_total"),
-    ("pressure/total",  "pressure_total"),
-)
-
 
 class RerunVisualizer(Visualizer):
     """
-    Visualizes sensor data and robot pose in Rerun.
+    Visualizes robot pose and servo health in Rerun.
 
     Args:
         app_name:       Rerun application name (shown in viewer title bar)
         assembly_file:  Path to robot_assembly.json.  Defaults to petctl/assets/robot_assembly.json.
         models_dir:     Directory containing the .obj files.  Defaults to petctl/assets/3d_models/.
-        show_sensors:   Log sensor time-series charts (default: True)
         show_3d:        Log 3D robot pose (default: True)
     """
 
@@ -125,13 +111,11 @@ class RerunVisualizer(Visualizer):
         app_name: str = "petctl",
         assembly_file: Optional[str] = None,
         models_dir: Optional[str] = None,
-        show_sensors: bool = True,
         show_3d: bool = True,
     ) -> None:
         self.app_name = app_name
         self.assembly_file = assembly_file or _DEFAULT_ASSEMBLY
         self.models_dir = models_dir or _MODELS_DIR
-        self.show_sensors = show_sensors
         self.show_3d = show_3d
 
         self._module_meta: list[dict] = []
@@ -160,8 +144,7 @@ class RerunVisualizer(Visualizer):
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         self._send_blueprint()
-        if self.show_sensors:
-            self._setup_sensor_series()
+        self._setup_servo_series()
         if self.show_3d:
             self._setup_3d_geometry()
 
@@ -170,8 +153,7 @@ class RerunVisualizer(Visualizer):
             return
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
-        if self.show_sensors:
-            self._log_sensors(rr, state)
+        self._log_servo_health(rr, state)
         if self.show_3d:
             self._log_3d_pose(rr, state)
             self._log_sensor_overlays(rr, state)
@@ -184,45 +166,44 @@ class RerunVisualizer(Visualizer):
     # ------------------------------------------------------------------
 
     def _send_blueprint(self) -> None:
-        """Send a blueprint with a 3D spatial view and a time-series sensor view."""
+        """Send a blueprint with a 3D view and servo health time-series charts."""
         import rerun.blueprint as rrb
         rr = self._rr
         views = []
         if self.show_3d:
             views.append(rrb.Spatial3DView(origin="robot", name="Robot"))
-        if self.show_sensors:
-            views.append(rrb.TimeSeriesView(origin="sensors", name="Sensors"))
-        if views:
-            rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views)))
+        views.append(rrb.Vertical(
+            rrb.TimeSeriesView(origin="servos/temperature", name="Temperature (°C)"),
+            rrb.TimeSeriesView(origin="servos/current",     name="Current (mA)"),
+            rrb.TimeSeriesView(origin="servos/voltage",     name="Voltage (V)"),
+        ))
+        rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views)))
 
-    def _setup_sensor_series(self) -> None:
-        """Log static SeriesLines to each sensor path so Rerun can render them."""
+    def _setup_servo_series(self) -> None:
+        """Declare SeriesLines for each servo's health metrics (static, for chart labels)."""
         rr = self._rr
-        _SERIES_PATHS = (
-            ("touch/middle", "touch middle"),
-            ("touch/left",   "touch left"),
-            ("touch/right",  "touch right"),
-            ("pressure/middle", "pressure middle"),
-            ("pressure/left",   "pressure left"),
-            ("pressure/right",  "pressure right"),
-        )
-        _TOTAL_PATHS = (
-            ("touch/total",    "touch total"),
-            ("pressure/total", "pressure total"),
-        )
-        for mod in self._module_meta:
-            mod_id = int(mod["id"])
-            base = f"sensors/module_{mod_id}"
-            for suffix, name in _SERIES_PATHS:
-                rr.log(f"{base}/{suffix}", rr.SeriesLines(names=name), static=True)
-            for suffix, name in _TOTAL_PATHS:
-                rr.log(f"{base}/{suffix}", rr.SeriesLines(names=name, widths=3.0), static=True)
+        servo_ids = [int(mod["id"]) for mod in self._module_meta if int(mod["id"]) > 0]
+        for sid in servo_ids:
+            label = f"servo {sid}"
+            rr.log(f"servos/temperature/servo_{sid}", rr.SeriesLines(names=label), static=True)
+            rr.log(f"servos/current/servo_{sid}",     rr.SeriesLines(names=label), static=True)
+            rr.log(f"servos/voltage/servo_{sid}",     rr.SeriesLines(names=label), static=True)
 
-    def _log_sensors(self, rr, state: RobotState) -> None:
-        for mod_id, sensors in state.sensors.items():
-            base = f"sensors/module_{mod_id}"
-            for suffix, attr in _SENSOR_SUFFIXES:
-                rr.log(f"{base}/{suffix}", rr.Scalars(getattr(sensors, attr)))
+    def _log_servo_health(self, rr, state: RobotState) -> None:
+        """Log temperature, current, and voltage for each servo.
+
+        Only logs on iterations where the full GroupSyncRead ran (every ~20 loops),
+        detected by the dict being non-empty.  Values are converted to natural units:
+          temperature → °C (raw = °C directly)
+          current     → mA (raw units × 6.5 mA)
+          voltage     → V  (raw units × 0.1 V)
+        """
+        for sid, val in state.servo_temperatures.items():
+            rr.log(f"servos/temperature/servo_{sid}", rr.Scalars(float(val)))
+        for sid, val in state.servo_currents.items():
+            rr.log(f"servos/current/servo_{sid}",     rr.Scalars(float(val) * 6.5))
+        for sid, val in state.servo_voltages.items():
+            rr.log(f"servos/voltage/servo_{sid}",     rr.Scalars(float(val) * 0.1))
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
