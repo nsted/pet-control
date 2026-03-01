@@ -9,7 +9,6 @@ Usage:
     petctl run --backend mock --state s.json    # load sensor values from file
     petctl run --no-viz                         # headless (sensors only, no Rerun)
     petctl run --dry-run                        # never send servo commands
-    petctl run --hz 10                          # 10 Hz control loop
     petctl run --host 192.168.1.42              # connect to robot by IP
     petctl info                                 # connect and print robot status
 """
@@ -21,7 +20,6 @@ from typing import Optional
 import typer
 
 from petctl.backends.robot import ROBOT_DEFAULT_HOST, ROBOT_DEFAULT_PORT
-from petctl.config import LOOP_LIMITS
 
 app = typer.Typer(
     name="petctl",
@@ -44,10 +42,6 @@ def run(
         False,
         "--no-viz",
         help="Disable Rerun visualizer (headless mode)",
-    ),
-    hz: float = typer.Option(
-        LOOP_LIMITS.poll_hz_default,
-        help="Control loop frequency in Hz",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -147,7 +141,6 @@ def run(
             backend=_backend,
             scheme=_scheme,
             visualizers=_visualizers,
-            poll_hz=hz,
             dry_run=dry_run,
             limp=limp,
         )

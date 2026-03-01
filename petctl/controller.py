@@ -2,13 +2,17 @@
 Controller — the central hub of petctl.
 
 Owns a RobotBackend, a ControlScheme, and a list of Visualizers.
-Runs a single async loop:
+Runs a free-running async loop with no fixed tick rate:
 
   1. state  = await backend.get_state()
   2. cmds   = scheme.update(state)
   3. if not dry_run: await backend.send_commands(cmds)
   4. for viz in visualizers: viz.update(state)
-  5. sleep for remainder of tick
+  5. repeat immediately
+
+Loop rate is determined by hardware I/O latency, not an artificial sleep.
+state.dt (seconds since last iteration) is available to all schemes.
+Timing stats are printed every few seconds so you can see the real rate.
 
 Usage:
 
@@ -35,7 +39,6 @@ import signal
 import time
 from typing import Optional
 
-from petctl.config import LOOP_LIMITS
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState
 
@@ -48,7 +51,6 @@ class Controller:
         backend:      A RobotBackend (RobotBackend, MockBackend, etc.)
         scheme:       A ControlScheme (keyboard, AI, passthrough, etc.)
         visualizers:  List of Visualizer instances (Rerun, etc.)
-        poll_hz:      How often to run the control loop (default: 20 Hz)
         dry_run:      If True, read sensors and run the scheme but never
                       send servo commands.  Useful for testing.
         limp:         If True, disable motor torque after connecting so joints
@@ -56,19 +58,20 @@ class Controller:
                       commands never re-enable torque during the session.
     """
 
+    # How often to print loop timing stats (seconds)
+    _STATS_INTERVAL = 5.0
+
     def __init__(
         self,
         backend: RobotBackend,
         scheme: ControlScheme,
         visualizers: Optional[list[Visualizer]] = None,
-        poll_hz: float = LOOP_LIMITS.poll_hz_default,
         dry_run: bool = False,
         limp: bool = False,
     ) -> None:
         self.backend = backend
         self.scheme = scheme
         self.visualizers: list[Visualizer] = visualizers or []
-        self.poll_interval = 1.0 / poll_hz
         self.dry_run = dry_run or limp  # limp implies no commands
         self.limp = limp
 
@@ -78,6 +81,10 @@ class Controller:
         self._stop_event: Optional[asyncio.Event] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         self._last_pos_print: float = 0.0
+
+        # Rolling loop timing stats
+        self._loop_times: list[float] = []   # seconds per iteration
+        self._last_stats_print: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -164,7 +171,7 @@ class Controller:
     async def _loop(self) -> None:
         assert self._stop_event is not None
         while not self._stop_event.is_set():
-            tick_start = time.monotonic()
+            t0 = time.monotonic()
 
             # 1. Get state from backend
             self._state = await self.backend.get_state()
@@ -199,19 +206,34 @@ class Controller:
                 except Exception as e:
                     print(f"[Controller] Visualizer {viz.name} error: {e}")
 
-            # 4b. Periodically print servo positions for debugging
+            # 5. Timing stats
             now = time.monotonic()
+            elapsed = now - t0
+            self._loop_times.append(elapsed)
+
+            if now - self._last_stats_print >= self._STATS_INTERVAL:
+                self._print_stats(now)
+
+            # 6. Periodically print servo positions for debugging
             if now - self._last_pos_print >= 2.0:
                 pos = self._state.servo_positions
                 if pos:
                     print("[positions] " + "  ".join(f"{sid}:{p}" for sid, p in sorted(pos.items())))
                 self._last_pos_print = now
 
-            # 5. Sleep for remainder of tick
-            elapsed = time.monotonic() - tick_start
-            sleep_time = self.poll_interval - elapsed
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
+    def _print_stats(self, now: float) -> None:
+        """Print loop timing stats and reset the accumulator."""
+        times = self._loop_times
+        if not times:
+            return
+        n = len(times)
+        mean_ms = sum(times) / n * 1000
+        min_ms  = min(times) * 1000
+        max_ms  = max(times) * 1000
+        hz      = 1000.0 / mean_ms if mean_ms > 0 else 0.0
+        print(f"[loop] {hz:.1f} Hz  (min {min_ms:.0f} ms  mean {mean_ms:.0f} ms  max {max_ms:.0f} ms)  n={n}")
+        self._loop_times = []
+        self._last_stats_print = now
 
     async def _shutdown(self) -> None:
         self._running = False
