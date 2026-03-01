@@ -219,5 +219,6 @@ class Controller:
         self.scheme.on_stop()
         for viz in self.visualizers:
             viz.on_stop()
+        await self.backend.disable_torques()
         await self.backend.disconnect()
         print("[Controller] Done.")
