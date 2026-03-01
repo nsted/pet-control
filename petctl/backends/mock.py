@@ -48,6 +48,7 @@ import random
 import time
 from typing import Literal, Optional
 
+from petctl.config import SERVO_LIMITS
 from petctl.protocols import RobotBackend
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
@@ -87,7 +88,7 @@ class MockBackend(RobotBackend):
 
         # Module 0 is the head (no servo); servos are IDs 1..(num_modules-1)
         self._servo_positions: dict[int, int] = {
-            i + 1: 0 for i in range(num_modules - 1)
+            i + 1: SERVO_LIMITS.position_center for i in range(num_modules - 1)
         }
 
         # File cache
@@ -144,7 +145,7 @@ class MockBackend(RobotBackend):
                 self._servo_positions[cmd.servo_id] = cmd.position
             elif cmd.speed is not None:
                 # In speed mode just nudge position proportionally
-                current = self._servo_positions.get(cmd.servo_id, 0)
+                current = self._servo_positions.get(cmd.servo_id, SERVO_LIMITS.position_center)
                 self._servo_positions[cmd.servo_id] = current + cmd.speed
 
     @property

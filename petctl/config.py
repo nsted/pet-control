@@ -23,7 +23,9 @@ class ServoLimits:
 
     # --- Position / Rotation ---
     ticks_per_rotation: int = 4096   # ticks for one full 360° rotation
-    position_center: int = 0         # home position (raw 0 after EEPROM calibration)
+    position_center: int = 2048      # raw ticks reported at home (mid-range = encoder never wraps
+                                     # for ±45° moves; must match EEPROM offset target in
+                                     # write_home_offsets and the rotations in robot_assembly.json)
 
     # --- Speed ---
     # WritePosEx speed parameter. Higher = faster movement.
@@ -106,19 +108,19 @@ BEHAVIOR_LIMITS = BehaviorLimits()
 # ---------------------------------------------------------------------------
 
 def angle_to_raw(angle_deg: float) -> int:
-    """Convert degrees to raw servo ticks (center = 0)."""
-    return int(angle_deg / 360.0 * SERVO_LIMITS.ticks_per_rotation)
+    """Convert degrees to raw servo ticks (0° → position_center = home)."""
+    return SERVO_LIMITS.position_center + int(angle_deg / 360.0 * SERVO_LIMITS.ticks_per_rotation)
 
 
 def raw_to_angle(raw: int) -> float:
-    """Convert raw servo ticks to degrees (center = 0)."""
-    return raw / SERVO_LIMITS.ticks_per_rotation * 360.0
+    """Convert raw servo ticks to degrees (position_center → 0° = home)."""
+    return (raw - SERVO_LIMITS.position_center) / SERVO_LIMITS.ticks_per_rotation * 360.0
 
 
 def raw_to_radians(raw: int) -> float:
-    """Convert raw servo ticks to radians (center = 0)."""
+    """Convert raw servo ticks to radians (position_center → 0 rad = home)."""
     import math
-    return raw / SERVO_LIMITS.ticks_per_rotation * 2.0 * math.pi
+    return (raw - SERVO_LIMITS.position_center) / SERVO_LIMITS.ticks_per_rotation * 2.0 * math.pi
 
 
 def clamp_torque(torque: int) -> int:

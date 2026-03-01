@@ -51,7 +51,7 @@ class RobotState:
     timestamp: float = field(default_factory=time.monotonic)
     # Keyed by module_id (int). Sensor values are normalized 0-1.
     sensors: dict[int, ModuleSensors] = field(default_factory=dict)
-    # Keyed by servo_id (int). Signed raw ticks, center = 0 (home).
+    # Keyed by servo_id (int). Raw ticks; home = SERVO_LIMITS.position_center.
     servo_positions: dict[int, int] = field(default_factory=dict)
     # Module IDs currently detected on the robot
     active_modules: list[int] = field(default_factory=list)
@@ -81,7 +81,7 @@ class ServoCommand:
     """
 
     servo_id: int
-    position: int | None = None   # signed ticks from home (center = 0)
+    position: int | None = None   # raw ticks; home = SERVO_LIMITS.position_center
     speed: int | None = None      # signed, for wheel/speed mode
     acceleration: int = SERVO_LIMITS.acceleration_default
 
@@ -93,7 +93,7 @@ class ServoCommand:
         acceleration: int = SERVO_LIMITS.acceleration_default,
     ) -> "ServoCommand":
         """
-        Convert degrees to a raw servo position (center = 0 = home).
+        Convert degrees to a raw servo position (0° = SERVO_LIMITS.position_center = home).
 
         Positive angles move in the positive joint direction.
         No clamping — servos are multi-turn with no software angle limit.
@@ -102,10 +102,10 @@ class ServoCommand:
 
     @staticmethod
     def position_to_angle(raw: int) -> float:
-        """Convert raw ticks back to degrees (center = 0 = home)."""
+        """Convert raw ticks to degrees (position_center → 0° = home)."""
         return raw_to_angle(raw)
 
     @staticmethod
     def position_to_radians(raw: int) -> float:
-        """Convert raw ticks to radians (center = 0 = home)."""
+        """Convert raw ticks to radians (position_center → 0 rad = home)."""
         return raw_to_radians(raw)

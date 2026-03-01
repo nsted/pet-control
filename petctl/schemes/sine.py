@@ -21,7 +21,7 @@ import math
 import time
 from typing import TYPE_CHECKING, Optional
 
-from petctl.config import SERVO_LIMITS
+from petctl.config import angle_to_raw
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
 
@@ -38,15 +38,14 @@ def compute_sine_positions(
     """
     Compute staggered sine-wave raw positions for a list of servo IDs.
 
-    Returns a dict mapping servo_id → raw position (signed, centered on 0 = home).
+    Returns a dict mapping servo_id → raw position (centered on position_center = home).
     Phases are evenly distributed across the servo list order.
     """
     n = len(servo_ids)
     if n == 0:
         return {}
-    amplitude_raw = int(SERVO_LIMITS.ticks_per_rotation * amplitude_deg / 360)
     return {
-        servo_id: int(amplitude_raw * math.sin(2 * math.pi * hz * elapsed + (i / n) * 2 * math.pi))
+        servo_id: angle_to_raw(amplitude_deg * math.sin(2 * math.pi * hz * elapsed + (i / n) * 2 * math.pi))
         for i, servo_id in enumerate(servo_ids)
     }
 

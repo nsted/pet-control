@@ -20,7 +20,8 @@ Components are swappable ABCs. Control schemes never touch the backend directly 
 - **Module 0 is the head — no servo.** Servo IDs are 1–7 (modules 1–7 each have one joint).
 - **Odd modules have left/right sensors swapped** for body-frame consistency (handled in RobotBackend.\_read_sensors, transparent to everything above)
 - **All joints are single-axis Z revolute** — positive angle = one direction, negative = the other
-- **Position range:** multi-turn, center = 0, negative values allowed. No hard position limits — angle limits are enforced in software by petctl/config.py
+- **Position range:** multi-turn, center = `SERVO_LIMITS.position_center` (2048), never negative in normal operation. No hard position limits — angle limits are enforced in software by petctl/config.py
+- **COUPLING:** `position_center` in `petctl/config.py` and the `rotation` fields in `petctl/assets/robot_assembly.json` are tightly coupled. Changing `position_center` requires updating all module rotations in `robot_assembly.json` by the equivalent angle (e.g. 2048 → 0 = −180° means subtract 180° from each module's Heading).
 - **Servo protocol:** Feetech SCS series over WebSocket (text frames for sensors/discovery, binary frames for servo commands via hls_scs)
 - **Robot hostname:** pet-robot.local:8080
 - **Control loop:** 20Hz async, all synchronous SDK calls run in a ThreadPoolExecutor

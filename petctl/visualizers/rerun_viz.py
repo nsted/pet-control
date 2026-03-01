@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
+from petctl.config import SERVO_LIMITS
 from petctl.protocols import Visualizer
 from petctl.types import RobotState, ServoCommand
 
@@ -382,7 +383,7 @@ class RerunVisualizer(Visualizer):
 
     @staticmethod
     def _servo_angle_rad(servo_id: int, state: RobotState) -> float:
-        raw = state.servo_positions.get(servo_id, 0)
+        raw = state.servo_positions.get(servo_id, SERVO_LIMITS.position_center)
         return ServoCommand.position_to_radians(raw)
 
 

@@ -687,19 +687,25 @@ class RobotBackend(_BackendBase):
     async def write_home_offsets(self) -> None:
         """
         Write each servo's EEPROM offset register (HLSS_OFS_L/H at address 31)
-        so its current physical position becomes the new center (0° = raw 2048).
+        so its current physical position becomes the home center
+        (SERVO_LIMITS.position_center raw ticks, i.e. 0°).
 
         Procedure per servo:
           1. Unlock EEPROM, write 0 to offset, lock EEPROM.
-          2. Read position — HLS applies offset=0 automatically, so reported = raw_encoder.
-          3. new_offset = raw_encoder % 4096  — strips multi-turn accumulated count,
-             leaving only the within-revolution encoder value (0–4095) that the servo
-             will report on fresh boot at the same physical position.
+          2. Read position — HLS applies offset=0, so reported = raw_encoder.
+          3. new_offset = (raw_encoder % 4096) - position_center
+             The modulo strips the multi-turn accumulated count, leaving only the
+             within-revolution encoder value (0–4095) that survives a power cycle.
+             Subtracting position_center shifts the target so the servo reports
+             position_center (not 0) at this physical position after reboot —
+             keeping raw values in mid-range and preventing 12-bit wrap-around
+             during normal operation (±45° = ±512 ticks from 2048).
+             new_offset may be negative; scs_toscs encodes it as sign-magnitude.
           4. Encode as Feetech sign-magnitude (scs_toscs) and write to EEPROM.
 
         NOTE: The offset register is EEPROM (addr 31), but LockEprom() triggers an
-        immediate SRAM reload on this firmware — positions update to 0 in the same
-        session without a power cycle.
+        immediate SRAM reload on this firmware — positions update to position_center
+        in the same session without a power cycle.
 
         IMPORTANT: Zero immediately after power-on, before any movement. The servo
         tracks a multi-turn accumulated count (15-bit, ±32767). If you zero mid-session
@@ -734,15 +740,16 @@ class RobotBackend(_BackendBase):
                     results.append((sid, None, None, cr, 0))
                     continue
 
-                # Step 3: new offset makes this position read as 0.
-                # Convention: reported = raw - offset, so offset = raw_pos.
-                # Use modulo 4096 to strip the multi-turn accumulated count —
-                # after a power cycle the multi-turn counter resets, so only the
-                # within-revolution encoder value (0–4095) survives. Python's %
-                # handles negative raw_pos correctly (e.g. -14094 % 4096 = 2290).
-                # Trade-off: positions won't read 0 in this session; they will
-                # after the next power cycle.
-                new_offset = raw_pos % 4096
+                # Step 3: new offset makes this position read as position_center after reboot.
+                # Convention: reported = raw_encoder - offset.
+                # Use modulo 4096 to strip the multi-turn accumulated count (only the
+                # within-revolution encoder value 0–4095 survives a power cycle).
+                # Subtract position_center so the reported value at this physical
+                # position is position_center (not 0), keeping raw ticks in mid-range.
+                # new_offset may be negative; scs_toscs handles sign-magnitude encoding.
+                # Trade-off: positions won't read position_center in this session; they
+                # will after the next power cycle.
+                new_offset = (raw_pos % 4096) - SERVO_LIMITS.position_center
 
                 # Step 4: encode sign-magnitude and write.
                 encoded = ph.scs_toscs(new_offset, 15)
@@ -765,10 +772,10 @@ class RobotBackend(_BackendBase):
                     print(f"[RobotBackend] Servo {sid}: write_home_offsets failed (comm={comm})")
                 elif comm == 0 and err == 0:
                     turns = raw_pos // 4096
-                    print(f"[RobotBackend] Servo {sid}: raw_pos={raw_pos} ({turns:+d} turns), offset={new_off}")
+                    print(f"[RobotBackend] Servo {sid}: raw_pos={raw_pos} ({turns:+d} turns), offset={new_off}, target={SERVO_LIMITS.position_center}")
                 else:
                     print(f"[RobotBackend] Servo {sid}: EEPROM write failed (comm={comm}, err={err})")
-            print("[RobotBackend] Offsets written. Power cycle to apply (positions will read 0 after reboot).")
+            print(f"[RobotBackend] Offsets written. Power cycle to apply (positions will read {SERVO_LIMITS.position_center} after reboot).")
         except (asyncio.TimeoutError, Exception) as e:
             print(f"[RobotBackend] write_home_offsets error: {e}")
 
