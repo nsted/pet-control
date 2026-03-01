@@ -69,7 +69,7 @@ class MockBackend(RobotBackend):
                      In "file" mode everything comes from the file.
                      Hot-reloaded whenever the file changes on disk.
         num_modules: Number of simulated modules (used when no file given).
-        num_servos:  Number of simulated servos.
+                     Module 0 is the head (no servo); servos are IDs 1..(num_modules-1).
         sine_hz:     Oscillation frequency for "sine" mode.
     """
 
@@ -78,18 +78,16 @@ class MockBackend(RobotBackend):
         mode: Literal["interactive", "file", "sine", "noise"] = "interactive",
         state_file: Optional[str] = None,
         num_modules: int = 8,
-        num_servos: int = 8,
         sine_hz: float = 0.2,
     ) -> None:
         self.mode = mode
         self.state_file = state_file
         self.num_modules = num_modules
-        self.num_servos = num_servos
         self.sine_hz = sine_hz
 
-        # Internal servo positions updated by send_commands()
+        # Module 0 is the head (no servo); servos are IDs 1..(num_modules-1)
         self._servo_positions: dict[int, int] = {
-            i + 1: 0 for i in range(num_servos)
+            i + 1: 0 for i in range(num_modules - 1)
         }
 
         # File cache
@@ -126,7 +124,7 @@ class MockBackend(RobotBackend):
             self._reload_file_if_changed()
 
         sensors = self._build_sensors(elapsed)
-        servo_positions = self._build_servo_positions(elapsed)
+        servo_positions = self._build_servo_positions()
 
         return RobotState(
             timestamp=now,
@@ -198,14 +196,8 @@ class MockBackend(RobotBackend):
 
         return sensors
 
-    def _build_servo_positions(self, elapsed: float) -> dict[int, int]:
-        if self.mode == "sine":
-            from petctl.schemes.sine import compute_sine_positions
-            servo_ids = sorted(self._servo_positions.keys())
-            self._servo_positions.update(
-                compute_sine_positions(servo_ids, elapsed, amplitude_deg=60.0, hz=self.sine_hz)
-            )
-        elif self.mode == "file" and "servos" in self._file_data:
+    def _build_servo_positions(self) -> dict[int, int]:
+        if self.mode == "file" and "servos" in self._file_data:
             try:
                 file_servos = {
                     int(k): int(v)

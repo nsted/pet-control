@@ -142,8 +142,6 @@ class RobotBackend(_BackendBase):
         print(f"[RobotBackend] Modules: {self._discovered_modules}")
         print(f"[RobotBackend] Servos:  {self._discovered_servos}")
 
-        await self._enable_torques()
-
         if self.calibrate_on_connect and self._discovered_modules:
             await self._calibrate()
 
@@ -559,11 +557,15 @@ class RobotBackend(_BackendBase):
         torque_limit = self.torque_limit
 
         def _do():
+            # Feetech protocol uses sign-magnitude encoding, not 2's complement.
+            # scs_toscs converts a Python signed int to the wire format (bit 15 = sign).
+            # ReadPos does the inverse via scs_tohost, so we must round-trip through toscs.
+            pos_raw = ph.scs_toscs(position, 15)
             txpacket = [
                 1,                                  # HLSS_TORQUE_SWITCH = 1 (on)
                 acc,
-                ph.scs_lobyte(position),
-                ph.scs_hibyte(position),
+                ph.scs_lobyte(pos_raw),
+                ph.scs_hibyte(pos_raw),
                 ph.scs_lobyte(torque_limit),        # TARGET_TORQUE lo — must be non-zero on v43
                 ph.scs_hibyte(torque_limit),        # TARGET_TORQUE hi
                 ph.scs_lobyte(speed),

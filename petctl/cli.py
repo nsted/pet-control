@@ -86,6 +86,12 @@ def run(
         "--no-calibrate",
         help="Skip sensor calibration on connect (robot backend)",
     ),
+    # SineControlScheme options
+    servo_id: Optional[int] = typer.Option(
+        None,
+        "--servo-id",
+        help="Servo ID to target with sine control (default: all active servos)",
+    ),
     # KeyboardControlScheme options
     step: float = typer.Option(
         5.0,
@@ -122,7 +128,7 @@ def run(
         _scheme = PassthroughControlScheme()
     elif control == "sine":
         from petctl.schemes.sine import SineControlScheme
-        _scheme = SineControlScheme()
+        _scheme = SineControlScheme(servo_id=servo_id)
     else:
         typer.echo(f"Unknown control scheme '{control}'. Choose: keyboard, passthrough, sine", err=True)
         raise typer.Exit(1)
