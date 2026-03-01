@@ -42,9 +42,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from scservo_sdk.group_sync_read import GroupSyncRead
 from scservo_sdk.group_sync_write import GroupSyncWrite
 from scservo_sdk.port_handler_factory import get_port_handler
-from scservo_sdk.hls_scs import hls_scs as HlsScs, HLSS_TORQUE_SWITCH, HLSS_OFS_L
+from scservo_sdk.hls_scs import hls_scs as HlsScs, HLSS_TORQUE_SWITCH, HLSS_OFS_L, HLSS_PRESENT_POSITION_L
 
 from petctl.config import SERVO_LIMITS
 from petctl.protocols import RobotBackend as _BackendBase
@@ -120,15 +121,21 @@ class RobotBackend(_BackendBase):
 
         # Last known state for graceful degradation during reconnect
         self._last_state = RobotState.empty()
-        # Servo positions tracked locally — updated on send, not re-read each tick
+        # Last *commanded* position per servo — used only for conditional write filter.
+        # Updated by send_commands(); cleared on reconnect to force a full re-send.
         self._servo_positions: dict[int, int] = {}
+        # Last *hardware-read* position per servo — updated every get_state() call.
+        # Used for RobotState so the visualizer reflects actual servo motion.
+        self._servo_actual_positions: dict[int, int] = {}
 
         self._reconnecting = False
 
         # GroupSyncWrite for batching all servo position commands into one broadcast packet.
-        # Initialized lazily on first use; reset to None on disconnect so a fresh instance
-        # is created with the new packet handler after reconnect.
+        # GroupSyncRead for reading all servo positions in one request.
+        # Both are initialized lazily on first use; reset to None on disconnect so fresh
+        # instances are created with the new packet handler after reconnect.
         self._sync_writer: Optional[GroupSyncWrite] = None
+        self._sync_reader: Optional[GroupSyncRead] = None
 
     # ------------------------------------------------------------------
     # RobotBackend interface
@@ -158,6 +165,7 @@ class RobotBackend(_BackendBase):
     async def disconnect(self) -> None:
         self._connected = False
         self._sync_writer = None
+        self._sync_reader = None
         if self._port_handler:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(self._executor, self._port_handler.closePort)
@@ -180,15 +188,20 @@ class RobotBackend(_BackendBase):
             if raw is None:
                 raise RuntimeError("Sensor read returned None")
 
-            # Use locally-tracked _servo_positions (updated by send_commands) rather
-            # than re-reading from hardware each tick.  Seven per-tick ReadPos calls
-            # saturate the WebSocket and eat the entire 50 ms tick budget.
+            # Read actual servo positions from hardware so the visualizer reflects
+            # real servo motion (manual moves in limp mode, etc.).
+            actual = await self._read_positions()
+            self._servo_actual_positions.update(actual)
+
             sensors = self._normalize(raw)
             now = time.monotonic()
+            # Merge: hardware-read positions override commanded positions where
+            # available; commanded positions serve as fallback for non-responding servos.
+            positions = {**self._servo_positions, **self._servo_actual_positions}
             state = RobotState(
                 timestamp=now,
                 sensors=sensors,
-                servo_positions=dict(self._servo_positions),
+                servo_positions=positions,
                 active_modules=self._discovered_modules,
                 active_servo_ids=set(self._discovered_servos),
                 connected=True,
@@ -216,12 +229,16 @@ class RobotBackend(_BackendBase):
         if not self._connected:
             return
 
-        pos_cmds = [cmd for cmd in commands if cmd.position is not None]
+        pos_cmds = [
+            cmd for cmd in commands
+            if cmd.position is not None
+            and cmd.position != self._servo_positions.get(cmd.servo_id)
+        ]
         speed_cmds = [cmd for cmd in commands if cmd.speed is not None]
 
-        # Send all position commands in one SyncWrite broadcast (TX-only, no per-servo
-        # ACK).  This replaces N sequential writeTxRx calls with a single packet,
-        # so all servos receive their target simultaneously and WS traffic scales O(1).
+        # Send only changed position commands in one SyncWrite broadcast (TX-only,
+        # no per-servo ACK).  Skipping unchanged positions means idle joints produce
+        # zero WS traffic, and the SyncWrite packet shrinks to only moving servos.
         if pos_cmds:
             ok = await self._sync_write_all(pos_cmds)
             if ok:
@@ -559,6 +576,59 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
     # Servo commands (via hls_scs packet handler)
     # ------------------------------------------------------------------
+
+    async def _read_positions(self) -> dict[int, int]:
+        """Read current positions for all discovered servos via GroupSyncRead.
+
+        Sends a single SyncRead request; all servos reply in sequence.
+        Falls back to individual ReadPos calls if GroupSyncRead fails
+        (e.g. if the WebSocket bridge doesn't support multi-servo SyncRead).
+
+        Returns a dict of servo_id → raw position ticks.
+        """
+        if not self._discovered_servos or self._packet_handler is None:
+            return {}
+
+        loop = asyncio.get_running_loop()
+        ph = self._packet_handler
+        servo_ids = list(self._discovered_servos)
+
+        def _do() -> dict[int, int]:
+            # Initialise GroupSyncRead once; servo list is stable after discovery.
+            if self._sync_reader is None:
+                self._sync_reader = GroupSyncRead(ph, HLSS_PRESENT_POSITION_L, 2)
+                for sid in servo_ids:
+                    self._sync_reader.addParam(sid)
+
+            result = self._sync_reader.txRxPacket()
+            if result != 0:
+                # GroupSyncRead unsupported or failed — fall back to individual reads.
+                positions: dict[int, int] = {}
+                for sid in servo_ids:
+                    pos, cr, _ = ph.ReadPos(sid)
+                    if cr == 0:
+                        positions[sid] = pos
+                return positions
+
+            positions = {}
+            for sid in servo_ids:
+                ok, _ = self._sync_reader.isAvailable(sid, HLSS_PRESENT_POSITION_L, 2)
+                if ok:
+                    raw = self._sync_reader.getData(sid, HLSS_PRESENT_POSITION_L, 2)
+                    positions[sid] = ph.scs_tohost(raw, 15)
+            return positions
+
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _do),
+                timeout=1.0,
+            )
+        except asyncio.TimeoutError:
+            print("[RobotBackend] _read_positions timed out")
+            return {}
+        except Exception as e:
+            print(f"[RobotBackend] _read_positions error: {e}")
+            return {}
 
     async def _sync_write_all(self, commands: list[ServoCommand]) -> bool:
         """Send position commands to all servos in one SyncWrite broadcast.
@@ -911,6 +981,9 @@ class RobotBackend(_BackendBase):
                 if ip and await self._do_connect(ip):
                     self._connected = True
                     self._discovered_modules = await self._discover_modules()
+                    # Clear last-sent cache so the next tick re-sends all positions.
+                    # Servos may have moved or lost torque during the disconnect.
+                    self._servo_positions.clear()
                     print("[RobotBackend] Reconnected.")
                     break
             except Exception as e:
