@@ -7,7 +7,7 @@ Runs a free-running async loop with no fixed tick rate:
   1. state  = await backend.get_state()
   2. cmds   = scheme.update(state)
   3. if not dry_run: await backend.send_commands(cmds)
-  4. for viz in visualizers: viz.update(state)
+  4. visualizers.update(state)  ← background thread, frame-drop if busy
   5. repeat immediately
 
 Loop rate is determined by hardware I/O latency, not an artificial sleep.
@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
@@ -85,6 +86,11 @@ class Controller:
         # Rolling loop timing stats
         self._loop_times: list[float] = []   # seconds per iteration
         self._last_stats_print: float = 0.0
+
+        # Dedicated single-worker thread for visualizer updates so Rerun
+        # serialization never blocks the hardware I/O loop.
+        self._viz_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="viz")
+        self._viz_future: Optional[Future] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -199,12 +205,15 @@ class Controller:
                 except Exception as e:
                     print(f"[Controller] write_home_offsets error: {e}")
 
-            # 4. Update visualizers
-            for viz in self.visualizers:
-                try:
-                    viz.update(self._state)
-                except Exception as e:
-                    print(f"[Controller] Visualizer {viz.name} error: {e}")
+            # 4. Update visualizers in a background thread (frame-drop if busy).
+            # RobotState is a fresh immutable-ish object each iteration — safe to
+            # pass across threads without copying.
+            if self.visualizers:
+                if self._viz_future is None or self._viz_future.done():
+                    state_for_viz = self._state
+                    self._viz_future = self._viz_executor.submit(
+                        self._run_visualizers, state_for_viz
+                    )
 
             # 5. Timing stats
             now = time.monotonic()
@@ -220,6 +229,14 @@ class Controller:
                 if pos:
                     print("[positions] " + "  ".join(f"{sid}:{p}" for sid, p in sorted(pos.items())))
                 self._last_pos_print = now
+
+    def _run_visualizers(self, state: RobotState) -> None:
+        """Called from the viz thread — must not touch asyncio or backend state."""
+        for viz in self.visualizers:
+            try:
+                viz.update(state)
+            except Exception as e:
+                print(f"[Controller] Visualizer {viz.name} error: {e}")
 
     def _print_stats(self, now: float) -> None:
         """Print loop timing stats and reset the accumulator."""
@@ -239,6 +256,8 @@ class Controller:
         self._running = False
         print("\n[Controller] Shutting down...")
         self.scheme.on_stop()
+        # Wait for any in-flight viz frame to finish before calling on_stop().
+        self._viz_executor.shutdown(wait=True)
         for viz in self.visualizers:
             viz.on_stop()
         await self.backend.disable_torques()
