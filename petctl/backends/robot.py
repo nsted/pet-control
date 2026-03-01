@@ -589,11 +589,15 @@ class RobotBackend(_BackendBase):
             return False
 
     async def _write_speed(self, servo_id: int, speed: int, acc: int) -> bool:
-        """Send WriteSpeed servo command (continuous rotation / wheel mode)."""
+        """Send WriteSpec servo command (continuous rotation / wheel mode).
+
+        WriteSpec applies scs_toscs internally so signed speed values are
+        encoded correctly in sign-magnitude format.
+        """
         loop = asyncio.get_running_loop()
 
         def _do():
-            comm_result, error = self._packet_handler.WriteSpeed(servo_id, speed, acc)
+            comm_result, error = self._packet_handler.WriteSpec(servo_id, speed, acc)
             return comm_result == 0 and error == 0
 
         try:
@@ -602,10 +606,10 @@ class RobotBackend(_BackendBase):
                 timeout=0.5,
             )
         except asyncio.TimeoutError:
-            print(f"[RobotBackend] WriteSpeed timed out (servo {servo_id})")
+            print(f"[RobotBackend] WriteSpec timed out (servo {servo_id})")
             return False
         except OSError as e:
-            print(f"[RobotBackend] WriteSpeed network error (servo {servo_id}): {e}")
+            print(f"[RobotBackend] WriteSpec network error (servo {servo_id}): {e}")
             return False
 
     async def read_servo_position(self, servo_id: int) -> Optional[int]:
