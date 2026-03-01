@@ -53,6 +53,11 @@ class RobotState:
     sensors: dict[int, ModuleSensors] = field(default_factory=dict)
     # Keyed by servo_id (int). Raw ticks; home = SERVO_LIMITS.position_center.
     servo_positions: dict[int, int] = field(default_factory=dict)
+    # Per-servo feedback from hardware (all keyed by servo_id):
+    servo_currents: dict[int, int] = field(default_factory=dict)      # 6.5 mA units
+    servo_speeds: dict[int, int] = field(default_factory=dict)        # raw, sign-magnitude decoded
+    servo_temperatures: dict[int, int] = field(default_factory=dict)  # °C
+    servo_voltages: dict[int, int] = field(default_factory=dict)      # 0.1 V units
     # Module IDs currently detected on the robot
     active_modules: list[int] = field(default_factory=list)
     # Servo IDs confirmed to exist — used by schemes to avoid sending commands
