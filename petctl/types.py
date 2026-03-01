@@ -8,9 +8,10 @@ no circular imports and types remain trivially serializable.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import asdict, dataclass, field
+
+from petctl.config import SERVO_LIMITS, angle_to_raw, raw_to_angle, raw_to_radians
 
 
 @dataclass
@@ -50,7 +51,7 @@ class RobotState:
     timestamp: float = field(default_factory=time.monotonic)
     # Keyed by module_id (int). Sensor values are normalized 0-1.
     sensors: dict[int, ModuleSensors] = field(default_factory=dict)
-    # Keyed by servo_id (int). Raw position 0-4095.
+    # Keyed by servo_id (int). Signed raw ticks, center = 0 (home).
     servo_positions: dict[int, int] = field(default_factory=dict)
     # Module IDs currently detected on the robot
     active_modules: list[int] = field(default_factory=list)
@@ -73,39 +74,38 @@ class ServoCommand:
     A command to move a single servo.
 
     Exactly one of `position` or `speed` should be set:
-      - position: move to an absolute position (0-4095)
+      - position: signed raw ticks from home (center = 0)
       - speed:    continuous rotation (signed int, for wheel mode)
 
     Use `ServoCommand.from_angle()` for human-friendly angle control.
     """
 
     servo_id: int
-    position: int | None = None   # raw 0-4095
+    position: int | None = None   # signed ticks from home (center = 0)
     speed: int | None = None      # signed, for wheel/speed mode
-    acceleration: int = 50
+    acceleration: int = SERVO_LIMITS.acceleration_default
 
     @classmethod
     def from_angle(
         cls,
         servo_id: int,
         angle_deg: float,
-        acceleration: int = 50,
+        acceleration: int = SERVO_LIMITS.acceleration_default,
     ) -> "ServoCommand":
         """
-        Map degrees in [-180, 180] to raw servo position [0, 4095].
+        Convert degrees to a raw servo position (center = 0 = home).
 
-        Center (0°) = 2048. Full 360° span = 4096 ticks.
-        Result is clamped to [0, 4095].
+        Positive angles move in the positive joint direction.
+        No clamping — servos are multi-turn with no software angle limit.
         """
-        raw = int((angle_deg / 360.0) * 4096) + 2048
-        raw = max(0, min(4095, raw))
-        return cls(servo_id=servo_id, position=raw, acceleration=acceleration)
+        return cls(servo_id=servo_id, position=angle_to_raw(angle_deg), acceleration=acceleration)
 
     @staticmethod
     def position_to_angle(raw: int) -> float:
-        """Convert a raw position [0, 4095] back to degrees [-180, 180]."""
-        return ((raw - 2048) / 4096.0) * 360.0
+        """Convert raw ticks back to degrees (center = 0 = home)."""
+        return raw_to_angle(raw)
 
     @staticmethod
     def position_to_radians(raw: int) -> float:
-        return ServoCommand.position_to_angle(raw) * math.pi / 180.0
+        """Convert raw ticks to radians (center = 0 = home)."""
+        return raw_to_radians(raw)

@@ -143,13 +143,11 @@ class MockBackend(RobotBackend):
         tracked so the scheme can read back its own commands."""
         for cmd in commands:
             if cmd.position is not None:
-                self._servo_positions[cmd.servo_id] = max(0, min(4095, cmd.position))
+                self._servo_positions[cmd.servo_id] = cmd.position
             elif cmd.speed is not None:
                 # In speed mode just nudge position proportionally
                 current = self._servo_positions.get(cmd.servo_id, 0)
-                self._servo_positions[cmd.servo_id] = max(
-                    0, min(4095, current + cmd.speed)
-                )
+                self._servo_positions[cmd.servo_id] = current + cmd.speed
 
     @property
     def is_connected(self) -> bool:
@@ -202,16 +200,15 @@ class MockBackend(RobotBackend):
 
     def _build_servo_positions(self, elapsed: float) -> dict[int, int]:
         if self.mode == "sine":
-            # Animate servos with staggered sine waves (±30° around center)
-            amplitude = 4095 * 30 / 360  # 30 degrees in raw units
-            for i in range(self.num_servos):
-                phase = (i / max(1, self.num_servos)) * 2 * math.pi
-                offset = int(amplitude * math.sin(2 * math.pi * self.sine_hz * elapsed + phase))
-                self._servo_positions[i + 1] = max(0, min(4095, 2048 + offset))
+            from petctl.schemes.sine import compute_sine_positions
+            servo_ids = sorted(self._servo_positions.keys())
+            self._servo_positions.update(
+                compute_sine_positions(servo_ids, elapsed, amplitude_deg=60.0, hz=self.sine_hz)
+            )
         elif self.mode == "file" and "servos" in self._file_data:
             try:
                 file_servos = {
-                    int(k): max(0, min(4095, int(v)))
+                    int(k): int(v)
                     for k, v in self._file_data["servos"].items()
                 }
                 # Update internal state so schemes see the file values

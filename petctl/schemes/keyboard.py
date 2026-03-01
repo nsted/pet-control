@@ -36,7 +36,6 @@ class KeyboardControlScheme(ControlScheme):
 
     Args:
         step_deg:       Degrees to move per keypress (default: 5°)
-        angle_limit:    Maximum absolute angle in degrees (default: 150°)
         servo_offset:   Offset added to the selected key number to get
                         servo_id (default: 0, so key 1 → servo 1).
     """
@@ -46,11 +45,9 @@ class KeyboardControlScheme(ControlScheme):
     def __init__(
         self,
         step_deg: float = 5.0,
-        angle_limit: float = 150.0,
         servo_offset: int = 0,
     ) -> None:
         self.step_deg = step_deg
-        self.angle_limit = angle_limit
         self.servo_offset = servo_offset
 
         # Per-module target angles (degrees)

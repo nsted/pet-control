@@ -5,6 +5,7 @@ Usage:
     petctl run                                  # keyboard + Rerun, mock backend
     petctl run --backend robot                  # use real robot
     petctl run --backend mock --mode sine       # animated sensor data
+    petctl run --control sine                   # sine wave on real or mock robot
     petctl run --backend mock --state s.json    # load sensor values from file
     petctl run --no-viz                         # headless (sensors only, no Rerun)
     petctl run --dry-run                        # never send servo commands
@@ -20,6 +21,7 @@ from typing import Optional
 import typer
 
 from petctl.backends.robot import ROBOT_DEFAULT_HOST, ROBOT_DEFAULT_PORT
+from petctl.config import LOOP_LIMITS
 
 app = typer.Typer(
     name="petctl",
@@ -36,7 +38,7 @@ def run(
     ),
     control: str = typer.Option(
         "keyboard",
-        help="Control scheme: 'keyboard' or 'passthrough'",
+        help="Control scheme: 'keyboard', 'passthrough', or 'sine'",
     ),
     no_viz: bool = typer.Option(
         False,
@@ -44,7 +46,7 @@ def run(
         help="Disable Rerun visualizer (headless mode)",
     ),
     hz: float = typer.Option(
-        20.0,
+        LOOP_LIMITS.poll_hz_default,
         help="Control loop frequency in Hz",
     ),
     dry_run: bool = typer.Option(
@@ -118,8 +120,11 @@ def run(
     elif control == "passthrough":
         from petctl.schemes.passthrough import PassthroughControlScheme
         _scheme = PassthroughControlScheme()
+    elif control == "sine":
+        from petctl.schemes.sine import SineControlScheme
+        _scheme = SineControlScheme()
     else:
-        typer.echo(f"Unknown control scheme '{control}'. Choose: keyboard, passthrough", err=True)
+        typer.echo(f"Unknown control scheme '{control}'. Choose: keyboard, passthrough, sine", err=True)
         raise typer.Exit(1)
 
     # --- Build visualizers ---

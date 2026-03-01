@@ -35,6 +35,7 @@ import signal
 import time
 from typing import Optional
 
+from petctl.config import LOOP_LIMITS
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState
 
@@ -60,7 +61,7 @@ class Controller:
         backend: RobotBackend,
         scheme: ControlScheme,
         visualizers: Optional[list[Visualizer]] = None,
-        poll_hz: float = 20.0,
+        poll_hz: float = LOOP_LIMITS.poll_hz_default,
         dry_run: bool = False,
         limp: bool = False,
     ) -> None:

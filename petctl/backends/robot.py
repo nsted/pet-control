@@ -43,6 +43,7 @@ from typing import Optional
 from scservo_sdk.port_handler_factory import get_port_handler
 from scservo_sdk.hls_scs import hls_scs as HlsScs, HLSS_TORQUE_SWITCH, HLSS_OFS_L
 
+from petctl.config import SERVO_LIMITS
 from petctl.protocols import RobotBackend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
@@ -82,11 +83,11 @@ class RobotBackend(_BackendBase):
         calibration_samples: int = 10,
         auto_reconnect: bool = True,
         reconnect_delay: float = 2.0,
-        torque_limit: int = 100,
+        torque_limit: int = SERVO_LIMITS.torque_default,
     ) -> None:
         """
         torque_limit: TARGET_TORQUE value written with every position command
-            (6.5 mA units; 100 ≈ 650 mA, 980 = MAX_TORQUE / full rated torque).
+            (6.5 mA units; see config.SERVO_LIMITS for safe range).
             Firmware v43+ interprets 0 as "no torque", so this must be > 0.
         """
         self.host = host
@@ -212,7 +213,7 @@ class RobotBackend(_BackendBase):
         for cmd in commands:
             try:
                 if cmd.position is not None:
-                    ok = await self._write_pos_ex(cmd.servo_id, cmd.position, 100, cmd.acceleration)
+                    ok = await self._write_pos_ex(cmd.servo_id, cmd.position, SERVO_LIMITS.speed_default, cmd.acceleration)
                     if ok:
                         self._servo_positions[cmd.servo_id] = cmd.position
                 elif cmd.speed is not None:
