@@ -17,8 +17,10 @@ TEXT CHANNEL  (WebSocket text frames — handled directly via port_handler)
     snsr 0 {n}     → "{byte0},{byte1},..."  (n sensor bytes as CSV)
 
 BINARY CHANNEL  (WebSocket binary frames — handled by hls_scs packet handler)
-  servo commands use hls_scs.WritePosEx(id, position, speed, acc)
-  servo reads use hls_scs.ReadPos(id)
+  servo commands use GroupSyncWrite (INST_SYNC_WRITE broadcast, TX-only) for
+  all position commands — one packet covers all servos simultaneously.
+  Fallback: hls_scs.WritePosEx(id, position, speed, acc) per-servo.
+  servo reads use hls_scs.ReadPos(id) (used only at discovery, not per-tick)
 
 SENSOR DATA FORMAT
   All touch sensors first, then all pressure sensors.
@@ -40,6 +42,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from scservo_sdk.group_sync_write import GroupSyncWrite
 from scservo_sdk.port_handler_factory import get_port_handler
 from scservo_sdk.hls_scs import hls_scs as HlsScs, HLSS_TORQUE_SWITCH, HLSS_OFS_L
 
@@ -122,6 +125,11 @@ class RobotBackend(_BackendBase):
 
         self._reconnecting = False
 
+        # GroupSyncWrite for batching all servo position commands into one broadcast packet.
+        # Initialized lazily on first use; reset to None on disconnect so a fresh instance
+        # is created with the new packet handler after reconnect.
+        self._sync_writer: Optional[GroupSyncWrite] = None
+
     # ------------------------------------------------------------------
     # RobotBackend interface
     # ------------------------------------------------------------------
@@ -149,6 +157,7 @@ class RobotBackend(_BackendBase):
 
     async def disconnect(self) -> None:
         self._connected = False
+        self._sync_writer = None
         if self._port_handler:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(self._executor, self._port_handler.closePort)
@@ -171,11 +180,9 @@ class RobotBackend(_BackendBase):
             if raw is None:
                 raise RuntimeError("Sensor read returned None")
 
-            # Read actual servo positions from hardware so the visualization
-            # reflects the real robot pose rather than last commanded positions.
-            read_positions = await self._read_all_servo_positions()
-            self._servo_positions.update(read_positions)
-
+            # Use locally-tracked _servo_positions (updated by send_commands) rather
+            # than re-reading from hardware each tick.  Seven per-tick ReadPos calls
+            # saturate the WebSocket and eat the entire 50 ms tick budget.
             sensors = self._normalize(raw)
             now = time.monotonic()
             state = RobotState(
@@ -208,14 +215,37 @@ class RobotBackend(_BackendBase):
     async def send_commands(self, commands: list[ServoCommand]) -> None:
         if not self._connected:
             return
-        for cmd in commands:
+
+        pos_cmds = [cmd for cmd in commands if cmd.position is not None]
+        speed_cmds = [cmd for cmd in commands if cmd.speed is not None]
+
+        # Send all position commands in one SyncWrite broadcast (TX-only, no per-servo
+        # ACK).  This replaces N sequential writeTxRx calls with a single packet,
+        # so all servos receive their target simultaneously and WS traffic scales O(1).
+        if pos_cmds:
+            ok = await self._sync_write_all(pos_cmds)
+            if ok:
+                for cmd in pos_cmds:
+                    self._servo_positions[cmd.servo_id] = cmd.position
+            else:
+                # Fall back to individual writes on SyncWrite failure.
+                for cmd in pos_cmds:
+                    try:
+                        ok = await self._write_pos_ex(
+                            cmd.servo_id, cmd.position, SERVO_LIMITS.speed_default, cmd.acceleration
+                        )
+                        if ok:
+                            self._servo_positions[cmd.servo_id] = cmd.position
+                    except Exception as e:
+                        print(f"[RobotBackend] send_commands fallback error (servo {cmd.servo_id}): {e}")
+                        self._connected = False
+                        if self.auto_reconnect and not self._reconnecting:
+                            asyncio.get_running_loop().create_task(self._reconnect_loop())
+                        break
+
+        for cmd in speed_cmds:
             try:
-                if cmd.position is not None:
-                    ok = await self._write_pos_ex(cmd.servo_id, cmd.position, SERVO_LIMITS.speed_default, cmd.acceleration)
-                    if ok:
-                        self._servo_positions[cmd.servo_id] = cmd.position
-                elif cmd.speed is not None:
-                    await self._write_speed(cmd.servo_id, cmd.speed, cmd.acceleration)
+                await self._write_speed(cmd.servo_id, cmd.speed, cmd.acceleration)
             except Exception as e:
                 print(f"[RobotBackend] send_commands error (servo {cmd.servo_id}): {e}")
                 self._connected = False
@@ -529,6 +559,65 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
     # Servo commands (via hls_scs packet handler)
     # ------------------------------------------------------------------
+
+    async def _sync_write_all(self, commands: list[ServoCommand]) -> bool:
+        """Send position commands to all servos in one SyncWrite broadcast.
+
+        Uses GroupSyncWrite (INST_SYNC_WRITE) which sends a single TX-only packet
+        to the broadcast address — no per-servo ACK, so all servos receive their
+        target simultaneously and latency is independent of servo count.
+
+        Writes 8 bytes starting at HLSS_TORQUE_SWITCH (40), matching the layout
+        used by _write_pos_ex so torque is atomically enabled on every command:
+          [40] TORQUE_SWITCH = 1
+          [41] ACCELERATION
+          [42] TARGET_POS_L
+          [43] TARGET_POS_H
+          [44] TARGET_TORQUE_L
+          [45] TARGET_TORQUE_H
+          [46] RUNNING_SPEED_L
+          [47] RUNNING_SPEED_H
+        """
+        loop = asyncio.get_running_loop()
+        ph = self._packet_handler
+        torque_limit = self.torque_limit
+        speed = SERVO_LIMITS.speed_default
+
+        def _do() -> bool:
+            if self._sync_writer is None:
+                self._sync_writer = GroupSyncWrite(ph, HLSS_TORQUE_SWITCH, 8)
+
+            gsw = self._sync_writer
+            gsw.clearParam()
+
+            for cmd in commands:
+                pos_raw = ph.scs_toscs(cmd.position, 15)
+                data = [
+                    1,                           # TORQUE_SWITCH on
+                    cmd.acceleration,
+                    ph.scs_lobyte(pos_raw),
+                    ph.scs_hibyte(pos_raw),
+                    ph.scs_lobyte(torque_limit),
+                    ph.scs_hibyte(torque_limit),
+                    ph.scs_lobyte(speed),
+                    ph.scs_hibyte(speed),
+                ]
+                gsw.addParam(cmd.servo_id, data)
+
+            result = gsw.txPacket()
+            return result == 0
+
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _do),
+                timeout=0.5,
+            )
+        except asyncio.TimeoutError:
+            print("[RobotBackend] SyncWrite timed out")
+            return False
+        except OSError as e:
+            print(f"[RobotBackend] SyncWrite network error: {e}")
+            return False
 
     async def _write_pos_ex(
         self, servo_id: int, position: int, speed: int, acc: int
