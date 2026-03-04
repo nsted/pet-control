@@ -221,9 +221,20 @@ class RerunVisualizer(Visualizer):
 
             entity_base = self._entity_path_cache.get(mod_id) or self._entity_path(mod_id)
 
+            # Modules whose HPR rotation flips local X (R_hpr[0,0] < 0) display the
+            # "left" disc on the visual right and vice-versa.  Odd modules are already
+            # corrected by the backend swap, so they cancel out.  Even modules 2/4/6
+            # have only the visual flip and need a left↔right read swap here.
+            viz_x_flipped  = float(self._hpr_mats[mod_id][0, 0]) < 0
+            backend_swapped = (mod_id % 2) == 1
+            swap_lr = viz_x_flipped and not backend_swapped
+
             for face_name, face in _SENSOR_FACES.items():
-                touch_val    = float(getattr(sensors, f"touch_{face_name}",    0.0))
-                pressure_val = float(getattr(sensors, f"pressure_{face_name}", 0.0))
+                read_face = face_name
+                if swap_lr and face_name in ("left", "right"):
+                    read_face = "right" if face_name == "left" else "left"
+                touch_val    = float(getattr(sensors, f"touch_{read_face}",    0.0))
+                pressure_val = float(getattr(sensors, f"pressure_{read_face}", 0.0))
 
                 center = face["center"]
                 quat   = face["quaternion"]
