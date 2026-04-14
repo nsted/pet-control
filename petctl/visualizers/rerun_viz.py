@@ -1,9 +1,11 @@
 """
 RerunVisualizer — real-time visualization via Rerun.io.
 
-Displays two things simultaneously in the Rerun viewer:
+Displays in the Rerun viewer:
   1. Motor state time-series (velocity, torque per motor)
-  2. 3D robot pose from actual OBJ mesh files, forward-kinematics driven
+  2. Battery telemetry (raw ADC voltage and current)
+  3. Capacitive touch and FSR pressure (0–1 per module face) as separate charts
+  4. 3D robot pose from actual OBJ mesh files, forward-kinematics driven
 
 3D hierarchy per module:
   robot/module_0              ← Transform3D: offset + R_hpr @ R_joint  (dynamic)
@@ -91,6 +93,8 @@ _TOUCH_COLOR_RGB    = (50, 180, 220)   # cyan-blue
 _PRESSURE_COLOR_RGB = (230, 100, 20)   # warm orange
 _MIN_ALPHA = 30
 
+_SENSOR_FACE_NAMES = ("left", "middle", "right")
+
 
 class RerunVisualizer(Visualizer):
     """
@@ -144,6 +148,8 @@ class RerunVisualizer(Visualizer):
         self._load_assembly()
         self._send_blueprint()
         self._setup_motor_series()
+        self._setup_battery_series()
+        self._setup_sensor_face_series()
         if self.show_3d:
             self._setup_3d_geometry()
 
@@ -153,6 +159,8 @@ class RerunVisualizer(Visualizer):
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
         self._log_motor_state(rr, state)
+        self._log_battery_series(rr, state)
+        self._log_sensor_face_series(rr, state)
         if self.show_3d:
             self._log_3d_pose(rr, state)
             self._log_sensor_overlays(rr, state)
@@ -165,7 +173,7 @@ class RerunVisualizer(Visualizer):
     # ------------------------------------------------------------------
 
     def _send_blueprint(self) -> None:
-        """Send a blueprint with a 3D view and motor state time-series charts."""
+        """Send a blueprint with 3D view and time-series charts (motors, battery, sensors)."""
         import rerun.blueprint as rrb
         rr = self._rr
         views = []
@@ -174,6 +182,10 @@ class RerunVisualizer(Visualizer):
         views.append(rrb.Vertical(
             rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
             rrb.TimeSeriesView(origin="motors/torque", name="Torque (Nm)"),
+            rrb.TimeSeriesView(origin="telemetry/voltage_raw", name="Battery voltage (raw ADC)"),
+            rrb.TimeSeriesView(origin="telemetry/current_raw", name="Battery current (raw ADC)"),
+            rrb.TimeSeriesView(origin="sensors/capacitive", name="Capacitive touch (0–1)"),
+            rrb.TimeSeriesView(origin="sensors/fsr", name="FSR pressure (0–1)"),
         ))
         rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views)))
 
@@ -192,6 +204,54 @@ class RerunVisualizer(Visualizer):
             rr.log(f"motors/velocity/motor_{sid}", rr.Scalars(float(val)))
         for sid, val in state.motor_torques.items():
             rr.log(f"motors/torque/motor_{sid}", rr.Scalars(float(val)))
+
+    def _setup_battery_series(self) -> None:
+        """Declare SeriesLines for head battery raw ADC streams."""
+        rr = self._rr
+        rr.log(
+            "telemetry/voltage_raw",
+            rr.SeriesLines(names="voltage (raw ADC)"),
+            static=True,
+        )
+        rr.log(
+            "telemetry/current_raw",
+            rr.SeriesLines(names="current (raw ADC)"),
+            static=True,
+        )
+
+    def _log_battery_series(self, rr, state: RobotState) -> None:
+        rr.log("telemetry/voltage_raw", rr.Scalars(float(state.battery_voltage_raw)))
+        rr.log("telemetry/current_raw", rr.Scalars(float(state.battery_current_raw)))
+
+    def _setup_sensor_face_series(self) -> None:
+        """Declare SeriesLines for capacitive (touch) and FSR (pressure) per module face."""
+        rr = self._rr
+        if not self._module_meta:
+            return
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            for face in _SENSOR_FACE_NAMES:
+                cap_path = f"sensors/capacitive/{mod_id}_{face}"
+                fsr_path = f"sensors/fsr/{mod_id}_{face}"
+                label = f"mod{mod_id} {face}"
+                rr.log(cap_path, rr.SeriesLines(names=f"touch {label}"), static=True)
+                rr.log(fsr_path, rr.SeriesLines(names=f"pressure {label}"), static=True)
+
+    def _log_sensor_face_series(self, rr, state: RobotState) -> None:
+        """Log normalized touch (capacitive) and pressure (FSR) for every assembly module."""
+        if not self._module_meta:
+            return
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            sens = state.sensors.get(mod_id)
+            for face in _SENSOR_FACE_NAMES:
+                if sens is not None:
+                    tv = float(getattr(sens, f"touch_{face}", 0.0))
+                    pv = float(getattr(sens, f"pressure_{face}", 0.0))
+                else:
+                    tv, pv = 0.0, 0.0
+                rr.log(f"sensors/capacitive/{mod_id}_{face}", rr.Scalars(tv))
+                rr.log(f"sensors/fsr/{mod_id}_{face}", rr.Scalars(pv))
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
