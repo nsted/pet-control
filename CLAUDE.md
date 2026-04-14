@@ -51,6 +51,16 @@ petctl info                             # print robot status
 
 Import all hardware limits from `petctl/config.py` — never hardcode servo limits, torque values, or speed values in other modules. See config.py for the full set of constraints.
 
+## Task Tracking
+
+**Plans** live in `docs/plans/` — long-range design intent, freely revised as understanding evolves. At the start of an implementation session, read the relevant plan. Update it when decisions change; don't preserve outdated intent.
+
+Unchecked `[ ]` items in a plan are the backlog of implied upcoming tasks. When work is about to start on an item, create a GitHub issue and link it inline. When done, check off `[x]` and close the issue.
+
+**GitHub issues** (https://github.com/nsted/pet-control/issues) are created just-in-time — not all at once from a plan. Issues should be concrete enough to close within a session or two. If a plan changes, update the plan doc; don't retroactively edit closed issues.
+
+**Always ask the user before creating, closing, or commenting on any GitHub issue.**
+
 ## Design Reference
 
 See `docs/design/` for architecture sketches and the staged implementation plan.
