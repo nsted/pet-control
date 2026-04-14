@@ -82,14 +82,15 @@ class RobotBackend(ABC):
         Release motor torque so joints can be moved freely by hand.
 
         Default implementation is a no-op (e.g. MockBackend).
-        RobotBackend overrides this to write HLSS_TORQUE_SWITCH = 0 to every servo.
+        `RobotBackend` sends MIT-mode torque-off frames per motor (limp / calibration).
         """
 
     async def write_home_offsets(self) -> None:
         """
-        Write EEPROM offset registers so each servo's current position becomes
-        the new center (0° = raw 2048).  Default is a no-op.
-        RobotBackend overrides this to write HLSS_OFS_L/H for every servo.
+        Record the current physical pose as the new software home (e.g. store
+        per-motor angle offsets so commanded zero matches this pose). Default
+        is a no-op. `RobotBackend` implements this via in-session offset state
+        (see `set_home` / `write_home_offsets` in `backends/robot.py`).
         """
 
 

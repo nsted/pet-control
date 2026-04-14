@@ -33,8 +33,8 @@ JSON state file format (all fields optional):
     "1": { ... }
   },
   "servos": {
-    "1": 2048,
-    "2": 1500
+    "1": 0.0,
+    "2": 0.35
   }
 }
 """

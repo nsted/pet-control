@@ -2,10 +2,11 @@
 Controller — the central hub of petctl.
 
 Owns a RobotBackend, a ControlScheme, and a list of Visualizers.
-Runs an async loop paced to `LOOP_LIMITS.poll_hz_default` (20 Hz by default):
+Runs an async loop paced to `LOOP_LIMITS.poll_hz_default` (50 Hz by default):
 
   1. state  = await backend.get_state()
   2. cmds   = scheme.update(state)
+  2b. smooth = LPF toward scheme targets + per-tick delta cap (LOOP_LIMITS.*)
   3. if not dry_run: await backend.send_commands(cmds)
   4. visualizers.update(state)  ← background thread (one in-flight job; coalesces
  to latest state when the previous job has finished — same rate as the loop).
@@ -36,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import math
 import signal
 import threading
 import time
@@ -44,7 +46,7 @@ from typing import Optional
 
 from petctl.config import LOOP_LIMITS
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
-from petctl.types import RobotState
+from petctl.types import RobotState, ServoCommand
 
 
 class Controller:
@@ -96,6 +98,9 @@ class Controller:
         self._viz_future: Optional[Future[None]] = None
         self._viz_lock = threading.Lock()
         self._viz_pending_state: Optional[RobotState] = None
+
+        # Last commanded position (rad) after slew — used to cap per-tick jumps.
+        self._slew_last_sent_rad: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -179,6 +184,46 @@ class Controller:
     # Internal
     # ------------------------------------------------------------------
 
+    def _apply_slew_to_commands(self, commands: list[ServoCommand]) -> None:
+        """
+        Smooth each position command toward the scheme output, then clamp delta.
+
+        A first-order low-pass (tau from LOOP_LIMITS) avoids brick-wall velocity
+        in command space, which tends to feel like small “pops” at 20–50 Hz.
+        """
+        if not commands:
+            return
+        max_step = math.radians(LOOP_LIMITS.max_angle_step_per_tick_deg)
+        tau = LOOP_LIMITS.command_smoothing_tau_s
+        alpha_cap = LOOP_LIMITS.command_smoothing_max_alpha
+        dt_floor = 1.0 / (2.0 * LOOP_LIMITS.poll_hz_max)
+        dt = max(self._state.dt, dt_floor)
+
+        for cmd in commands:
+            if cmd.position is None:
+                continue
+            sid = cmd.servo_id
+            target = cmd.position
+            prev = self._slew_last_sent_rad.get(sid)
+            if prev is None:
+                prev = self._state.servo_positions.get(sid)
+            if prev is None:
+                cmd.position = target
+                self._slew_last_sent_rad[sid] = cmd.position
+                continue
+
+            if tau <= 0.0:
+                new_pos = target
+            else:
+                alpha = min(alpha_cap, dt / tau)
+                new_pos = prev + alpha * (target - prev)
+
+            delta = new_pos - prev
+            if max_step > 0.0:
+                delta = max(-max_step, min(max_step, delta))
+            cmd.position = prev + delta
+            self._slew_last_sent_rad[sid] = cmd.position
+
     async def _loop(self) -> None:
         assert self._stop_event is not None
         while not self._stop_event.is_set():
@@ -193,6 +238,8 @@ class Controller:
             except Exception as e:
                 print(f"[Controller] Scheme '{self.scheme.name}' error: {e}")
                 commands = []
+
+            self._apply_slew_to_commands(commands)
 
             # 3. Send commands (unless dry run)
             if not self.dry_run and commands:

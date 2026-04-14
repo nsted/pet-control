@@ -329,7 +329,7 @@ class RerunVisualizer(Visualizer):
             joint_path = self._entity_path_cache.get(mod_id) or self._entity_path(mod_id)
             offset = mod.get("offset", [0.0, 0.0, 0.0])
 
-            # Negate: Dynamixel CCW positive convention is opposite the viz's
+            # Negate: hardware joint positive sense vs mesh joint axis in assembly
             # right-hand-rule Z rotation, so the viz was a mirror of the real robot.
             angle_rad = -self._servo_angle_rad(mod_id, state)
 

@@ -29,7 +29,7 @@ All three components are swappable ABCs. Control schemes never touch the backend
 | Key | Action |
 |-----|--------|
 | `0`–`8` | Select module |
-| `↑` / `↓` | Rotate selected joint ±5° |
+| `↑` / `↓` | Rotate selected joint ±0.5° |
 | `r` | Reset all to 0° |
 | `Cmd+`` ` `` ` | Save current positions as EEPROM home |
 | `q` / `Esc` | Stop |
@@ -80,4 +80,4 @@ pip install -e .
 pip install -e ".[ml]"
 ```
 
-Requires Python ≥ 3.10. The `ftservo-python-websockets` SDK is included as a dependency for servo communication over WebSocket.
+Requires Python ≥ 3.10. Real-robot I/O uses `websockets` with text SLCAN/API frames to the grapple controller (CubeMars MIT); see `petctl/backends/robot.py`.

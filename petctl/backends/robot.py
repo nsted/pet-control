@@ -79,6 +79,9 @@ class RobotBackend(_BackendBase):
 
         self._motor_state: dict[int, dict[str, float]] = {}
         self._angle_offsets: dict[int, float] = {}
+        # Last MIT absolute position / wall time for velocity feedforward.
+        self._last_mit_abs_pos: dict[int, float] = {}
+        self._last_mit_wall_s: dict[int, float] = {}
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
@@ -114,6 +117,8 @@ class RobotBackend(_BackendBase):
         if self._bare_reply_fut is not None and not self._bare_reply_fut.done():
             self._bare_reply_fut.cancel()
         self._bare_reply_fut = None
+        self._last_mit_abs_pos.clear()
+        self._last_mit_wall_s.clear()
 
     async def get_state(self) -> RobotState:
         if not self._connected:
@@ -174,11 +179,23 @@ class RobotBackend(_BackendBase):
     async def send_commands(self, commands: list[ServoCommand]) -> None:
         if not self._connected or self._ws is None:
             return
+        now = time.monotonic()
         for cmd in commands:
             if cmd.position is None:
                 continue
-            pos_rad = cmd.position + self._angle_offsets.get(cmd.servo_id, 0.0)
-            frame = _encode_mit_packet(cmd.servo_id, pos_rad, 0.0, cmd.kp, cmd.kd, cmd.torque_ff)
+            sid = cmd.servo_id
+            pos_rad = cmd.position + self._angle_offsets.get(sid, 0.0)
+            last_p = self._last_mit_abs_pos.get(sid)
+            last_t = self._last_mit_wall_s.get(sid)
+            if last_p is not None and last_t is not None:
+                dt_cmd = max(now - last_t, 1.0 / 120.0)
+                vel = (pos_rad - last_p) / dt_cmd
+                vel = max(MOTOR_LIMITS.vel_min, min(MOTOR_LIMITS.vel_max, vel))
+            else:
+                vel = 0.0
+            self._last_mit_abs_pos[sid] = pos_rad
+            self._last_mit_wall_s[sid] = now
+            frame = _encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff)
             await self._ws.send(frame)
 
     @property
@@ -456,6 +473,8 @@ class RobotBackend(_BackendBase):
     async def set_home(self) -> None:
         for mid, state in self._motor_state.items():
             self._angle_offsets[mid] = state["pos"]
+        self._last_mit_abs_pos.clear()
+        self._last_mit_wall_s.clear()
 
     async def _receive_loop(self) -> None:
         if self._ws is None:

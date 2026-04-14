@@ -97,8 +97,9 @@ Tests are not yet written — add them as you implement new modules.
 - websockets: asyncio WebSocket transport for SLCAN/API text frames
 - Optional: torch (for future ML control schemes)
 
-## Vendor SDK Reference
+## Vendor / reference trees
 
-docs/vendor/ftservo-python-websockets/ — Feetech servo SDK source.
-Read-only reference for register addresses and protocol details.
-Do not modify.
+If `docs/vendor/` contains third-party snapshots (e.g. historical servo SDKs),
+treat them as **read-only** archival reference; do not modify. CubeMars MIT and
+the live robot protocol are implemented in `petctl/backends/robot.py` and
+firmware docs outside this repo unless vendored here.

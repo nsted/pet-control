@@ -78,7 +78,7 @@ Sensor values were not normalizing correctly on real hardware — required sever
 
 | Date | Commit | Description | Files Changed | Status |
 |------|--------|-------------|---------------|--------|
-| Feb 26 | `2cdad9a` | Fix viz mirror: negate servo angle to match Dynamixel direction convention | 1 | 🟢 |
+| Feb 26 | `2cdad9a` | Fix viz mirror: negate servo angle to match hardware joint vs mesh axis | 1 | 🟢 |
 | Feb 26 | `5a80e7f` | Add limp mode + `'s'` key to save current positions as EEPROM home | 4 (+75 lines) | 🟡 Logic flawed |
 | Feb 26 | `f62520e` | Attempt 1: Fix `write_home_offsets` — read existing EEPROM offset before writing | 1 (+23 lines) | 🔴 Still incorrect |
 | Feb 27 | `9803dc9` | **Attempt 2: Fix `write_home_offsets`** — zero offset first, read raw encoder, write raw as new offset | 4 | 🟢 |

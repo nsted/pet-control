@@ -101,7 +101,7 @@ def run(
     ),
     # KeyboardControlScheme options
     step: float = typer.Option(
-        5.0,
+        0.5,
         help="Degrees per keypress for keyboard control",
     ),
 ) -> None:

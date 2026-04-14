@@ -35,7 +35,7 @@ class KeyboardControlScheme(ControlScheme):
     Keyboard-driven servo control.
 
     Args:
-        step_deg:       Degrees to move per keypress (default: 5°)
+        step_deg:       Degrees to move per keypress (default: 0.5°)
         servo_offset:   Offset added to the selected key number to get
                         servo_id (default: 0, so key 1 → servo 1).
     """
@@ -44,7 +44,7 @@ class KeyboardControlScheme(ControlScheme):
 
     def __init__(
         self,
-        step_deg: float = 5.0,
+        step_deg: float = 0.5,
         servo_offset: int = 0,
     ) -> None:
         self.step_deg = step_deg
@@ -108,7 +108,13 @@ class KeyboardControlScheme(ControlScheme):
             current = self._angles[mod]
             new_angle = current + delta
             self._angles[mod] = new_angle
-            commands.append(ServoCommand.from_angle(servo_id, new_angle))
+
+        # Re-issue targets every tick so the controller can slew toward them smoothly.
+        for mod, angle_deg in self._angles.items():
+            servo_id = mod + self.servo_offset
+            if servo_id not in state.active_servo_ids:
+                continue
+            commands.append(ServoCommand.from_angle(servo_id, angle_deg))
 
         return commands
 
