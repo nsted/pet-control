@@ -18,7 +18,6 @@ from __future__ import annotations
 import threading
 from collections import deque
 
-from petctl.config import SERVO_LIMITS
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
 
@@ -41,25 +40,18 @@ class PassthroughControlScheme(ControlScheme):
     # External API — call these from outside the loop
     # ------------------------------------------------------------------
 
-    def set_position(self, servo_id: int, position: int, acceleration: int = SERVO_LIMITS.acceleration_default) -> None:
-        """Queue a raw position command (signed ticks from home)."""
+    def set_position(self, servo_id: int, position: float, kp: float = 1.0, kd: float = 0.01, torque_ff: float = 0.0) -> None:
+        """Queue a position command in radians."""
         with self._lock:
             self._queue.append(
-                ServoCommand(servo_id=servo_id, position=position, acceleration=acceleration)
+                ServoCommand(servo_id=servo_id, position=position, kp=kp, kd=kd, torque_ff=torque_ff)
             )
 
-    def set_angle(self, servo_id: int, angle_deg: float, acceleration: int = SERVO_LIMITS.acceleration_default) -> None:
-        """Queue a position command by angle in degrees [-180, 180]."""
+    def set_angle(self, servo_id: int, angle_deg: float, kp: float = 1.0, kd: float = 0.01) -> None:
+        """Queue a position command by angle in degrees."""
         with self._lock:
             self._queue.append(
-                ServoCommand.from_angle(servo_id, angle_deg, acceleration)
-            )
-
-    def set_speed(self, servo_id: int, speed: int, acceleration: int = SERVO_LIMITS.acceleration_default) -> None:
-        """Queue a continuous-rotation speed command (signed integer)."""
-        with self._lock:
-            self._queue.append(
-                ServoCommand(servo_id=servo_id, speed=speed, acceleration=acceleration)
+                ServoCommand.from_angle(servo_id, angle_deg, kp=kp, kd=kd)
             )
 
     def clear(self) -> None:

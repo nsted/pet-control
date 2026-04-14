@@ -21,7 +21,6 @@ import math
 import time
 from typing import TYPE_CHECKING, Optional
 
-from petctl.config import angle_to_raw
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
 
@@ -34,18 +33,18 @@ def compute_sine_positions(
     elapsed: float,
     amplitude_deg: float,
     hz: float,
-) -> dict[int, int]:
+) -> dict[int, float]:
     """
-    Compute staggered sine-wave raw positions for a list of servo IDs.
+    Compute staggered sine-wave angles for a list of servo IDs.
 
-    Returns a dict mapping servo_id → raw position (centered on position_center = home).
+    Returns a dict mapping servo_id → angle in degrees.
     Phases are evenly distributed across the servo list order.
     """
     n = len(servo_ids)
     if n == 0:
         return {}
     return {
-        servo_id: angle_to_raw(amplitude_deg * math.sin(2 * math.pi * hz * elapsed + (i / n) * 2 * math.pi))
+        servo_id: amplitude_deg * math.sin(2 * math.pi * hz * elapsed + (i / n) * 2 * math.pi)
         for i, servo_id in enumerate(servo_ids)
     }
 
@@ -85,5 +84,5 @@ class SineControlScheme(ControlScheme):
             ids = [self.servo_id] if self.servo_id in state.active_servo_ids else []
         else:
             ids = sorted(state.active_servo_ids)
-        positions = compute_sine_positions(ids, elapsed, self.amplitude_deg, self.hz)
-        return [ServoCommand(servo_id=sid, position=raw) for sid, raw in positions.items()]
+        angles = compute_sine_positions(ids, elapsed, self.amplitude_deg, self.hz)
+        return [ServoCommand.from_angle(servo_id=sid, angle_deg=angle) for sid, angle in angles.items()]

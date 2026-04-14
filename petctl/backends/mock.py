@@ -48,7 +48,6 @@ import random
 import time
 from typing import Literal, Optional
 
-from petctl.config import SERVO_LIMITS
 from petctl.protocols import RobotBackend
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
@@ -87,8 +86,8 @@ class MockBackend(RobotBackend):
         self.sine_hz = sine_hz
 
         # Module 0 is the head (no servo); servos are IDs 1..(num_modules-1)
-        self._servo_positions: dict[int, int] = {
-            i + 1: SERVO_LIMITS.position_center for i in range(num_modules - 1)
+        self._servo_positions: dict[int, float] = {
+            i + 1: 0.0 for i in range(num_modules - 1)
         }
 
         # File cache
@@ -133,6 +132,8 @@ class MockBackend(RobotBackend):
             servo_positions=servo_positions,
             active_modules=list(sensors.keys()),
             active_servo_ids=set(self._servo_positions.keys()),
+            motor_velocities={},
+            motor_torques={},
             connected=self._connected,
             dt=dt,
         )
@@ -143,10 +144,6 @@ class MockBackend(RobotBackend):
         for cmd in commands:
             if cmd.position is not None:
                 self._servo_positions[cmd.servo_id] = cmd.position
-            elif cmd.speed is not None:
-                # In speed mode just nudge position proportionally
-                current = self._servo_positions.get(cmd.servo_id, SERVO_LIMITS.position_center)
-                self._servo_positions[cmd.servo_id] = current + cmd.speed
 
     @property
     def is_connected(self) -> bool:
@@ -197,11 +194,11 @@ class MockBackend(RobotBackend):
 
         return sensors
 
-    def _build_servo_positions(self) -> dict[int, int]:
+    def _build_servo_positions(self) -> dict[int, float]:
         if self.mode == "file" and "servos" in self._file_data:
             try:
                 file_servos = {
-                    int(k): int(v)
+                    int(k): float(v)
                     for k, v in self._file_data["servos"].items()
                 }
                 # Update internal state so schemes see the file values

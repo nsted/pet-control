@@ -1,37 +1,4 @@
-"""
-RobotBackend — connects to the PET robot using the Feetech WebSocket SDK.
-
-Uses ftservo-python-websockets (scservo_sdk) as the transport layer:
-  https://github.com/robotstack-dev/ftservo-python-websockets
-
-The SDK is synchronous (websocket-client under the hood), so all SDK calls
-run in a single background thread via ThreadPoolExecutor and are awaited
-from the async control loop.
-
-TEXT CHANNEL  (WebSocket text frames — handled directly via port_handler)
-  Request:  "{req_id}:{command}"
-  Response: "{req_id}:{data}"
-  Commands:
-    ping           → "pong"
-    getmodules     → "0,1,2,..."   (comma-separated module IDs)
-    snsr 0 {n}     → "{byte0},{byte1},..."  (n sensor bytes as CSV)
-
-BINARY CHANNEL  (WebSocket binary frames — handled by hls_scs packet handler)
-  servo commands use GroupSyncWrite (INST_SYNC_WRITE broadcast, TX-only) for
-  all position commands — one packet covers all servos simultaneously.
-  Fallback: hls_scs.WritePosEx(id, position, speed, acc) per-servo.
-  servo reads use hls_scs.ReadPos(id) (used only at discovery, not per-tick)
-
-SENSOR DATA FORMAT
-  All touch sensors first, then all pressure sensors.
-  Each value is packed as 2 bytes big-endian (touch: 16-bit; pressure: 12-bit):
-    [tM_hi, tM_lo, tL_hi, tL_lo, tR_hi, tR_lo,  ← module 0 touch
-     tM_hi, tM_lo, ...                             ← module 1 touch
-     ...
-     pM_hi, pM_lo, pL_hi, pL_lo, pR_hi, pR_lo,  ← module 0 pressure
-     ...]
-  Odd module IDs have left/right swapped for body-frame consistency.
-"""
+"""Robot backend for CubeMars GL40 II motors over SLCAN text WebSocket."""
 
 from __future__ import annotations
 
@@ -39,32 +6,13 @@ import asyncio
 import itertools
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from scservo_sdk.group_sync_read import GroupSyncRead
-from scservo_sdk.group_sync_write import GroupSyncWrite
-from scservo_sdk.port_handler_factory import get_port_handler
-from scservo_sdk.hls_scs import (
-    hls_scs as HlsScs,
-    HLSS_TORQUE_SWITCH, HLSS_OFS_L,
-    HLSS_PRESENT_POSITION_L, HLSS_PRESENT_SPEED_L,
-    HLSS_PRESENT_VOLTAGE, HLSS_PRESENT_TEMPERATURE,
-    HLSS_PRESENT_CURRENT_L,
-)
+import websockets
 
-from petctl.config import SERVO_LIMITS
+from petctl.config import MOTOR_LIMITS
 from petctl.protocols import RobotBackend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
-
-# Sensor fields in layout order
-_SENSOR_FIELDS = (
-    "touch_middle", "touch_left", "touch_right",
-    "pressure_middle", "pressure_left", "pressure_right",
-)
-
-# Bytes per module: 6 sensors × 2 bytes each
-_BYTES_PER_MODULE = 12
 
 # Default connection parameters (also imported by cli.py to keep a single source of truth)
 ROBOT_DEFAULT_HOST = "pet-robot.local"
@@ -72,18 +20,7 @@ ROBOT_DEFAULT_PORT = 8080
 
 
 class RobotBackend(_BackendBase):
-    """
-    Backend for the real PET robot.
-
-    Args:
-        host:                  mDNS hostname or IP  (default: "pet-robot.local")
-        port:                  WebSocket port       (default: 8080)
-        calibrate_on_connect:  Collect baseline sensor samples on first connect.
-                               Required for normalized 0-1 sensor values.
-        calibration_samples:   Number of idle samples to collect (default: 10)
-        auto_reconnect:        Retry automatically when connection drops.
-        reconnect_delay:       Seconds between reconnect attempts.
-    """
+    """Backend for the real PET robot."""
 
     def __init__(
         self,
@@ -93,62 +30,30 @@ class RobotBackend(_BackendBase):
         calibration_samples: int = 10,
         auto_reconnect: bool = True,
         reconnect_delay: float = 2.0,
-        torque_limit: int = SERVO_LIMITS.torque_default,
     ) -> None:
-        """
-        torque_limit: TARGET_TORQUE value written with every position command
-            (6.5 mA units; see config.SERVO_LIMITS for safe range).
-            Firmware v43+ interprets 0 as "no torque", so this must be > 0.
-        """
         self.host = host
         self.port = port
         self.calibrate_on_connect = calibrate_on_connect
         self.calibration_samples = calibration_samples
         self.auto_reconnect = auto_reconnect
         self.reconnect_delay = reconnect_delay
-        self.torque_limit = torque_limit
 
-        self._port_handler = None
-        self._packet_handler: Optional[HlsScs] = None
-        # Single-worker executor: serializes all synchronous SDK calls
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._ws: Optional[websockets.ClientConnection] = None
+        self._receive_task: Optional[asyncio.Task] = None
+        self._pending_requests: dict[int, asyncio.Future] = {}
 
         self._connected = False
         self._resolved_ip: Optional[str] = None
         self._req_id_counter = itertools.count()
 
         self._discovered_modules: list[int] = []
-        self._discovered_servos: list[int] = []
+        self._discovered_motors: list[int] = []
 
-        # Calibration: per-(module_id, sensor_field) baseline and range
-        self._baseline: dict[tuple[int, str], float] = {}
-        self._range:    dict[tuple[int, str], float] = {}
-        self._calibrated = False
+        self._motor_state: dict[int, dict[str, float]] = {}
+        self._angle_offsets: dict[int, float] = {}
 
-        # Last known state for graceful degradation during reconnect
         self._last_state = RobotState.empty()
-        # Last *commanded* position per servo — used only for conditional write filter.
-        # Updated by send_commands(); cleared on reconnect to force a full re-send.
-        self._servo_positions: dict[int, int] = {}
-        # Last *hardware-read* position per servo — updated every get_state() call.
-        # Used for RobotState so the visualizer reflects actual servo motion.
-        self._servo_actual_positions: dict[int, int] = {}
-        # Additional per-servo hardware feedback (from GroupSyncRead 56-70).
-        self._servo_currents: dict[int, int] = {}
-        self._servo_speeds: dict[int, int] = {}
-        self._servo_temperatures: dict[int, int] = {}
-        self._servo_voltages: dict[int, int] = {}
-
         self._reconnecting = False
-
-        # GroupSyncWrite for batching all servo position commands into one broadcast packet.
-        # Two GroupSyncRead instances for fast (position+speed) and full (all fields) reads.
-        # All initialized lazily; reset to None on disconnect for fresh instances after reconnect.
-        self._sync_writer: Optional[GroupSyncWrite] = None
-        self._sync_reader_fast: Optional[GroupSyncRead] = None   # 4 bytes: pos + speed
-        self._sync_reader_full: Optional[GroupSyncRead] = None   # 15 bytes: all fields
-        # Incremented each _read_servo_state() call; triggers a full read every N loops.
-        self._read_counter: int = 0
 
     # ------------------------------------------------------------------
     # RobotBackend interface
@@ -160,66 +65,52 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] Could not resolve {self.host}")
             return False
         self._resolved_ip = ip
-
-        ok = await self._do_connect(ip)
-        if not ok:
-            return False
-
-        self._discovered_modules = await self._discover_modules()
-        self._discovered_servos  = await self._discover_servos()
-        print(f"[RobotBackend] Modules: {self._discovered_modules}")
-        print(f"[RobotBackend] Servos:  {self._discovered_servos}")
-
-        if self.calibrate_on_connect and self._discovered_modules:
-            await self._calibrate()
-
-        return True
+        return await self._connect_with_ip(ip)
 
     async def disconnect(self) -> None:
         self._connected = False
-        self._sync_writer = None
-        self._sync_reader_fast = None
-        self._sync_reader_full = None
-        if self._port_handler:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(self._executor, self._port_handler.closePort)
-            self._port_handler = None
-            self._packet_handler = None
+        if self._receive_task:
+            self._receive_task.cancel()
+            self._receive_task = None
+        if self._ws:
+            await self._ws.close()
+            self._ws = None
+        for fut in self._pending_requests.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending_requests.clear()
 
     async def get_state(self) -> RobotState:
         if not self._connected:
             return RobotState(
                 timestamp=time.monotonic(),
                 sensors=self._last_state.sensors,
-                servo_positions=self._servo_positions,
+                servo_positions=self._last_state.servo_positions,
+                motor_velocities=self._last_state.motor_velocities,
+                motor_torques=self._last_state.motor_torques,
+                battery_current_raw=self._last_state.battery_current_raw,
+                battery_voltage_raw=self._last_state.battery_voltage_raw,
                 active_modules=self._discovered_modules,
-                active_servo_ids=set(self._discovered_servos),
+                active_servo_ids=set(self._discovered_motors),
                 connected=False,
                 dt=0.0,
             )
         try:
-            raw = await self._read_sensors()
-            if raw is None:
+            sensors, battery_current_raw, battery_voltage_raw = await self._read_sensors()
+            if sensors is None:
                 raise RuntimeError("Sensor read returned None")
 
-            # Read position, speed, voltage, temperature, and current from hardware.
-            await self._read_servo_state()
-
-            sensors = self._normalize(raw)
             now = time.monotonic()
-            # Merge: hardware-read positions override commanded positions where
-            # available; commanded positions serve as fallback for non-responding servos.
-            positions = {**self._servo_positions, **self._servo_actual_positions}
             state = RobotState(
                 timestamp=now,
                 sensors=sensors,
-                servo_positions=positions,
-                servo_currents=dict(self._servo_currents),
-                servo_speeds=dict(self._servo_speeds),
-                servo_temperatures=dict(self._servo_temperatures),
-                servo_voltages=dict(self._servo_voltages),
+                servo_positions={mid: data["pos"] for mid, data in self._motor_state.items()},
+                motor_velocities={mid: data["vel"] for mid, data in self._motor_state.items()},
+                motor_torques={mid: data["torque"] for mid, data in self._motor_state.items()},
+                battery_current_raw=battery_current_raw,
+                battery_voltage_raw=battery_voltage_raw,
                 active_modules=self._discovered_modules,
-                active_servo_ids=set(self._discovered_servos),
+                active_servo_ids=set(self._discovered_motors),
                 connected=True,
                 dt=now - self._last_state.timestamp,
             )
@@ -234,57 +125,26 @@ class RobotBackend(_BackendBase):
             return RobotState(
                 timestamp=time.monotonic(),
                 sensors=self._last_state.sensors,
-                servo_positions=self._servo_positions,
+                servo_positions=self._last_state.servo_positions,
+                motor_velocities=self._last_state.motor_velocities,
+                motor_torques=self._last_state.motor_torques,
+                battery_current_raw=self._last_state.battery_current_raw,
+                battery_voltage_raw=self._last_state.battery_voltage_raw,
                 active_modules=self._discovered_modules,
-                active_servo_ids=set(self._discovered_servos),
+                active_servo_ids=set(self._discovered_motors),
                 connected=False,
                 dt=0.0,
             )
 
     async def send_commands(self, commands: list[ServoCommand]) -> None:
-        if not self._connected:
+        if not self._connected or self._ws is None:
             return
-
-        pos_cmds = [
-            cmd for cmd in commands
-            if cmd.position is not None
-            and cmd.position != self._servo_positions.get(cmd.servo_id)
-        ]
-        speed_cmds = [cmd for cmd in commands if cmd.speed is not None]
-
-        # Send only changed position commands in one SyncWrite broadcast (TX-only,
-        # no per-servo ACK).  Skipping unchanged positions means idle joints produce
-        # zero WS traffic, and the SyncWrite packet shrinks to only moving servos.
-        if pos_cmds:
-            ok = await self._sync_write_all(pos_cmds)
-            if ok:
-                for cmd in pos_cmds:
-                    self._servo_positions[cmd.servo_id] = cmd.position
-            else:
-                # Fall back to individual writes on SyncWrite failure.
-                for cmd in pos_cmds:
-                    try:
-                        ok = await self._write_pos_ex(
-                            cmd.servo_id, cmd.position, SERVO_LIMITS.speed_default, cmd.acceleration
-                        )
-                        if ok:
-                            self._servo_positions[cmd.servo_id] = cmd.position
-                    except Exception as e:
-                        print(f"[RobotBackend] send_commands fallback error (servo {cmd.servo_id}): {e}")
-                        self._connected = False
-                        if self.auto_reconnect and not self._reconnecting:
-                            asyncio.get_running_loop().create_task(self._reconnect_loop())
-                        break
-
-        for cmd in speed_cmds:
-            try:
-                await self._write_speed(cmd.servo_id, cmd.speed, cmd.acceleration)
-            except Exception as e:
-                print(f"[RobotBackend] send_commands error (servo {cmd.servo_id}): {e}")
-                self._connected = False
-                if self.auto_reconnect and not self._reconnecting:
-                    asyncio.get_running_loop().create_task(self._reconnect_loop())
-                break
+        for cmd in commands:
+            if cmd.position is None:
+                continue
+            pos_rad = cmd.position + self._angle_offsets.get(cmd.servo_id, 0.0)
+            frame = _encode_mit_packet(cmd.servo_id, pos_rad, 0.0, cmd.kp, cmd.kd, cmd.torque_ff)
+            await self._ws.send(frame)
 
     @property
     def is_connected(self) -> bool:
@@ -296,7 +156,7 @@ class RobotBackend(_BackendBase):
 
     @property
     def discovered_servos(self) -> list[int]:
-        return list(self._discovered_servos)
+        return list(self._discovered_motors)
 
     # ------------------------------------------------------------------
     # Connection helpers
@@ -334,43 +194,38 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] Resolution failed: {e}")
         return None
 
-    async def _do_connect(self, ip: str) -> bool:
-        """Initialise the Feetech SDK port + packet handler, verify with ping."""
+    async def _connect_with_ip(self, ip: str) -> bool:
         uri = f"ws://{ip}:{self.port}"
         print(f"[RobotBackend] Connecting to {uri}...")
-
-        loop = asyncio.get_running_loop()
-
-        def _init():
-            ph = get_port_handler(uri)
-            if not ph.openPort():
-                return None, None
-            ph.setBaudRate(1000000)
-            return ph, HlsScs(ph)
-
         try:
-            ph, pkt = await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _init),
+            self._ws = await asyncio.wait_for(
+                websockets.connect(uri),
                 timeout=10.0,
             )
         except asyncio.TimeoutError:
             print("[RobotBackend] Connection timed out")
             return False
-
-        if ph is None:
-            print("[RobotBackend] openPort() failed")
+        except Exception as e:
+            print(f"[RobotBackend] Connect failed: {e}")
             return False
 
-        self._port_handler  = ph
-        self._packet_handler = pkt
+        self._receive_task = asyncio.create_task(self._receive_loop())
         self._connected = True
 
-        # Verify with a ping
         pong = await self._send_text("ping", timeout=3.0)
-        if pong is None:
+        if pong is None or "pong" not in pong.lower():
             print("[RobotBackend] Ping failed")
             await self.disconnect()
             return False
+
+        await self._ws.send("S8")
+        await self._ws.send("O")
+
+        self._discovered_modules = await self._discover_modules()
+        self._discovered_motors = await self._discover_motors()
+
+        if self.calibrate_on_connect and self._discovered_modules:
+            await self._calibrate()
 
         print("[RobotBackend] Connected and ping OK")
         return True
@@ -384,41 +239,18 @@ class RobotBackend(_BackendBase):
 
     async def _send_text(
         self, command: str, timeout: float = 2.0
-    ) -> Optional[tuple[int, str]]:
-        """
-        Send "req_id:command" text frame and receive "req_id:data" text response.
-        Runs in the thread executor so the synchronous SDK calls don't block the loop.
-        Returns (req_id, data) or None on failure.
-        """
+    ) -> Optional[str]:
+        if self._ws is None:
+            return None
         req_id = self._next_req_id()
-        msg = f"{req_id}:{command}"
-        loop = asyncio.get_running_loop()
-
-        def _do():
-            # writePort with a str sends a text WebSocket frame
-            self._port_handler.writePort(msg)
-            # Receive response directly from underlying websocket connection
-            response = self._port_handler.websocket.recv()
-            if isinstance(response, bytes):
-                response = response.decode("utf-8")
-            return response
-
+        fut = asyncio.get_running_loop().create_future()
+        self._pending_requests[req_id] = fut
+        await self._ws.send(f"{req_id}:{command}")
         try:
-            response = await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=timeout,
-            )
-            if response and ":" in response:
-                parts = response.split(":", 1)
-                resp_id = int(parts[0])
-                if resp_id != req_id:
-                    print(f"[RobotBackend] req_id mismatch: sent {req_id}, got {resp_id}")
-                    return None
-                return (resp_id, parts[1])
+            return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
-            print(f"[RobotBackend] Text command '{command}' timed out")
-        except OSError as e:
-            print(f"[RobotBackend] Text command '{command}' network error: {e}")
+            self._pending_requests.pop(req_id, None)
+            return None
         return None
 
     # ------------------------------------------------------------------
@@ -426,585 +258,95 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
 
     async def _discover_modules(self) -> list[int]:
-        result = await self._send_text("getmodules", timeout=5.0)
-        if not result:
+        data = await self._send_text("getmodules", timeout=5.0)
+        if not data:
             return []
-        _, data = result
         try:
             return [int(x.strip()) for x in data.split(",") if x.strip()]
         except ValueError:
             return []
 
-    async def _discover_servos(self, servo_range: range = range(1, 10)) -> list[int]:
-        """
-        Probe each servo ID via ReadPos; collect those that respond.
-
-        Sets a short WebSocket recv timeout (0.4 s) during discovery so that
-        missing servos fail fast instead of waiting the SDK's default ~10 s.
-        The original timeout is restored afterward.  All probes run in a
-        single blocking executor call so the worker is fully released before
-        the first sensor read.
-        """
-        loop = asyncio.get_running_loop()
-        servo_ids = list(servo_range)
-
-        def _do() -> list[int]:
-            found: list[int] = []
-            ws = self._port_handler.websocket
-            old_timeout = ws.gettimeout()
-            ws.settimeout(0.4)
-            try:
-                for sid in servo_ids:
-                    pos, comm_result, error = self._packet_handler.ReadPos(sid)
-                    if comm_result == 0:
-                        found.append(sid)
-                        self._servo_positions[sid] = pos
-            finally:
-                ws.settimeout(old_timeout)
-            return found
-
-        try:
-            # With 0.4 s per probe × 9 probes = 3.6 s worst case
-            return await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=10.0,
-            )
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[RobotBackend] _discover_servos error: {e}")
+    async def _discover_motors(self) -> list[int]:
+        if self._ws is None:
             return []
+        before = set(self._motor_state.keys())
+        for mid in range(1, 8):
+            await self._ws.send(_encode_mit_enable(mid))
+        await asyncio.sleep(1.0)
+        after = set(self._motor_state.keys())
+        discovered = sorted(after - before)
+        if not discovered:
+            print("[RobotBackend] No motor feedback during discovery; defaulting to IDs 1-7")
+            return list(range(1, 8))
+        return discovered
 
     # ------------------------------------------------------------------
     # Sensor reading
     # ------------------------------------------------------------------
 
-    async def _read_sensors(self) -> Optional[dict[int, dict[str, int]]]:
-        """Send 'snsr 0 {n}' and parse the raw 16-bit sensor values."""
-        n = len(self._discovered_modules) * _BYTES_PER_MODULE
-        if n == 0:
-            return {}
-
-        result = await self._send_text(f"snsr 0 {n}", timeout=2.0)
-        if not result:
-            return None
-
-        _, data = result
+    async def _read_sensors(self) -> tuple[Optional[dict[int, ModuleSensors]], int, int]:
+        data = await self._send_text("snsr 0 108", timeout=2.0)
+        if not data:
+            return None, 0, 0
         try:
             raw_bytes = [int(x.strip()) for x in data.split(",")]
         except ValueError:
-            return None
+            return None, 0, 0
+        if len(raw_bytes) < 108:
+            return None, 0, 0
 
-        if len(raw_bytes) < n:
-            return None
+        touch = raw_bytes[0:56]
+        fsr = raw_bytes[56:104]
+        battery_current_raw = (raw_bytes[104] << 8) | raw_bytes[105]
+        battery_voltage_raw = (raw_bytes[106] << 8) | raw_bytes[107]
 
-        # Recompose 16-bit values from high/low byte pairs
-        words = [
-            (raw_bytes[i] << 8) | raw_bytes[i + 1]
-            for i in range(0, n, 2)
-        ]
+        modules: dict[int, ModuleSensors] = {}
+        module_ids = self._discovered_modules or list(range(8))
+        for mod_idx, mod_id in enumerate(module_ids[:8]):
+            t = touch[mod_idx * 7:(mod_idx + 1) * 7]
+            nibbles: list[int] = []
+            for b in t:
+                nibbles.append((b >> 4) & 0xF)
+                nibbles.append(b & 0xF)
+            right_touch = sum(nibbles[0:4]) / 60.0
+            left_touch = sum(nibbles[4:8]) / 60.0
+            middle_touch = sum(nibbles[8:14]) / 90.0
 
-        num_mod = len(self._discovered_modules)
-        touch_words    = words[:num_mod * 3]
-        pressure_words = words[num_mod * 3:]
+            f = fsr[mod_idx * 6:(mod_idx + 1) * 6]
+            right_p = _int16_be(f[0], f[1])
+            left_p = _int16_be(f[2], f[3])
+            middle_p = _int16_be(f[4], f[5])
 
-        modules: dict[int, dict[str, int]] = {}
-        for idx, mod_id in enumerate(self._discovered_modules):
-            t = touch_words[idx * 3: idx * 3 + 3]
-            p = pressure_words[idx * 3: idx * 3 + 3]
-            inv = (mod_id % 2) == 1   # odd modules have left/right swapped
-            modules[mod_id] = {
-                "touch_middle":    t[0],
-                "touch_left":      t[2] if inv else t[1],
-                "touch_right":     t[1] if inv else t[2],
-                "pressure_middle": p[0],
-                "pressure_left":   p[2] if inv else p[1],
-                "pressure_right":  p[1] if inv else p[2],
-            }
-        return modules
+            if mod_id % 2 == 1:
+                left_touch, right_touch = right_touch, left_touch
+                left_p, right_p = right_p, left_p
+
+            modules[mod_id] = ModuleSensors(
+                module_id=mod_id,
+                touch_middle=max(0.0, min(1.0, middle_touch)),
+                touch_left=max(0.0, min(1.0, left_touch)),
+                touch_right=max(0.0, min(1.0, right_touch)),
+                pressure_middle=_normalize_pressure(middle_p),
+                pressure_left=_normalize_pressure(left_p),
+                pressure_right=_normalize_pressure(right_p),
+            )
+        return modules, battery_current_raw, battery_voltage_raw
 
     # ------------------------------------------------------------------
     # Sensor calibration & normalization
     # ------------------------------------------------------------------
 
     async def _calibrate(self) -> None:
-        """Collect baseline samples with robot idle; record per-sensor baseline+range."""
-        print(f"[RobotBackend] Calibrating ({self.calibration_samples} samples)...")
-        accumulated: dict[tuple[int, str], list[float]] = {}
-
-        for _ in range(self.calibration_samples):
-            raw = await self._read_sensors()
-            if not raw:
-                continue
-            for mod_id, vals in raw.items():
-                for field, value in vals.items():
-                    accumulated.setdefault((mod_id, field), []).append(float(value))
-            await asyncio.sleep(0.05)
-
-        if not accumulated:
-            print("[RobotBackend] Calibration failed: no samples collected.")
-            return  # _calibrated remains False
-
-        for key, samples in accumulated.items():
-            baseline = sum(samples) / len(samples)
-            self._baseline[key] = baseline
-            # Seed range from idle noise with a type-appropriate floor.
-            # Touch: 10 counts — just enough to suppress sub-noise fluctuations;
-            #   each face adapts independently so less-sensitive faces still
-            #   reach full scale.
-            # Pressure: 200 counts — under continuous gravity load, noisier at idle.
-            # _normalize() expands both upward adaptively to observed maximum.
-            _, field = key
-            floor = 200.0 if field.startswith("pressure") else 10.0
-            observed_max = max(samples)
-            self._range[key] = max(observed_max - baseline, floor)
-
-        self._calibrated = True
-        print("[RobotBackend] Calibration complete.")
-
-    def _normalize(self, raw: dict[int, dict[str, int]]) -> dict[int, ModuleSensors]:
-        """Convert raw 16-bit sensor values to normalized 0-1 ModuleSensors.
-
-        Range is adapted upward whenever a new per-sensor maximum is observed,
-        so all sensors self-scale to their actual physical response range over
-        the first few seconds of use.
-        """
-        result: dict[int, ModuleSensors] = {}
-        for mod_id, vals in raw.items():
-            normalized = {}
-            for field in _SENSOR_FIELDS:
-                value = float(vals.get(field, 0))
-                if self._calibrated:
-                    key = (mod_id, field)
-                    baseline = self._baseline.get(key, 0.0)
-                    delta = value - baseline
-                    floor = 200.0 if field.startswith("pressure") else 10.0
-                    rng = self._range.get(key, floor)
-                    if delta > rng:
-                        self._range[key] = delta
-                        rng = delta
-                    normalized[field] = max(0.0, min(1.0, delta / rng))
-                else:
-                    # Touch is 16-bit (max 65535); pressure is 12-bit (max 4095)
-                    max_raw = 4095.0 if field.startswith("pressure") else 65535.0
-                    normalized[field] = value / max_raw
-            result[mod_id] = ModuleSensors(module_id=mod_id, **normalized)
-        return result
-
-    # ------------------------------------------------------------------
-    # Servo commands (via hls_scs packet handler)
-    # ------------------------------------------------------------------
-
-    _FEEDBACK_START  = HLSS_PRESENT_POSITION_L   # addr 56
-    _FAST_LEN        = 4    # bytes 56-59: position + speed every loop
-    _FULL_LEN        = 15   # bytes 56-70: + voltage, temp, current every _FULL_READ_EVERY loops
-    _FULL_READ_EVERY = 20   # full read roughly every 20 fast reads (~1-2 Hz at 24-49 Hz loop rate)
-
-    async def _read_servo_state(self) -> None:
-        """Read servo feedback via GroupSyncRead at two rates.
-
-        Fast path (every loop): position + speed (4 bytes, addr 56-59).
-        Full path (every _FULL_READ_EVERY loops): all fields including voltage,
-        temperature, and current (15 bytes, addr 56-70).
-
-        Results are stored in per-field instance dicts and surfaced via RobotState.
-        Falls back to individual ReadPos calls if GroupSyncRead fails.
-        """
-        if not self._discovered_servos or self._packet_handler is None:
-            return
-
-        self._read_counter += 1
-        full = (self._read_counter % self._FULL_READ_EVERY) == 0
-
-        loop = asyncio.get_running_loop()
-        ph = self._packet_handler
-        servo_ids = list(self._discovered_servos)
-        length = self._FULL_LEN if full else self._FAST_LEN
-
-        def _do() -> None:
-            # Select (and lazily initialise) the appropriate reader.
-            if full:
-                if self._sync_reader_full is None:
-                    self._sync_reader_full = GroupSyncRead(ph, self._FEEDBACK_START, self._FULL_LEN)
-                    for sid in servo_ids:
-                        self._sync_reader_full.addParam(sid)
-                reader = self._sync_reader_full
-            else:
-                if self._sync_reader_fast is None:
-                    self._sync_reader_fast = GroupSyncRead(ph, self._FEEDBACK_START, self._FAST_LEN)
-                    for sid in servo_ids:
-                        self._sync_reader_fast.addParam(sid)
-                reader = self._sync_reader_fast
-
-            result = reader.txRxPacket()
-            if result != 0:
-                # GroupSyncRead unsupported or failed — fall back to position-only reads.
-                for sid in servo_ids:
-                    pos, cr, _ = ph.ReadPos(sid)
-                    if cr == 0:
-                        self._servo_actual_positions[sid] = pos
-                return
-
-            for sid in servo_ids:
-                ok, _ = reader.isAvailable(sid, HLSS_PRESENT_POSITION_L, 2)
-                if not ok:
-                    continue
-                self._servo_actual_positions[sid] = ph.scs_tohost(
-                    reader.getData(sid, HLSS_PRESENT_POSITION_L, 2), 15
-                )
-                self._servo_speeds[sid] = ph.scs_tohost(
-                    reader.getData(sid, HLSS_PRESENT_SPEED_L, 2), 15
-                )
-                if full:
-                    self._servo_voltages[sid]     = reader.getData(sid, HLSS_PRESENT_VOLTAGE, 1)
-                    self._servo_temperatures[sid] = reader.getData(sid, HLSS_PRESENT_TEMPERATURE, 1)
-                    self._servo_currents[sid]     = ph.scs_tohost(
-                        reader.getData(sid, HLSS_PRESENT_CURRENT_L, 2), 15
-                    )
-
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=1.0,
-            )
-        except asyncio.TimeoutError:
-            print("[RobotBackend] _read_servo_state timed out")
-        except Exception as e:
-            print(f"[RobotBackend] _read_servo_state error: {e}")
-
-    async def _sync_write_all(self, commands: list[ServoCommand]) -> bool:
-        """Send position commands to all servos in one SyncWrite broadcast.
-
-        Uses GroupSyncWrite (INST_SYNC_WRITE) which sends a single TX-only packet
-        to the broadcast address — no per-servo ACK, so all servos receive their
-        target simultaneously and latency is independent of servo count.
-
-        Writes 8 bytes starting at HLSS_TORQUE_SWITCH (40), matching the layout
-        used by _write_pos_ex so torque is atomically enabled on every command:
-          [40] TORQUE_SWITCH = 1
-          [41] ACCELERATION
-          [42] TARGET_POS_L
-          [43] TARGET_POS_H
-          [44] TARGET_TORQUE_L
-          [45] TARGET_TORQUE_H
-          [46] RUNNING_SPEED_L
-          [47] RUNNING_SPEED_H
-        """
-        loop = asyncio.get_running_loop()
-        ph = self._packet_handler
-        torque_limit = self.torque_limit
-        speed = SERVO_LIMITS.speed_default
-
-        def _do() -> bool:
-            if self._sync_writer is None:
-                self._sync_writer = GroupSyncWrite(ph, HLSS_TORQUE_SWITCH, 8)
-
-            gsw = self._sync_writer
-            gsw.clearParam()
-
-            for cmd in commands:
-                pos_raw = ph.scs_toscs(cmd.position, 15)
-                data = [
-                    1,                           # TORQUE_SWITCH on
-                    cmd.acceleration,
-                    ph.scs_lobyte(pos_raw),
-                    ph.scs_hibyte(pos_raw),
-                    ph.scs_lobyte(torque_limit),
-                    ph.scs_hibyte(torque_limit),
-                    ph.scs_lobyte(speed),
-                    ph.scs_hibyte(speed),
-                ]
-                gsw.addParam(cmd.servo_id, data)
-
-            result = gsw.txPacket()
-            return result == 0
-
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=0.5,
-            )
-        except asyncio.TimeoutError:
-            print("[RobotBackend] SyncWrite timed out")
-            return False
-        except OSError as e:
-            print(f"[RobotBackend] SyncWrite network error: {e}")
-            return False
-
-    async def _write_pos_ex(
-        self, servo_id: int, position: int, speed: int, acc: int
-    ) -> bool:
-        """Send WritePosEx servo command through the SDK.
-
-        Writes 8 bytes starting at HLSS_TORQUE_SWITCH (40), so torque is
-        atomically enabled with every position command:
-          [40] TORQUE_SWITCH = 1
-          [41] ACCELERATION  = acc
-          [42] TARGET_POS_L  = pos_lo
-          [43] TARGET_POS_H  = pos_hi
-          [44] TARGET_TORQUE_L = torque_lo  (rated torque = 980)
-          [45] TARGET_TORQUE_H = torque_hi
-          [46] RUNNING_SPEED_L = speed_lo
-          [47] RUNNING_SPEED_H = speed_hi
-        This ensures servos that boot with torque off respond without needing
-        a separate enable step, and survive reconnects without losing torque.
-
-        TARGET_TORQUE must be non-zero: firmware v43 changed the semantics so
-        that TARGET_TORQUE=0 means "apply zero torque" rather than "use default".
-        We write MAX_TORQUE (980) so both v42 and v43 servos apply full torque.
-        """
-        loop = asyncio.get_running_loop()
-        ph = self._packet_handler
-        torque_limit = self.torque_limit
-
-        def _do():
-            # Feetech protocol uses sign-magnitude encoding, not 2's complement.
-            # scs_toscs converts a Python signed int to the wire format (bit 15 = sign).
-            # ReadPos does the inverse via scs_tohost, so we must round-trip through toscs.
-            pos_raw = ph.scs_toscs(position, 15)
-            txpacket = [
-                1,                                  # HLSS_TORQUE_SWITCH = 1 (on)
-                acc,
-                ph.scs_lobyte(pos_raw),
-                ph.scs_hibyte(pos_raw),
-                ph.scs_lobyte(torque_limit),        # TARGET_TORQUE lo — must be non-zero on v43
-                ph.scs_hibyte(torque_limit),        # TARGET_TORQUE hi
-                ph.scs_lobyte(speed),
-                ph.scs_hibyte(speed),
-            ]
-            comm_result, error = ph.writeTxRx(
-                servo_id, HLSS_TORQUE_SWITCH, len(txpacket), txpacket
-            )
-            return comm_result == 0 and error == 0
-
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=0.5,
-            )
-        except asyncio.TimeoutError:
-            print(f"[RobotBackend] WritePosEx timed out (servo {servo_id})")
-            return False
-        except OSError as e:
-            print(f"[RobotBackend] WritePosEx network error (servo {servo_id}): {e}")
-            return False
-
-    async def _write_speed(self, servo_id: int, speed: int, acc: int) -> bool:
-        """Send WriteSpec servo command (continuous rotation / wheel mode).
-
-        WriteSpec applies scs_toscs internally so signed speed values are
-        encoded correctly in sign-magnitude format.
-        """
-        loop = asyncio.get_running_loop()
-
-        def _do():
-            comm_result, error = self._packet_handler.WriteSpec(servo_id, speed, acc)
-            return comm_result == 0 and error == 0
-
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=0.5,
-            )
-        except asyncio.TimeoutError:
-            print(f"[RobotBackend] WriteSpec timed out (servo {servo_id})")
-            return False
-        except OSError as e:
-            print(f"[RobotBackend] WriteSpec network error (servo {servo_id}): {e}")
-            return False
-
-    async def read_servo_position(self, servo_id: int) -> Optional[int]:
-        """Read current servo position (0-4095). Available for advanced use."""
-        loop = asyncio.get_running_loop()
-
-        def _do():
-            position, comm_result, error = self._packet_handler.ReadPos(servo_id)
-            if comm_result == 0:
-                return position
-            return None
-
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=0.5,
-            )
-        except (asyncio.TimeoutError, Exception):
-            return None
-
-    async def _read_all_servo_positions(self) -> dict[int, int]:
-        """
-        Read current positions for all discovered servos in one executor call.
-
-        All reads are serialized in the single-worker executor to avoid
-        concurrent SDK calls. Returns only servos that responded successfully;
-        caller merges with last known positions as fallback.
-        """
-        if not self._discovered_servos or self._packet_handler is None:
-            return {}
-
-        loop = asyncio.get_running_loop()
-        servo_ids = list(self._discovered_servos)
-
-        def _do() -> dict[int, int]:
-            positions: dict[int, int] = {}
-            for sid in servo_ids:
-                pos, comm_result, error = self._packet_handler.ReadPos(sid)
-                if comm_result == 0:
-                    positions[sid] = pos
-            return positions
-
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=1.0,
-            )
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[RobotBackend] _read_all_servo_positions error: {e}")
-            return {}
+        await asyncio.sleep(0.05 * max(1, self.calibration_samples))
 
     async def disable_torques(self) -> None:
-        """
-        Release torque on every discovered servo so joints can be moved freely by hand.
-        Servo positions are still readable; the visualizer continues to update.
-        """
-        if not self._discovered_servos or self._packet_handler is None:
+        if self._ws is None:
             return
-        loop = asyncio.get_running_loop()
-        servo_ids = list(self._discovered_servos)
-
-        def _do() -> None:
-            for sid in servo_ids:
-                self._packet_handler.write1ByteTxRx(sid, HLSS_TORQUE_SWITCH, 0)
-
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=5.0,
-            )
-            print(f"[RobotBackend] Torque disabled (limp): {servo_ids}")
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[RobotBackend] disable_torques error: {e}")
+        for mid in self._discovered_motors or list(range(1, 8)):
+            await self._ws.send(_encode_mit_disable(mid))
 
     async def write_home_offsets(self) -> None:
-        """
-        Write each servo's EEPROM offset register (HLSS_OFS_L/H at address 31)
-        so its current physical position becomes the home center
-        (SERVO_LIMITS.position_center raw ticks, i.e. 0°).
-
-        Procedure per servo:
-          1. Unlock EEPROM, write 0 to offset, lock EEPROM.
-          2. Read position — HLS applies offset=0, so reported = raw_encoder.
-          3. new_offset = (raw_encoder % 4096) - position_center
-             The modulo strips the multi-turn accumulated count, leaving only the
-             within-revolution encoder value (0–4095) that survives a power cycle.
-             Subtracting position_center shifts the target so the servo reports
-             position_center (not 0) at this physical position after reboot —
-             keeping raw values in mid-range and preventing 12-bit wrap-around
-             during normal operation (±45° = ±512 ticks from 2048).
-             new_offset may be negative; scs_toscs encodes it as sign-magnitude.
-          4. Encode as Feetech sign-magnitude (scs_toscs) and write to EEPROM.
-
-        NOTE: The offset register is EEPROM (addr 31), but LockEprom() triggers an
-        immediate SRAM reload on this firmware — positions update to position_center
-        in the same session without a power cycle.
-
-        IMPORTANT: Zero immediately after power-on, before any movement. The servo
-        tracks a multi-turn accumulated count (15-bit, ±32767). If you zero mid-session
-        after movement, raw_pos can exceed 4096 (e.g., 14094 ≈ 3.4 turns). That large
-        offset works in-session, but after the next power cycle the multi-turn counter
-        resets and the stored offset will be wrong by the accumulated turns.
-
-        Call in limp mode after manually positioning the robot at its desired home.
-        """
-        if not self._discovered_servos or self._packet_handler is None:
-            print("[RobotBackend] write_home_offsets: not connected or no servos")
-            return
-
-        loop = asyncio.get_running_loop()
-        ph = self._packet_handler
-        servo_ids = list(self._discovered_servos)
-
-        def _do() -> list[tuple]:
-            results = []
-            for sid in servo_ids:
-                # Step 1: zero the offset so HLS reports raw encoder position.
-                ph.unLockEprom(sid)
-                c, e = ph.writeTxRx(sid, HLSS_OFS_L, 2, [0, 0])
-                ph.LockEprom(sid)
-                if c != 0 or e != 0:
-                    results.append((sid, None, None, c, e))
-                    continue
-
-                # Step 2: read position — HLS applies offset=0, so this is raw_encoder.
-                raw_pos, cr, _ = ph.ReadPos(sid)
-                if cr != 0:
-                    results.append((sid, None, None, cr, 0))
-                    continue
-
-                # Step 3: new offset makes this position read as position_center after reboot.
-                # Convention: reported = raw_encoder - offset.
-                # Use modulo 4096 to strip the multi-turn accumulated count (only the
-                # within-revolution encoder value 0–4095 survives a power cycle).
-                # Subtract position_center so the reported value at this physical
-                # position is position_center (not 0), keeping raw ticks in mid-range.
-                # new_offset may be negative; scs_toscs handles sign-magnitude encoding.
-                # Trade-off: positions won't read position_center in this session; they
-                # will after the next power cycle.
-                new_offset = (raw_pos % 4096) - SERVO_LIMITS.position_center
-
-                # Step 4: encode sign-magnitude and write.
-                encoded = ph.scs_toscs(new_offset, 15)
-                lo = ph.scs_lobyte(encoded)
-                hi = ph.scs_hibyte(encoded)
-                ph.unLockEprom(sid)
-                c, e = ph.writeTxRx(sid, HLSS_OFS_L, 2, [lo, hi])
-                ph.LockEprom(sid)
-                results.append((sid, raw_pos, new_offset, c, e))
-            return results
-
-        try:
-            results = await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=10.0,
-            )
-            for row in results:
-                sid, raw_pos, new_off, comm, err = row
-                if raw_pos is None:
-                    print(f"[RobotBackend] Servo {sid}: write_home_offsets failed (comm={comm})")
-                elif comm == 0 and err == 0:
-                    turns = raw_pos // 4096
-                    print(f"[RobotBackend] Servo {sid}: raw_pos={raw_pos} ({turns:+d} turns), offset={new_off}, target={SERVO_LIMITS.position_center}")
-                else:
-                    print(f"[RobotBackend] Servo {sid}: EEPROM write failed (comm={comm}, err={err})")
-            print(f"[RobotBackend] Offsets written. Power cycle to apply (positions will read {SERVO_LIMITS.position_center} after reboot).")
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[RobotBackend] write_home_offsets error: {e}")
-
-    async def _enable_torques(self) -> None:
-        """
-        Enable torque for every discovered servo.
-
-        Some HLS servos boot with HLSS_TORQUE_SWITCH = 0 (torque off).
-        In that state ReadPos still works and WritePosEx is accepted at the
-        protocol level (comm=0, err=0), but the motor does not move.
-        Writing 1 to HLSS_TORQUE_SWITCH causes the servo to hold its
-        current position — safe to call without setting a target first.
-        """
-        if not self._discovered_servos or self._packet_handler is None:
-            return
-        loop = asyncio.get_running_loop()
-        servo_ids = list(self._discovered_servos)
-
-        def _do() -> None:
-            for sid in servo_ids:
-                self._packet_handler.write1ByteTxRx(sid, HLSS_TORQUE_SWITCH, 1)
-
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(self._executor, _do),
-                timeout=5.0,
-            )
-            print(f"[RobotBackend] Torque enabled: {servo_ids}")
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[RobotBackend] _enable_torques error: {e}")
+        await self.set_home()
 
     # ------------------------------------------------------------------
     # Auto-reconnect
@@ -1018,12 +360,8 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] Reconnect attempt {attempt}...")
             try:
                 ip = self._resolved_ip or await self._resolve_host()
-                if ip and await self._do_connect(ip):
+                if ip and await self._connect_with_ip(ip):
                     self._connected = True
-                    self._discovered_modules = await self._discover_modules()
-                    # Clear last-sent cache so the next tick re-sends all positions.
-                    # Servos may have moved or lost torque during the disconnect.
-                    self._servo_positions.clear()
                     print("[RobotBackend] Reconnected.")
                     break
             except Exception as e:
@@ -1031,3 +369,107 @@ class RobotBackend(_BackendBase):
                 self._resolved_ip = None
             await asyncio.sleep(self.reconnect_delay)
         self._reconnecting = False
+
+    async def set_home(self) -> None:
+        for mid, state in self._motor_state.items():
+            self._angle_offsets[mid] = state["pos"]
+
+    async def _receive_loop(self) -> None:
+        if self._ws is None:
+            return
+        try:
+            async for msg in self._ws:
+                if not isinstance(msg, str):
+                    continue
+                if msg.startswith(("t", "T")):
+                    self._handle_slcan_frame(msg)
+                elif msg and msg[0].isdigit():
+                    self._handle_api_response(msg)
+        except Exception:
+            self._connected = False
+            if self.auto_reconnect and not self._reconnecting:
+                asyncio.get_running_loop().create_task(self._reconnect_loop())
+
+    def _handle_api_response(self, msg: str) -> None:
+        req_raw, _, data = msg.partition(":")
+        if not req_raw.isdigit():
+            return
+        req_id = int(req_raw)
+        fut = self._pending_requests.pop(req_id, None)
+        if fut is not None and not fut.done():
+            fut.set_result(data)
+
+    def _handle_slcan_frame(self, frame: str) -> None:
+        can_id, payload = _parse_slcan(frame)
+        if can_id != 0x000 or len(payload) < 6:
+            return
+        motor_id = payload[0] >> 4
+        p_raw = (payload[1] << 8) | payload[2]
+        v_raw = (payload[3] << 4) | (payload[4] >> 4)
+        t_raw = ((payload[4] & 0xF) << 8) | payload[5]
+        pos = _uint_to_float(p_raw, 16, MOTOR_LIMITS.pos_min, MOTOR_LIMITS.pos_max)
+        vel = _uint_to_float(v_raw, 12, MOTOR_LIMITS.vel_min, MOTOR_LIMITS.vel_max)
+        torque = _uint_to_float(t_raw, 12, MOTOR_LIMITS.torque_min, MOTOR_LIMITS.torque_max)
+        self._motor_state[motor_id] = {"pos": pos, "vel": vel, "torque": torque}
+
+
+def _normalize_pressure(value: int) -> float:
+    return max(0.0, min(1.0, float(value) / 32767.0))
+
+
+def _int16_be(msb: int, lsb: int) -> int:
+    raw = (msb << 8) | lsb
+    if raw >= 0x8000:
+        raw -= 0x10000
+    return raw
+
+
+def _float_to_uint(value: float, bits: int, min_value: float, max_value: float) -> int:
+    span = max_value - min_value
+    clipped = max(min_value, min(max_value, value))
+    scale = (1 << bits) - 1
+    return int((clipped - min_value) * scale / span)
+
+
+def _uint_to_float(value: int, bits: int, min_value: float, max_value: float) -> float:
+    span = max_value - min_value
+    scale = (1 << bits) - 1
+    return min_value + float(value) * span / float(scale)
+
+
+def _encode_mit_packet(motor_id: int, pos: float, vel: float, kp: float, kd: float, torque: float) -> str:
+    p_uint = _float_to_uint(pos, 16, MOTOR_LIMITS.pos_min, MOTOR_LIMITS.pos_max)
+    v_uint = _float_to_uint(vel, 12, MOTOR_LIMITS.vel_min, MOTOR_LIMITS.vel_max)
+    kp_uint = _float_to_uint(kp, 12, 0.0, 500.0)
+    kd_uint = _float_to_uint(kd, 12, 0.0, 5.0)
+    t_uint = _float_to_uint(torque, 12, MOTOR_LIMITS.torque_min, MOTOR_LIMITS.torque_max)
+    payload = [
+        (p_uint >> 8) & 0xFF,
+        p_uint & 0xFF,
+        (v_uint >> 4) & 0xFF,
+        ((v_uint & 0xF) << 4) | ((kp_uint >> 8) & 0xF),
+        kp_uint & 0xFF,
+        (kd_uint >> 4) & 0xFF,
+        ((kd_uint & 0xF) << 4) | ((t_uint >> 8) & 0xF),
+        t_uint & 0xFF,
+    ]
+    return f"t{motor_id:03X}8{''.join(f'{b:02X}' for b in payload)}"
+
+
+def _encode_mit_enable(motor_id: int) -> str:
+    return f"t{motor_id:03X}8FFFFFFFFFFFFFFFC"
+
+
+def _encode_mit_disable(motor_id: int) -> str:
+    return f"t{motor_id:03X}8FFFFFFFFFFFFFFFD"
+
+
+def _parse_slcan(frame: str) -> tuple[int, list[int]]:
+    text = frame.strip()
+    if not text or text[0] not in ("t", "T"):
+        return -1, []
+    can_id = int(text[1:4], 16)
+    dlc = int(text[4], 16)
+    data_hex = text[5:5 + dlc * 2]
+    payload = [int(data_hex[i:i + 2], 16) for i in range(0, len(data_hex), 2)]
+    return can_id, payload

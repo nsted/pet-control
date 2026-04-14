@@ -2,16 +2,17 @@
 Controller — the central hub of petctl.
 
 Owns a RobotBackend, a ControlScheme, and a list of Visualizers.
-Runs a free-running async loop with no fixed tick rate:
+Runs an async loop paced to `LOOP_LIMITS.poll_hz_default` (20 Hz by default):
 
   1. state  = await backend.get_state()
   2. cmds   = scheme.update(state)
   3. if not dry_run: await backend.send_commands(cmds)
-  4. visualizers.update(state)  ← background thread, frame-drop if busy
-  5. repeat immediately
+  4. visualizers.update(state)  ← background thread (one in-flight job; coalesces
+ to latest state when the previous job has finished — same rate as the loop).
+  5. sleep if the iteration finished faster than the target period
 
-Loop rate is determined by hardware I/O latency, not an artificial sleep.
-state.dt (seconds since last iteration) is available to all schemes.
+Iterations that are slower than the target (typical on the real robot) are not
+delayed further. state.dt (seconds since last iteration) is available to schemes.
 Timing stats are printed every few seconds so you can see the real rate.
 
 Usage:
@@ -36,10 +37,12 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
+from petctl.config import LOOP_LIMITS
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState
 
@@ -90,7 +93,9 @@ class Controller:
         # Dedicated single-worker thread for visualizer updates so Rerun
         # serialization never blocks the hardware I/O loop.
         self._viz_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="viz")
-        self._viz_future: Optional[Future] = None
+        self._viz_future: Optional[Future[None]] = None
+        self._viz_lock = threading.Lock()
+        self._viz_pending_state: Optional[RobotState] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -205,20 +210,19 @@ class Controller:
                 except Exception as e:
                     print(f"[Controller] write_home_offsets error: {e}")
 
-            # 4. Update visualizers in a background thread (frame-drop if busy).
-            # RobotState is a fresh immutable-ish object each iteration — safe to
-            # pass across threads without copying.
+            # 4. Update visualizers in a background thread (at most one job queued).
+            # Stash the latest state every tick; only *start* a new job when the
+            # previous one finished. Do not chain from the worker callback — that
+            # re-logged the same RobotState many times between control ticks and
+            # overloaded Rerun gRPC (jaggy motion / transport errors).
             if self.visualizers:
-                if self._viz_future is None or self._viz_future.done():
-                    state_for_viz = self._state
-                    self._viz_future = self._viz_executor.submit(
-                        self._run_visualizers, state_for_viz
-                    )
+                with self._viz_lock:
+                    self._viz_pending_state = self._state
+                    if self._viz_future is None or self._viz_future.done():
+                        self._start_visualizer_job_unlocked()
 
-            # 5. Timing stats
+            # 5. Timing / debug prints (before pacing sleep)
             now = time.monotonic()
-            elapsed = now - t0
-            self._loop_times.append(elapsed)
 
             if now - self._last_stats_print >= self._STATS_INTERVAL:
                 self._print_stats(now)
@@ -230,6 +234,31 @@ class Controller:
                     print("[positions] " + "  ".join(f"{sid}:{p}" for sid, p in sorted(pos.items())))
                 self._last_pos_print = now
 
+            # 7. Pace the loop so mock/offline runs do not spin at CPU-limited rate
+            # (skewed stats, Rerun gRPC overload, misleading debug samples).
+            target_period = 1.0 / LOOP_LIMITS.poll_hz_default
+            total_elapsed = time.monotonic() - t0
+            sleep_s = target_period - total_elapsed
+            if sleep_s > 0:
+                await asyncio.sleep(sleep_s)
+            # Wall-clock period per iteration (includes sleep) — drives printed Hz.
+            self._loop_times.append(time.monotonic() - t0)
+
+    def _start_visualizer_job_unlocked(self) -> None:
+        """Begin a viz worker using `_viz_pending_state`. Caller must hold `_viz_lock`."""
+        pending = self._viz_pending_state
+        if pending is None:
+            return
+        fut = self._viz_executor.submit(self._run_visualizers, pending)
+        self._viz_future = fut
+        fut.add_done_callback(self._log_visualizer_failure)
+
+    def _log_visualizer_failure(self, fut: Future[None]) -> None:
+        try:
+            fut.result()
+        except Exception as e:
+            print(f"[Controller] Visualizer worker error: {e}")
+
     def _run_visualizers(self, state: RobotState) -> None:
         """Called from the viz thread — must not touch asyncio or backend state."""
         for viz in self.visualizers:
@@ -239,7 +268,11 @@ class Controller:
                 print(f"[Controller] Visualizer {viz.name} error: {e}")
 
     def _print_stats(self, now: float) -> None:
-        """Print loop timing stats and reset the accumulator."""
+        """Print loop timing stats and reset the accumulator.
+
+        Samples are full wall-clock periods between iterations (including pacing
+        sleep), so the printed Hz matches the effective control tick rate.
+        """
         times = self._loop_times
         if not times:
             return

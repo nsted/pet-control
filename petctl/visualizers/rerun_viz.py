@@ -2,7 +2,7 @@
 RerunVisualizer — real-time visualization via Rerun.io.
 
 Displays two things simultaneously in the Rerun viewer:
-  1. Servo health time-series (temperature, current, voltage per servo)
+  1. Motor state time-series (velocity, torque per motor)
   2. 3D robot pose from actual OBJ mesh files, forward-kinematics driven
 
 3D hierarchy per module:
@@ -30,9 +30,8 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from petctl.config import SERVO_LIMITS
 from petctl.protocols import Visualizer
-from petctl.types import RobotState, ServoCommand
+from petctl.types import RobotState
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
@@ -95,7 +94,7 @@ _MIN_ALPHA = 30
 
 class RerunVisualizer(Visualizer):
     """
-    Visualizes robot pose and servo health in Rerun.
+    Visualizes robot pose and motor state in Rerun.
 
     Args:
         app_name:       Rerun application name (shown in viewer title bar)
@@ -144,7 +143,7 @@ class RerunVisualizer(Visualizer):
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         self._send_blueprint()
-        self._setup_servo_series()
+        self._setup_motor_series()
         if self.show_3d:
             self._setup_3d_geometry()
 
@@ -153,7 +152,7 @@ class RerunVisualizer(Visualizer):
             return
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
-        self._log_servo_health(rr, state)
+        self._log_motor_state(rr, state)
         if self.show_3d:
             self._log_3d_pose(rr, state)
             self._log_sensor_overlays(rr, state)
@@ -166,44 +165,33 @@ class RerunVisualizer(Visualizer):
     # ------------------------------------------------------------------
 
     def _send_blueprint(self) -> None:
-        """Send a blueprint with a 3D view and servo health time-series charts."""
+        """Send a blueprint with a 3D view and motor state time-series charts."""
         import rerun.blueprint as rrb
         rr = self._rr
         views = []
         if self.show_3d:
             views.append(rrb.Spatial3DView(origin="robot", name="Robot"))
         views.append(rrb.Vertical(
-            rrb.TimeSeriesView(origin="servos/temperature", name="Temperature (°C)"),
-            rrb.TimeSeriesView(origin="servos/current",     name="Current (mA)"),
-            rrb.TimeSeriesView(origin="servos/voltage",     name="Voltage (V)"),
+            rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
+            rrb.TimeSeriesView(origin="motors/torque", name="Torque (Nm)"),
         ))
         rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views)))
 
-    def _setup_servo_series(self) -> None:
-        """Declare SeriesLines for each servo's health metrics (static, for chart labels)."""
+    def _setup_motor_series(self) -> None:
+        """Declare SeriesLines for each motor telemetry metric."""
         rr = self._rr
         servo_ids = [int(mod["id"]) for mod in self._module_meta if int(mod["id"]) > 0]
         for sid in servo_ids:
-            label = f"servo {sid}"
-            rr.log(f"servos/temperature/servo_{sid}", rr.SeriesLines(names=label), static=True)
-            rr.log(f"servos/current/servo_{sid}",     rr.SeriesLines(names=label), static=True)
-            rr.log(f"servos/voltage/servo_{sid}",     rr.SeriesLines(names=label), static=True)
+            label = f"motor {sid}"
+            rr.log(f"motors/velocity/motor_{sid}", rr.SeriesLines(names=label), static=True)
+            rr.log(f"motors/torque/motor_{sid}", rr.SeriesLines(names=label), static=True)
 
-    def _log_servo_health(self, rr, state: RobotState) -> None:
-        """Log temperature, current, and voltage for each servo.
-
-        Only logs on iterations where the full GroupSyncRead ran (every ~20 loops),
-        detected by the dict being non-empty.  Values are converted to natural units:
-          temperature → °C (raw = °C directly)
-          current     → mA (raw units × 6.5 mA)
-          voltage     → V  (raw units × 0.1 V)
-        """
-        for sid, val in state.servo_temperatures.items():
-            rr.log(f"servos/temperature/servo_{sid}", rr.Scalars(float(val)))
-        for sid, val in state.servo_currents.items():
-            rr.log(f"servos/current/servo_{sid}",     rr.Scalars(float(val) * 6.5))
-        for sid, val in state.servo_voltages.items():
-            rr.log(f"servos/voltage/servo_{sid}",     rr.Scalars(float(val) * 0.1))
+    def _log_motor_state(self, rr, state: RobotState) -> None:
+        """Log velocity and torque for each motor."""
+        for sid, val in state.motor_velocities.items():
+            rr.log(f"motors/velocity/motor_{sid}", rr.Scalars(float(val)))
+        for sid, val in state.motor_torques.items():
+            rr.log(f"motors/torque/motor_{sid}", rr.Scalars(float(val)))
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
@@ -375,8 +363,7 @@ class RerunVisualizer(Visualizer):
 
     @staticmethod
     def _servo_angle_rad(servo_id: int, state: RobotState) -> float:
-        raw = state.servo_positions.get(servo_id, SERVO_LIMITS.position_center)
-        return ServoCommand.position_to_radians(raw)
+        return state.servo_positions.get(servo_id, 0.0)
 
 
 # ------------------------------------------------------------------

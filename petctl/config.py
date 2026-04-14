@@ -14,7 +14,22 @@ Servo hardware: Feetech SCS series (HLS protocol)
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class MotorLimits:
+    """Hard limits for CubeMars GL40 II MIT-mode commands."""
+
+    pos_min: float = -12.5
+    pos_max: float = 12.5
+    vel_min: float = -30.0
+    vel_max: float = 30.0
+    torque_min: float = -10.0
+    torque_max: float = 10.0
+    kp_default: float = 1.0
+    kd_default: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -99,6 +114,7 @@ class BehaviorLimits:
 # ---------------------------------------------------------------------------
 
 SERVO_LIMITS = ServoLimits()
+MOTOR_LIMITS = MotorLimits()
 LOOP_LIMITS = ControlLoopLimits()
 BEHAVIOR_LIMITS = BehaviorLimits()
 
@@ -107,20 +123,29 @@ BEHAVIOR_LIMITS = BehaviorLimits()
 # Helpers
 # ---------------------------------------------------------------------------
 
-def angle_to_raw(angle_deg: float) -> int:
-    """Convert degrees to raw servo ticks (0° → position_center = home)."""
-    return SERVO_LIMITS.position_center + int(angle_deg / 360.0 * SERVO_LIMITS.ticks_per_rotation)
+def angle_to_radians(angle_deg: float) -> float:
+    """Convert degrees to radians."""
+    return math.radians(angle_deg)
 
 
-def raw_to_angle(raw: int) -> float:
-    """Convert raw servo ticks to degrees (position_center → 0° = home)."""
-    return (raw - SERVO_LIMITS.position_center) / SERVO_LIMITS.ticks_per_rotation * 360.0
+def radians_to_angle(rad: float) -> float:
+    """Convert radians to degrees."""
+    return math.degrees(rad)
 
 
-def raw_to_radians(raw: int) -> float:
-    """Convert raw servo ticks to radians (position_center → 0 rad = home)."""
-    import math
-    return (raw - SERVO_LIMITS.position_center) / SERVO_LIMITS.ticks_per_rotation * 2.0 * math.pi
+def angle_to_raw(angle_deg: float) -> float:
+    """Compatibility shim: convert degrees to radians (legacy name)."""
+    return angle_to_radians(angle_deg)
+
+
+def raw_to_angle(raw: float) -> float:
+    """Compatibility shim: convert radians to degrees (legacy name)."""
+    return radians_to_angle(float(raw))
+
+
+def raw_to_radians(raw: float) -> float:
+    """Compatibility shim: positions are already radians."""
+    return float(raw)
 
 
 def clamp_torque(torque: int) -> int:
