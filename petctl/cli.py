@@ -28,6 +28,14 @@ app = typer.Typer(
 )
 
 
+def _parse_motor_ids(s: Optional[str]) -> Optional[tuple[int, ...]]:
+    """Parse --motors \"1\" or \"1,3\" into a tuple of ints; None if unset."""
+    if not s or not str(s).strip():
+        return None
+    parts = [int(p.strip()) for p in str(s).split(",") if p.strip()]
+    return tuple(parts) if parts else None
+
+
 @app.command()
 def run(
     backend: str = typer.Option(
@@ -80,6 +88,11 @@ def run(
         "--no-calibrate",
         help="Skip sensor calibration on connect (robot backend)",
     ),
+    motors: Optional[str] = typer.Option(
+        None,
+        "--motors",
+        help="Comma-separated MIT motor IDs to use (e.g. 1). Skips CAN feedback discovery; use for partial hardware.",
+    ),
     # SineControlScheme options
     servo_id: Optional[int] = typer.Option(
         None,
@@ -108,6 +121,7 @@ def run(
             host=host,
             port=port,
             calibrate_on_connect=not no_calibrate,
+            motor_ids=_parse_motor_ids(motors),
         )
     else:
         typer.echo(f"Unknown backend '{backend}'. Choose: mock, robot", err=True)
@@ -156,13 +170,23 @@ def run(
 def info(
     host: str = typer.Option(ROBOT_DEFAULT_HOST, help="Robot hostname or IP"),
     port: int = typer.Option(ROBOT_DEFAULT_PORT, help="Robot WebSocket port"),
+    motors: Optional[str] = typer.Option(
+        None,
+        "--motors",
+        help="Comma-separated motor IDs (same as petctl run --backend robot --motors)",
+    ),
 ) -> None:
     """Connect to the real robot and print discovered modules and servos."""
 
     async def _info() -> None:
         from petctl.backends.robot import RobotBackend
 
-        backend = RobotBackend(host=host, port=port, calibrate_on_connect=False)
+        backend = RobotBackend(
+            host=host,
+            port=port,
+            calibrate_on_connect=False,
+            motor_ids=_parse_motor_ids(motors),
+        )
         typer.echo(f"Connecting to {host}:{port}...")
         ok = await backend.connect()
         if not ok:

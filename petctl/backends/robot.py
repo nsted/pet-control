@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import os
 import socket
 import time
-from typing import Optional
+from typing import Optional, Sequence
 
 import websockets
 
@@ -17,6 +18,26 @@ from petctl.types import ModuleSensors, RobotState, ServoCommand
 # Default connection parameters (also imported by cli.py to keep a single source of truth)
 ROBOT_DEFAULT_HOST = "pet-robot.local"
 ROBOT_DEFAULT_PORT = 8080
+
+
+# Lines CAN→WebSocket may broadcast (see grapple-arduino head.ino). Not API
+# ("<digit>:") and not MIT motor frames (handled via "t"/"T" + hex).
+_SLCAN_WS_NOISE_FIRST = frozenset("SOCZzFNvV")
+
+
+def _ping_payload_ok(data: Optional[str]) -> bool:
+    """
+    True if `data` (text after first ':' in the API line) counts as a ping ACK.
+
+    grapple-arduino `head.ino` calls `sendResponseWithReqId(requestId)` with no
+    second argument, so the reply is literally \"<id>:\" with an empty body — not
+    \"<id>:pong\". We accept either empty / whitespace-only or any payload
+    containing \"pong\" (case-insensitive).
+    """
+    if data is None:
+        return False
+    stripped = data.strip().lower()
+    return "pong" in stripped or stripped == ""
 
 
 class RobotBackend(_BackendBase):
@@ -30,6 +51,7 @@ class RobotBackend(_BackendBase):
         calibration_samples: int = 10,
         auto_reconnect: bool = True,
         reconnect_delay: float = 2.0,
+        motor_ids: Optional[Sequence[int]] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -37,6 +59,11 @@ class RobotBackend(_BackendBase):
         self.calibration_samples = calibration_samples
         self.auto_reconnect = auto_reconnect
         self.reconnect_delay = reconnect_delay
+        if motor_ids is None:
+            self._configured_motor_ids: Optional[tuple[int, ...]] = None
+        else:
+            t = tuple(int(m) for m in motor_ids)
+            self._configured_motor_ids = t if t else None
 
         self._ws: Optional[websockets.ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
@@ -44,7 +71,8 @@ class RobotBackend(_BackendBase):
 
         self._connected = False
         self._resolved_ip: Optional[str] = None
-        self._req_id_counter = itertools.count()
+        # Start at 1 — some firmware treats request id 0 as invalid / broadcast.
+        self._req_id_counter = itertools.count(1)
 
         self._discovered_modules: list[int] = []
         self._discovered_motors: list[int] = []
@@ -54,6 +82,10 @@ class RobotBackend(_BackendBase):
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
+        self._rx_unhandled_logged: int = 0
+        self._rx_binary_logged: int = 0
+        # Set by _try_bare_ping; receive loop completes it on a plain "pong" line.
+        self._bare_reply_fut: Optional[asyncio.Future[str]] = None
 
     # ------------------------------------------------------------------
     # RobotBackend interface
@@ -79,6 +111,9 @@ class RobotBackend(_BackendBase):
             if not fut.done():
                 fut.cancel()
         self._pending_requests.clear()
+        if self._bare_reply_fut is not None and not self._bare_reply_fut.done():
+            self._bare_reply_fut.cancel()
+        self._bare_reply_fut = None
 
     async def get_state(self) -> RobotState:
         if not self._connected:
@@ -211,28 +246,74 @@ class RobotBackend(_BackendBase):
 
         self._receive_task = asyncio.create_task(self._receive_loop())
         self._connected = True
+        await asyncio.sleep(0.05)
 
-        pong = await self._send_text("ping", timeout=3.0)
-        if pong is None or "pong" not in pong.lower():
-            print("[RobotBackend] Ping failed")
+        async def _numbered_ping_ok() -> bool:
+            data = await self._send_text("ping", timeout=3.0)
+            return _ping_payload_ok(data)
+
+        slcan_preopened = False
+        ok = await _numbered_ping_ok()
+        if not ok:
+            print("[RobotBackend] Numbered ping failed; opening SLCAN (S8/O) then retrying...")
+            await self._ws.send("S8")
+            await self._ws.send("O")
+            await asyncio.sleep(0.05)
+            slcan_preopened = True
+            ok = await _numbered_ping_ok()
+        if not ok:
+            print("[RobotBackend] Retrying with bare text \"ping\" (expect line \"pong\")...")
+            ok = await self._try_bare_ping(timeout=2.5)
+        if not ok:
+            print(
+                "[RobotBackend] Text handshake failed — no reply to numbered ping. "
+                "grapple-arduino normally sends \"<id>:\" (empty body). "
+                "Optional: bare \"pong\" after \"ping\". "
+                "Re-run with PETCTL_ROBOT_TRACE=1 to log incoming text lines."
+            )
             await self.disconnect()
             return False
 
-        await self._ws.send("S8")
-        await self._ws.send("O")
+        if not slcan_preopened:
+            await self._ws.send("S8")
+            await self._ws.send("O")
+            await asyncio.sleep(0.05)
 
         self._discovered_modules = await self._discover_modules()
-        self._discovered_motors = await self._discover_motors()
+
+        if self._configured_motor_ids is not None:
+            self._discovered_motors = list(self._configured_motor_ids)
+            print(f"[RobotBackend] Using fixed motor IDs (--motors): {self._discovered_motors}")
+            for mid in self._discovered_motors:
+                await self._ws.send(_encode_mit_enable(mid))
+            await asyncio.sleep(0.5)
+        else:
+            self._discovered_motors = await self._discover_motors()
 
         if self.calibrate_on_connect and self._discovered_modules:
             await self._calibrate()
 
-        print("[RobotBackend] Connected and ping OK")
+        print("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
 
     # ------------------------------------------------------------------
     # Text command helpers
     # ------------------------------------------------------------------
+
+    async def _try_bare_ping(self, timeout: float) -> bool:
+        """Some firmware answers plain \"pong\" to plain \"ping\" (no request id)."""
+        if self._ws is None:
+            return False
+        loop = asyncio.get_running_loop()
+        self._bare_reply_fut = loop.create_future()
+        try:
+            await self._ws.send("ping")
+            await asyncio.wait_for(self._bare_reply_fut, timeout=timeout)
+            return True
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            return False
+        finally:
+            self._bare_reply_fut = None
 
     def _next_req_id(self) -> int:
         return next(self._req_id_counter) % 65536
@@ -251,7 +332,6 @@ class RobotBackend(_BackendBase):
         except asyncio.TimeoutError:
             self._pending_requests.pop(req_id, None)
             return None
-        return None
 
     # ------------------------------------------------------------------
     # Discovery
@@ -276,7 +356,10 @@ class RobotBackend(_BackendBase):
         after = set(self._motor_state.keys())
         discovered = sorted(after - before)
         if not discovered:
-            print("[RobotBackend] No motor feedback during discovery; defaulting to IDs 1-7")
+            print(
+                "[RobotBackend] No motor CAN feedback during discovery; defaulting to IDs 1–7. "
+                "For a partial bench (e.g. only motor 1), pass --motors 1."
+            )
             return list(range(1, 8))
         return discovered
 
@@ -379,19 +462,47 @@ class RobotBackend(_BackendBase):
             return
         try:
             async for msg in self._ws:
-                if not isinstance(msg, str):
+                if isinstance(msg, bytes):
+                    if self._rx_binary_logged < 4:
+                        self._rx_binary_logged += 1
+                        preview = msg[:48].hex()
+                        print(
+                            f"[RobotBackend] Ignoring binary WS frame ({len(msg)} B), "
+                            f"hex[:48]={preview}… — firmware should use text for API."
+                        )
                     continue
-                if msg.startswith(("t", "T")):
-                    self._handle_slcan_frame(msg)
-                elif msg and msg[0].isdigit():
-                    self._handle_api_response(msg)
-        except Exception:
+                # One WS text frame may contain multiple lines (\n or \r\n).
+                for raw_line in msg.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if os.environ.get("PETCTL_ROBOT_TRACE"):
+                        print(f"[RobotBackend] << {line[:240]!r}")
+                    if line.startswith(("t", "T")):
+                        self._handle_slcan_frame(line)
+                    elif line[0].isdigit():
+                        self._handle_api_response(line)
+                    elif self._bare_reply_fut is not None and not self._bare_reply_fut.done():
+                        low = line.lower()
+                        if low == "pong" or low.startswith("pong"):
+                            self._bare_reply_fut.set_result(line)
+                    elif line[0] in _SLCAN_WS_NOISE_FIRST:
+                        # SLCAN-side traffic echoed on WS (e.g. "z"); ignore — not petctl API.
+                        continue
+                    elif self._rx_unhandled_logged < 12:
+                        self._rx_unhandled_logged += 1
+                        print(f"[RobotBackend] Unhandled text (sample): {line[:160]!r}")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            print(f"[RobotBackend] WebSocket receive loop ended: {e!r}")
             self._connected = False
             if self.auto_reconnect and not self._reconnecting:
                 asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     def _handle_api_response(self, msg: str) -> None:
         req_raw, _, data = msg.partition(":")
+        req_raw = req_raw.strip()
         if not req_raw.isdigit():
             return
         req_id = int(req_raw)
