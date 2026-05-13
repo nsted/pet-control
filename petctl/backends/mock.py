@@ -145,6 +145,10 @@ class MockBackend(RobotBackend):
             if cmd.position is not None:
                 self._servo_positions[cmd.servo_id] = cmd.position
 
+    async def write_home_offsets(self) -> None:
+        """Mark the current commanded positions as home (all report as 0)."""
+        self._servo_positions = {k: 0.0 for k in self._servo_positions}
+
     @property
     def is_connected(self) -> bool:
         return self._connected

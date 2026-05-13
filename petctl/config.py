@@ -25,7 +25,7 @@ class MotorLimits:
     vel_max: float = 30.0
     torque_min: float = -10.0
     torque_max: float = 10.0
-    # Softer defaults — high kp tracks each MIT setpoint sharply (feels “poppy”).
+    # Softer defaults — high kp tracks each MIT setpoint sharply (feels "poppy").
     kp_default: float = 0.4
     kd_default: float = 0.035
 
@@ -45,7 +45,7 @@ class ControlLoopLimits:
     command_smoothing_max_alpha: float = 0.28
 
     # Hard cap on single-tick commanded delta (degrees) after smoothing (safety).
-    max_angle_step_per_tick_deg: float = 0.5
+    max_angle_step_per_tick_deg: float = 4.0
 
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10

@@ -247,13 +247,25 @@ class Controller:
                     await self.backend.send_commands(commands)
                 except Exception as e:
                     print(f"[Controller] Backend send_commands error: {e}")
+            elif self.backend.is_connected:
+                # No commands this tick — poll each motor with an enable frame so
+                # MIT return frames keep flowing and _motor_state stays current.
+                poll = getattr(self.backend, "poll_positions", None)
+                if poll is not None:
+                    try:
+                        await poll()
+                    except Exception:
+                        pass
 
             # 3b. Save-home: write EEPROM offsets so current position reports as 0
             take_save_home = getattr(self.scheme, "take_save_home", None)
             if take_save_home is not None and take_save_home():
-                print("[Controller] Saving home offsets to EEPROM...")
+                print("[Controller] Saving home offsets...")
                 try:
                     await self.backend.write_home_offsets()
+                    # Clear slew state so the filter doesn't hold pre-home positions.
+                    self._slew_last_sent_rad.clear()
+                    print("[Controller] Home saved — positions reset to 0.")
                 except Exception as e:
                     print(f"[Controller] write_home_offsets error: {e}")
 

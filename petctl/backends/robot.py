@@ -144,7 +144,10 @@ class RobotBackend(_BackendBase):
             state = RobotState(
                 timestamp=now,
                 sensors=sensors,
-                servo_positions={mid: data["pos"] for mid, data in self._motor_state.items()},
+                servo_positions={
+                    mid: data["pos"] - self._angle_offsets.get(mid, 0.0)
+                    for mid, data in self._motor_state.items()
+                },
                 motor_velocities={mid: data["vel"] for mid, data in self._motor_state.items()},
                 motor_torques={mid: data["torque"] for mid, data in self._motor_state.items()},
                 battery_current_raw=battery_current_raw,
@@ -378,6 +381,7 @@ class RobotBackend(_BackendBase):
                 "For a partial bench (e.g. only motor 1), pass --motors 1."
             )
             return list(range(1, 8))
+        print(f"[RobotBackend] Discovered motors: {discovered}")
         return discovered
 
     # ------------------------------------------------------------------
@@ -438,6 +442,17 @@ class RobotBackend(_BackendBase):
 
     async def _calibrate(self) -> None:
         await asyncio.sleep(0.05 * max(1, self.calibration_samples))
+        await self.set_home()
+
+    async def poll_positions(self) -> None:
+        """Send an MIT enable frame to each motor to solicit a current-state reply."""
+        if self._ws is None:
+            return
+        # Poll all configured IDs (or 1–7) rather than just _discovered_motors, so
+        # motors that missed the discovery window still get fresh state each tick.
+        ids = self._configured_motor_ids if self._configured_motor_ids else range(1, 8)
+        for mid in ids:
+            await self._ws.send(_encode_mit_enable(mid))
 
     async def disable_torques(self) -> None:
         if self._ws is None:
@@ -446,6 +461,10 @@ class RobotBackend(_BackendBase):
             await self._ws.send(_encode_mit_disable(mid))
 
     async def write_home_offsets(self) -> None:
+        # Solicit a fresh frame from every motor, then yield to the receive
+        # loop so the responses land in _motor_state before we snapshot it.
+        await self.poll_positions()
+        await asyncio.sleep(0.08)
         await self.set_home()
 
     # ------------------------------------------------------------------
@@ -471,8 +490,18 @@ class RobotBackend(_BackendBase):
         self._reconnecting = False
 
     async def set_home(self) -> None:
+        captured: list[int] = []
         for mid, state in self._motor_state.items():
             self._angle_offsets[mid] = state["pos"]
+            captured.append(mid)
+        missing = sorted(set(self._discovered_motors) - set(captured))
+        if missing:
+            print(f"[RobotBackend] set_home: no data yet for motor(s) {missing} — offsets unchanged")
+        if captured:
+            print(
+                "[RobotBackend] set_home: captured "
+                + "  ".join(f"{mid}:{self._angle_offsets[mid]:.4f}" for mid in sorted(captured))
+            )
         self._last_mit_abs_pos.clear()
         self._last_mit_wall_s.clear()
 
@@ -533,7 +562,7 @@ class RobotBackend(_BackendBase):
         can_id, payload = _parse_slcan(frame)
         if can_id != 0x000 or len(payload) < 6:
             return
-        motor_id = payload[0] >> 4
+        motor_id = payload[0] & 0xF
         p_raw = (payload[1] << 8) | payload[2]
         v_raw = (payload[3] << 4) | (payload[4] >> 4)
         t_raw = ((payload[4] & 0xF) << 8) | payload[5]

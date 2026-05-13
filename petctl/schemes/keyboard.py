@@ -86,12 +86,15 @@ class KeyboardControlScheme(ControlScheme):
         commands: list[ServoCommand] = []
 
         if reset:
+            zeroed: list[int] = []
             for mod in range(_MAX_KEYBOARD_MODULES):
                 servo_id = mod + self.servo_offset
                 if servo_id not in state.active_servo_ids:
                     continue
                 self._angles[mod] = 0.0
                 commands.append(ServoCommand.from_angle(servo_id, 0.0))
+                zeroed.append(servo_id)
+            print(f"[Keyboard] reset: servos {zeroed} → 0°")
             return commands
 
         for mod, delta in pending.items():
@@ -143,12 +146,18 @@ class KeyboardControlScheme(ControlScheme):
     def take_save_home(self) -> bool:
         """Consume and return the save-home request flag (set by Cmd+` key).
 
-        Returns True exactly once per key event; subsequent calls return False
-        until the user presses the shortcut again.
+        Returns True exactly once per key event; subsequent calls return False.
+        Also resets internal angle targets to 0 so the scheme commands the new
+        home position (stay in place) rather than driving back to the old target.
         """
         with self._lock:
             val = self._save_home_requested
             self._save_home_requested = False
+            if val:
+                # Reset internal angle tracking to match the new reference frame.
+                # Do NOT set _reset_requested — that would emit position commands
+                # and activate motor torque.
+                self._angles.clear()
         return val
 
     # ------------------------------------------------------------------
