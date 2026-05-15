@@ -50,6 +50,12 @@ class ControlLoopLimits:
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10
 
+    # How often to send zero-torque MIT poll frames when no commands are active.
+    # Lower rates reduce Arduino WS/CAN load; at 5 Hz each motor is polled every 200 ms.
+    # During active control, MIT command frames carry position and implicitly poll state,
+    # so this only applies when the control scheme produces no output.
+    idle_motor_poll_hz: float = 5.0
+
 
 @dataclass(frozen=True)
 class BehaviorLimits:

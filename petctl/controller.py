@@ -253,13 +253,13 @@ class Controller:
                 except Exception as e:
                     print(f"[Controller] Backend send_commands error: {e}")
             elif self.backend.is_connected:
-                # No commands this tick — poll each motor with an enable frame so
-                # MIT return frames keep flowing and _motor_state stays current.
-                # Throttled to 20 Hz: the loop now runs at 50 Hz but motors don't
-                # need enable frames that frequently, and excess frames cause clicking.
+                # No commands this tick — send zero-torque MIT frames to keep
+                # _motor_state current. Rate-limited to idle_motor_poll_hz (default 5 Hz)
+                # so the Arduino's WS/CAN load stays low when the robot is idle.
                 poll = getattr(self.backend, "poll_positions", None)
                 now_poll = time.monotonic()
-                if poll is not None and now_poll - self._last_poll_time >= 0.05:
+                poll_period = 1.0 / LOOP_LIMITS.idle_motor_poll_hz
+                if poll is not None and now_poll - self._last_poll_time >= poll_period:
                     try:
                         await poll()
                         self._last_poll_time = now_poll
