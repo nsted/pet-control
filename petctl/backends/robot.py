@@ -278,7 +278,7 @@ class RobotBackend(_BackendBase):
         print(f"[RobotBackend] Connecting to {uri}...")
         try:
             self._ws = await asyncio.wait_for(
-                websockets.connect(uri),
+                websockets.connect(uri, ping_interval=None),
                 timeout=10.0,
             )
         except asyncio.TimeoutError:
@@ -477,14 +477,36 @@ class RobotBackend(_BackendBase):
         the CAN receive loop. Sensor data requires a request-reply round-trip that
         can take 20-50 ms on real hardware. Running this loop in the background
         decouples sensor latency from the 50 Hz control tick.
+
+        Caps to 10 Hz regardless of firmware response time to reduce Arduino load.
+        Triggers a reconnect after 3 consecutive timeouts so a dead connection is
+        detected within ~6 s rather than waiting for a higher-level exception.
         """
+        consecutive_failures = 0
         while self._connected:
             try:
+                t0 = time.monotonic()
                 sensors, batt_cur, batt_vol = await self._read_sensors()
                 if sensors is not None:
                     self._latest_sensors = sensors
                     self._latest_battery_current_raw = batt_cur
                     self._latest_battery_voltage_raw = batt_vol
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        print(
+                            f"[RobotBackend] Sensor read timed out {consecutive_failures}× — "
+                            "declaring connection dead and reconnecting."
+                        )
+                        self._connected = False
+                        if self.auto_reconnect and not self._reconnecting:
+                            asyncio.get_running_loop().create_task(self._reconnect_loop())
+                        break
+                # Cap to ~10 Hz so we don't flood the Arduino with back-to-back requests.
+                elapsed = time.monotonic() - t0
+                if elapsed < 0.1:
+                    await asyncio.sleep(0.1 - elapsed)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -546,7 +568,10 @@ class RobotBackend(_BackendBase):
                     break
             except Exception as e:
                 print(f"[RobotBackend] Reconnect error: {e}")
-                self._resolved_ip = None
+                # Only clear the cached IP if it looks like a resolution problem;
+                # for ordinary connection failures the IP hasn't changed.
+                if not self._resolved_ip:
+                    pass  # nothing to clear
             await asyncio.sleep(self.reconnect_delay)
         self._reconnecting = False
 
