@@ -27,7 +27,8 @@ Custom ML control scheme:
         name = "my_ml_scheme"
 
         def update(self, state: RobotState) -> list[ServoCommand]:
-            # state.sensors[module_id].touch_middle etc. are 0-1 normalized
+            # state.sensors[module_id].touch_left_pads etc. — per-pad tuples (4/4/6)
+            # state.sensors[module_id].touch_left etc.  — mean across pads (0-1)
             # Return a list of ServoCommand objects
             ...
 

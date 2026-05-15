@@ -498,9 +498,10 @@ class RobotBackend(_BackendBase):
             for b in t:
                 nibbles.append((b >> 4) & 0xF)
                 nibbles.append(b & 0xF)
-            right_touch = sum(nibbles[0:4]) / 60.0
-            left_touch = sum(nibbles[4:8]) / 60.0
-            middle_touch = sum(nibbles[8:14]) / 90.0
+
+            right_pads  = tuple(max(0.0, min(1.0, nibbles[i] / 15.0)) for i in range(0, 4))
+            left_pads   = tuple(max(0.0, min(1.0, nibbles[i] / 15.0)) for i in range(4, 8))
+            middle_pads = tuple(max(0.0, min(1.0, nibbles[i] / 15.0)) for i in range(8, 14))
 
             f = fsr[mod_idx * 6:(mod_idx + 1) * 6]
             right_p = _int16_be(f[0], f[1])
@@ -508,14 +509,14 @@ class RobotBackend(_BackendBase):
             middle_p = _int16_be(f[4], f[5])
 
             if mod_id % 2 == 1:
-                left_touch, right_touch = right_touch, left_touch
+                left_pads, right_pads = right_pads, left_pads
                 left_p, right_p = right_p, left_p
 
             modules[mod_id] = ModuleSensors(
                 module_id=mod_id,
-                touch_middle=max(0.0, min(1.0, middle_touch)),
-                touch_left=max(0.0, min(1.0, left_touch)),
-                touch_right=max(0.0, min(1.0, right_touch)),
+                touch_left_pads=left_pads,
+                touch_right_pads=right_pads,
+                touch_middle_pads=middle_pads,
                 pressure_middle=_normalize_pressure(middle_p),
                 pressure_left=_normalize_pressure(left_p),
                 pressure_right=_normalize_pressure(right_p),

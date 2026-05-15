@@ -17,25 +17,54 @@ from petctl.config import MOTOR_LIMITS
 
 @dataclass
 class ModuleSensors:
-    """Sensor readings for a single robot module, normalized 0-1."""
+    """Sensor readings for a single robot module, normalized 0-1.
+
+    Each face has individual capacitive pad readings:
+      left / right: 4 pads each (rectangular faces)
+      middle:       6 pads      (top triangular face)
+    Each face also has one FSR (force-sensitive resistor).
+
+    The touch_left / touch_right / touch_middle properties return the
+    mean across pads on that face — convenient for behavior code that
+    needs a single 0-1 activation level per face.
+    """
 
     module_id: int
-    touch_middle: float = 0.0
-    touch_left: float = 0.0
-    touch_right: float = 0.0
-    pressure_middle: float = 0.0
+    # Per-pad capacitive readings, each pad normalized 0-1
+    touch_left_pads: tuple[float, ...] = (0., 0., 0., 0.)
+    touch_right_pads: tuple[float, ...] = (0., 0., 0., 0.)
+    touch_middle_pads: tuple[float, ...] = (0., 0., 0., 0., 0., 0.)
+    # One FSR per face, normalized 0-1
     pressure_left: float = 0.0
     pressure_right: float = 0.0
+    pressure_middle: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Aggregate helpers — mean across all pads on each face (0-1)
+    # ------------------------------------------------------------------
+
+    @property
+    def touch_left(self) -> float:
+        return sum(self.touch_left_pads) / len(self.touch_left_pads) if self.touch_left_pads else 0.0
+
+    @property
+    def touch_right(self) -> float:
+        return sum(self.touch_right_pads) / len(self.touch_right_pads) if self.touch_right_pads else 0.0
+
+    @property
+    def touch_middle(self) -> float:
+        return sum(self.touch_middle_pads) / len(self.touch_middle_pads) if self.touch_middle_pads else 0.0
 
     @property
     def touch_total(self) -> float:
-        return self.touch_middle + self.touch_left + self.touch_right
+        all_pads = (*self.touch_left_pads, *self.touch_right_pads, *self.touch_middle_pads)
+        return sum(all_pads) / len(all_pads) if all_pads else 0.0
 
     @property
     def pressure_total(self) -> float:
-        return self.pressure_middle + self.pressure_left + self.pressure_right
+        return self.pressure_left + self.pressure_right + self.pressure_middle
 
-    def as_dict(self) -> dict[str, float]:
+    def as_dict(self) -> dict[str, object]:
         """Return sensor values as a dict (excludes module_id)."""
         d = asdict(self)
         d.pop("module_id", None)

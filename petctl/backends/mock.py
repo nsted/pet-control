@@ -23,9 +23,9 @@ JSON state file format (all fields optional):
 {
   "modules": {
     "0": {
-      "touch_middle": 0.8,
-      "touch_left": 0.2,
-      "touch_right": 0.0,
+      "touch_left_pads":   [0.1, 0.2, 0.3, 0.4],
+      "touch_right_pads":  [0.0, 0.0, 0.1, 0.0],
+      "touch_middle_pads": [0.8, 0.5, 0.3, 0.2, 0.1, 0.0],
       "pressure_middle": 0.5,
       "pressure_left": 0.1,
       "pressure_right": 0.0
@@ -51,10 +51,7 @@ from typing import Literal, Optional
 from petctl.protocols import RobotBackend
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
-_SENSOR_FIELDS = (
-    "touch_middle", "touch_left", "touch_right",
-    "pressure_middle", "pressure_left", "pressure_right",
-)
+_PRESSURE_FIELDS = ("pressure_middle", "pressure_left", "pressure_right")
 
 
 class MockBackend(RobotBackend):
@@ -174,9 +171,9 @@ class MockBackend(RobotBackend):
                 val = (math.sin(2 * math.pi * self.sine_hz * elapsed + phase) + 1) / 2
                 sensors[mod_id] = ModuleSensors(
                     module_id=mod_id,
-                    touch_middle=val,
-                    touch_left=val * 0.6,
-                    touch_right=val * 0.3,
+                    touch_left_pads=tuple(val * 0.6 for _ in range(4)),
+                    touch_right_pads=tuple(val * 0.3 for _ in range(4)),
+                    touch_middle_pads=tuple(val for _ in range(6)),
                     pressure_middle=val * 0.8,
                     pressure_left=val * 0.4,
                     pressure_right=val * 0.2,
@@ -184,16 +181,22 @@ class MockBackend(RobotBackend):
             elif self.mode == "noise":
                 sensors[mod_id] = ModuleSensors(
                     module_id=mod_id,
-                    **{f: random.random() for f in _SENSOR_FIELDS},
+                    touch_left_pads=tuple(random.random() for _ in range(4)),
+                    touch_right_pads=tuple(random.random() for _ in range(4)),
+                    touch_middle_pads=tuple(random.random() for _ in range(6)),
+                    **{f: random.random() for f in _PRESSURE_FIELDS},
                 )
             else:
                 # interactive or file — read from file data if available
-                file_mod = {}
+                file_mod: dict = {}
                 if "modules" in self._file_data:
                     file_mod = self._file_data["modules"].get(str(mod_id), {})
                 sensors[mod_id] = ModuleSensors(
                     module_id=mod_id,
-                    **{f: float(file_mod.get(f, 0.0)) for f in _SENSOR_FIELDS},
+                    touch_left_pads=tuple(float(v) for v in file_mod.get("touch_left_pads", [0.0] * 4)),
+                    touch_right_pads=tuple(float(v) for v in file_mod.get("touch_right_pads", [0.0] * 4)),
+                    touch_middle_pads=tuple(float(v) for v in file_mod.get("touch_middle_pads", [0.0] * 6)),
+                    **{f: float(file_mod.get(f, 0.0)) for f in _PRESSURE_FIELDS},
                 )
 
         return sensors
