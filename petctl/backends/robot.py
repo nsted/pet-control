@@ -90,6 +90,13 @@ class RobotBackend(_BackendBase):
         # Set by _try_bare_ping; receive loop completes it on a plain "pong" line.
         self._bare_reply_fut: Optional[asyncio.Future[str]] = None
 
+        # Latest sensor data from background poll task — decouples sensor reads
+        # from the control loop so get_state() never blocks on a network round-trip.
+        self._latest_sensors: Optional[dict] = None
+        self._latest_battery_current_raw: int = 0
+        self._latest_battery_voltage_raw: int = 0
+        self._sensor_poll_task: Optional[asyncio.Task] = None
+
     # ------------------------------------------------------------------
     # RobotBackend interface
     # ------------------------------------------------------------------
@@ -104,6 +111,9 @@ class RobotBackend(_BackendBase):
 
     async def disconnect(self) -> None:
         self._connected = False
+        if self._sensor_poll_task:
+            self._sensor_poll_task.cancel()
+            self._sensor_poll_task = None
         if self._receive_task:
             self._receive_task.cancel()
             self._receive_task = None
@@ -136,7 +146,21 @@ class RobotBackend(_BackendBase):
                 dt=0.0,
             )
         try:
-            sensors, battery_current_raw, battery_voltage_raw = await self._read_sensors()
+            # Use the most recent data from the background sensor poll task.
+            # This is non-blocking — the poll loop runs concurrently and updates
+            # _latest_sensors as fast as the firmware responds (~20-50 ms round-trip).
+            # Falls back to a synchronous read only on the very first tick.
+            if self._latest_sensors is None:
+                sensors, battery_current_raw, battery_voltage_raw = await self._read_sensors()
+                if sensors is not None:
+                    self._latest_sensors = sensors
+                    self._latest_battery_current_raw = battery_current_raw
+                    self._latest_battery_voltage_raw = battery_voltage_raw
+            else:
+                sensors = self._latest_sensors
+                battery_current_raw = self._latest_battery_current_raw
+                battery_voltage_raw = self._latest_battery_voltage_raw
+
             if sensors is None:
                 raise RuntimeError("Sensor read returned None")
 
@@ -313,6 +337,12 @@ class RobotBackend(_BackendBase):
         if self.calibrate_on_connect and self._discovered_modules:
             await self._calibrate()
 
+        # Cancel any leftover poll task from a previous connection, then start fresh.
+        if self._sensor_poll_task and not self._sensor_poll_task.done():
+            self._sensor_poll_task.cancel()
+        self._latest_sensors = None
+        self._sensor_poll_task = asyncio.create_task(self._sensor_poll_loop())
+
         print("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
 
@@ -437,6 +467,32 @@ class RobotBackend(_BackendBase):
         return modules, battery_current_raw, battery_voltage_raw
 
     # ------------------------------------------------------------------
+    # Background sensor polling
+    # ------------------------------------------------------------------
+
+    async def _sensor_poll_loop(self) -> None:
+        """Continuously poll touch/FSR sensors in the background.
+
+        Motor state (positions, velocities, torques) arrives asynchronously via
+        the CAN receive loop. Sensor data requires a request-reply round-trip that
+        can take 20-50 ms on real hardware. Running this loop in the background
+        decouples sensor latency from the 50 Hz control tick.
+        """
+        while self._connected:
+            try:
+                sensors, batt_cur, batt_vol = await self._read_sensors()
+                if sensors is not None:
+                    self._latest_sensors = sensors
+                    self._latest_battery_current_raw = batt_cur
+                    self._latest_battery_voltage_raw = batt_vol
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not self._connected:
+                    break
+                await asyncio.sleep(0.05)  # brief pause before retrying after error
+
+    # ------------------------------------------------------------------
     # Sensor calibration & normalization
     # ------------------------------------------------------------------
 
@@ -445,14 +501,19 @@ class RobotBackend(_BackendBase):
         await self.set_home()
 
     async def poll_positions(self) -> None:
-        """Send an MIT enable frame to each motor to solicit a current-state reply."""
+        """Send a zero-torque MIT packet to each motor to solicit a state reply.
+
+        All control params (kp, kd, torque_ff) are 0 so no force is applied.
+        Avoids the MIT mode-enter frame (0xFC) which can cause audible clicking
+        as the motor controller briefly re-initialises.
+        """
         if self._ws is None:
             return
         # Poll all configured IDs (or 1–7) rather than just _discovered_motors, so
         # motors that missed the discovery window still get fresh state each tick.
         ids = self._configured_motor_ids if self._configured_motor_ids else range(1, 8)
         for mid in ids:
-            await self._ws.send(_encode_mit_enable(mid))
+            await self._ws.send(_encode_mit_zero(mid))
 
     async def disable_torques(self) -> None:
         if self._ws is None:
@@ -621,6 +682,11 @@ def _encode_mit_enable(motor_id: int) -> str:
 
 def _encode_mit_disable(motor_id: int) -> str:
     return f"t{motor_id:03X}8FFFFFFFFFFFFFFFD"
+
+
+def _encode_mit_zero(motor_id: int) -> str:
+    """MIT packet with pos=0, vel=0, kp=0, kd=0, torque=0 — zero torque state query."""
+    return _encode_mit_packet(motor_id, pos=0.0, vel=0.0, kp=0.0, kd=0.0, torque=0.0)
 
 
 def _parse_slcan(frame: str) -> tuple[int, list[int]]:

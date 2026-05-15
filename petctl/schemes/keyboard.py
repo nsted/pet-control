@@ -18,6 +18,7 @@ Install: pip install pynput
 from __future__ import annotations
 
 import threading
+import time
 from typing import TYPE_CHECKING, Optional
 
 from petctl.protocols import ControlScheme
@@ -59,6 +60,11 @@ class KeyboardControlScheme(ControlScheme):
         self._reset_requested: bool = False
         self._save_home_requested: bool = False
         self._lock = threading.Lock()
+        # Timestamp of last key event that changed a motor target.
+        # Position commands are re-issued for _SLEW_SETTLE_S after each key
+        # press so the slew filter can reach the target, then the scheme goes
+        # quiet and the controller falls back to MIT enable frames only.
+        self._last_key_time: float = 0.0
 
         self._controller: Optional["Controller"] = None
         self._listener = None
@@ -75,6 +81,11 @@ class KeyboardControlScheme(ControlScheme):
             "[Keyboard] Ready.\n"
             "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+`: save home  |  q/Esc: quit"
         )
+
+    # Seconds to keep re-issuing position commands after the last key press.
+    # Long enough for the slew filter to reach the target; after this the
+    # controller falls back to MIT enable frames, stopping the motor clicking.
+    _SLEW_SETTLE_S: float = 0.5
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         with self._lock:
@@ -94,6 +105,7 @@ class KeyboardControlScheme(ControlScheme):
                 self._angles[mod] = 0.0
                 commands.append(ServoCommand.from_angle(servo_id, 0.0))
                 zeroed.append(servo_id)
+            self._last_key_time = time.monotonic()
             print(f"[Keyboard] reset: servos {zeroed} → 0°")
             return commands
 
@@ -112,12 +124,15 @@ class KeyboardControlScheme(ControlScheme):
             new_angle = current + delta
             self._angles[mod] = new_angle
 
-        # Re-issue targets every tick so the controller can slew toward them smoothly.
-        for mod, angle_deg in self._angles.items():
-            servo_id = mod + self.servo_offset
-            if servo_id not in state.active_servo_ids:
-                continue
-            commands.append(ServoCommand.from_angle(servo_id, angle_deg))
+        # Re-issue targets only while the slew filter is still settling.
+        # Once quiet, the controller sends MIT enable frames and the motor holds
+        # its last position internally — no need to keep commanding it.
+        if self._angles and (time.monotonic() - self._last_key_time) <= self._SLEW_SETTLE_S:
+            for mod, angle_deg in self._angles.items():
+                servo_id = mod + self.servo_offset
+                if servo_id not in state.active_servo_ids:
+                    continue
+                commands.append(ServoCommand.from_angle(servo_id, angle_deg))
 
         return commands
 
@@ -204,10 +219,12 @@ class KeyboardControlScheme(ControlScheme):
                         self._pending[self._selected] = (
                             self._pending.get(self._selected, 0.0) + self.step_deg
                         )
+                        self._last_key_time = time.monotonic()
                     elif key == keyboard.Key.down:
                         self._pending[self._selected] = (
                             self._pending.get(self._selected, 0.0) - self.step_deg
                         )
+                        self._last_key_time = time.monotonic()
                     elif key == keyboard.Key.esc:
                         stop_requested = True
 

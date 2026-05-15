@@ -129,6 +129,15 @@ class RerunVisualizer(Visualizer):
         # Cached parent map and entity paths — built once in _load_assembly()
         self._parent_map: dict[int, Optional[int]] = {}
         self._entity_path_cache: dict[int, str] = {}
+        # Pre-computed module offsets (avoids per-tick dict.get on module dicts)
+        self._module_offsets: dict[int, list] = {}
+        # Per-module swap_lr flag for sensor overlay (viz X-flip vs backend swap)
+        self._overlay_swap_lr: dict[int, bool] = {}
+        # Static batched arrays for sensor overlay ellipsoids (set in on_start)
+        self._overlay_centers: Optional[np.ndarray] = None
+        self._overlay_touch_hs: Optional[np.ndarray] = None
+        self._overlay_pressure_hs: Optional[np.ndarray] = None
+        self._overlay_quats: list = []
         self._rr = None
 
     # ------------------------------------------------------------------
@@ -146,6 +155,7 @@ class RerunVisualizer(Visualizer):
         rr.init(self.app_name, spawn=True)
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
+        self._setup_overlay_geometry(rr)
         self._send_blueprint()
         self._setup_motor_series()
         self._setup_battery_series()
@@ -253,6 +263,32 @@ class RerunVisualizer(Visualizer):
                 rr.log(f"sensors/capacitive/{mod_id}_{face}", rr.Scalars(tv))
                 rr.log(f"sensors/fsr/{mod_id}_{face}", rr.Scalars(pv))
 
+    def _setup_overlay_geometry(self, rr) -> None:
+        """Pre-compute static arrays used every tick by _log_sensor_overlays."""
+        # Use the same left/middle/right order as _SENSOR_FACE_NAMES throughout
+        self._overlay_centers = np.array(
+            [_SENSOR_FACES[f]["center"] for f in _SENSOR_FACE_NAMES], dtype=np.float32
+        )
+        self._overlay_touch_hs = np.array(
+            [[_TOUCH_RADIUS, _TOUCH_RADIUS, _DISC_THICKNESS]] * 3, dtype=np.float32
+        )
+        self._overlay_pressure_hs = np.array(
+            [[_PRESSURE_RADIUS, _PRESSURE_RADIUS, _PRESSURE_THICKNESS]] * 3, dtype=np.float32
+        )
+        self._overlay_quats = [
+            rr.Quaternion(xyzw=_SENSOR_FACES[f]["quaternion"]) for f in _SENSOR_FACE_NAMES
+        ]
+        # Per-module: True if left/right sensor reads should be swapped for correct display.
+        # Modules whose HPR rotation flips local X (R_hpr[0,0] < 0) need a swap unless
+        # the backend has already applied its own left/right inversion (odd module IDs).
+        self._overlay_swap_lr = {
+            int(mod["id"]): (
+                float(self._hpr_mats[int(mod["id"])][0, 0]) < 0
+                and (int(mod["id"]) % 2) == 0
+            )
+            for mod in self._module_meta
+        }
+
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
         Log two diffuse-coloured discs on each prism face (left / right / middle)
@@ -260,51 +296,47 @@ class RerunVisualizer(Visualizer):
         Alpha is proportional to the sensor value (0 → transparent, 1 → opaque).
         Discs are logged as children of the module's joint entity so they ride
         along automatically as the robot articulates.
+
+        All three face discs for a module are batched into a single Ellipsoids3D
+        call per type (touch / pressure), reducing rr.log() calls from 6 to 2
+        per module.
         """
+        if self._overlay_centers is None:
+            return
         for mod in self._module_meta:
             mod_id = int(mod["id"])
             sensors = state.sensors.get(mod_id)
             if sensors is None:
                 continue
 
-            entity_base = self._entity_path_cache.get(mod_id) or self._entity_path(mod_id)
+            entity_base = self._entity_path_cache[mod_id]
+            swap_lr = self._overlay_swap_lr.get(mod_id, False)
 
-            # Modules whose HPR rotation flips local X (R_hpr[0,0] < 0) display the
-            # "left" disc on the visual right and vice-versa.  Odd modules are already
-            # corrected by the backend swap, so they cancel out.  Even modules 2/4/6
-            # have only the visual flip and need a left↔right read swap here.
-            viz_x_flipped  = float(self._hpr_mats[mod_id][0, 0]) < 0
-            backend_swapped = (mod_id % 2) == 1
-            swap_lr = viz_x_flipped and not backend_swapped
-
-            for face_name, face in _SENSOR_FACES.items():
+            touch_colors = []
+            pressure_colors = []
+            for face_name in _SENSOR_FACE_NAMES:
                 read_face = face_name
                 if swap_lr and face_name in ("left", "right"):
                     read_face = "right" if face_name == "left" else "left"
-                touch_val    = float(getattr(sensors, f"touch_{read_face}",    0.0))
-                pressure_val = float(getattr(sensors, f"pressure_{read_face}", 0.0))
+                tv = float(getattr(sensors, f"touch_{read_face}", 0.0))
+                pv = float(getattr(sensors, f"pressure_{read_face}", 0.0))
+                touch_colors.append((*_TOUCH_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, tv)) * (255 - _MIN_ALPHA))))
+                pressure_colors.append((*_PRESSURE_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, pv)) * (255 - _MIN_ALPHA))))
 
-                center = face["center"]
-                quat   = face["quaternion"]
-                face_path = f"{entity_base}/sensor_overlay/{face_name}"
-
-                touch_alpha    = _MIN_ALPHA + int(min(1.0, max(0.0, touch_val))    * (255 - _MIN_ALPHA))
-                pressure_alpha = _MIN_ALPHA + int(min(1.0, max(0.0, pressure_val)) * (255 - _MIN_ALPHA))
-
-                rr.log(f"{face_path}/touch", rr.Ellipsoids3D(
-                    centers=[center],
-                    half_sizes=[[_TOUCH_RADIUS, _TOUCH_RADIUS, _DISC_THICKNESS]],
-                    quaternions=[rr.Quaternion(xyzw=quat)],
-                    colors=[(*_TOUCH_COLOR_RGB, touch_alpha)],
-                    fill_mode="solid",
-                ))
-                rr.log(f"{face_path}/pressure", rr.Ellipsoids3D(
-                    centers=[center],
-                    half_sizes=[[_PRESSURE_RADIUS, _PRESSURE_RADIUS, _PRESSURE_THICKNESS]],
-                    quaternions=[rr.Quaternion(xyzw=quat)],
-                    colors=[(*_PRESSURE_COLOR_RGB, pressure_alpha)],
-                    fill_mode="solid",
-                ))
+            rr.log(f"{entity_base}/sensor_overlay/touch", rr.Ellipsoids3D(
+                centers=self._overlay_centers,
+                half_sizes=self._overlay_touch_hs,
+                quaternions=self._overlay_quats,
+                colors=touch_colors,
+                fill_mode="solid",
+            ))
+            rr.log(f"{entity_base}/sensor_overlay/pressure", rr.Ellipsoids3D(
+                centers=self._overlay_centers,
+                half_sizes=self._overlay_pressure_hs,
+                quaternions=self._overlay_quats,
+                colors=pressure_colors,
+                fill_mode="solid",
+            ))
 
     # ------------------------------------------------------------------
     # 3D setup and pose logging
@@ -337,9 +369,15 @@ class RerunVisualizer(Visualizer):
             for mod in self._module_meta
         }
 
-        # Pre-compute entity path strings (avoids string joins at 20 Hz)
+        # Pre-compute entity path strings (avoids string joins at 50 Hz)
         self._entity_path_cache = {
             int(mod["id"]): self._entity_path(int(mod["id"]))
+            for mod in self._module_meta
+        }
+
+        # Pre-compute per-module link offsets (avoids dict.get on every tick)
+        self._module_offsets = {
+            int(mod["id"]): mod.get("offset", [0.0, 0.0, 0.0])
             for mod in self._module_meta
         }
 
@@ -386,8 +424,8 @@ class RerunVisualizer(Visualizer):
 
         for mod in self._module_meta:
             mod_id = int(mod["id"])
-            joint_path = self._entity_path_cache.get(mod_id) or self._entity_path(mod_id)
-            offset = mod.get("offset", [0.0, 0.0, 0.0])
+            joint_path = self._entity_path_cache[mod_id]
+            offset = self._module_offsets[mod_id]
 
             # Negate: hardware joint positive sense vs mesh joint axis in assembly
             # right-hand-rule Z rotation, so the viz was a mirror of the real robot.

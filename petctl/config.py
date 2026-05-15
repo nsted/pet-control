@@ -36,7 +36,7 @@ class ControlLoopLimits:
 
     poll_hz_min: float = 5.0
     poll_hz_max: float = 50.0
-    poll_hz_default: float = 50.0
+    poll_hz_default: float = 30.0
 
     # First-order smoothing of commanded position toward the scheme (see Controller).
     # Larger tau = softer motion; 0 disables (only max_angle_step_per_tick_deg applies).
