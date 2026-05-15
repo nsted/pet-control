@@ -85,6 +85,7 @@ class RobotBackend(_BackendBase):
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
+        self._reconnect_task: Optional[asyncio.Task] = None
         self._rx_unhandled_logged: int = 0
         self._rx_binary_logged: int = 0
         # Set by _try_bare_ping; receive loop completes it on a plain "pong" line.
@@ -111,6 +112,9 @@ class RobotBackend(_BackendBase):
 
     async def disconnect(self) -> None:
         self._connected = False
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            self._reconnect_task = None
         if self._sensor_poll_task:
             self._sensor_poll_task.cancel()
             self._sensor_poll_task = None
@@ -188,7 +192,7 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] get_state error: {e}")
             self._connected = False
             if self.auto_reconnect and not self._reconnecting:
-                asyncio.get_running_loop().create_task(self._reconnect_loop())
+                self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
             return RobotState(
                 timestamp=time.monotonic(),
                 sensors=self._last_state.sensors,
@@ -273,7 +277,7 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] Resolution failed: {e}")
         return None
 
-    async def _connect_with_ip(self, ip: str) -> bool:
+    async def _connect_with_ip(self, ip: str, *, _is_reconnect: bool = False) -> bool:
         uri = f"ws://{ip}:{self.port}"
         print(f"[RobotBackend] Connecting to {uri}...")
         try:
@@ -323,19 +327,30 @@ class RobotBackend(_BackendBase):
             await self._ws.send("O")
             await asyncio.sleep(0.05)
 
-        self._discovered_modules = await self._discover_modules()
-
-        if self._configured_motor_ids is not None:
-            self._discovered_motors = list(self._configured_motor_ids)
-            print(f"[RobotBackend] Using fixed motor IDs (--motors): {self._discovered_motors}")
+        if _is_reconnect and self._discovered_modules and self._discovered_motors:
+            # Reuse previously discovered topology — skip the 1-second motor scan and
+            # re-calibration so home offsets stay valid across a transient drop.
+            print(
+                f"[RobotBackend] Reconnect: reusing modules={self._discovered_modules} "
+                f"motors={self._discovered_motors}"
+            )
             for mid in self._discovered_motors:
                 await self._ws.send(_encode_mit_enable(mid))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
         else:
-            self._discovered_motors = await self._discover_motors()
+            self._discovered_modules = await self._discover_modules()
 
-        if self.calibrate_on_connect and self._discovered_modules:
-            await self._calibrate()
+            if self._configured_motor_ids is not None:
+                self._discovered_motors = list(self._configured_motor_ids)
+                print(f"[RobotBackend] Using fixed motor IDs (--motors): {self._discovered_motors}")
+                for mid in self._discovered_motors:
+                    await self._ws.send(_encode_mit_enable(mid))
+                await asyncio.sleep(0.5)
+            else:
+                self._discovered_motors = await self._discover_motors()
+
+            if self.calibrate_on_connect and self._discovered_modules:
+                await self._calibrate()
 
         # Cancel any leftover poll task from a previous connection, then start fresh.
         if self._sensor_poll_task and not self._sensor_poll_task.done():
@@ -419,7 +434,7 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
 
     async def _read_sensors(self) -> tuple[Optional[dict[int, ModuleSensors]], int, int]:
-        data = await self._send_text("snsr 0 108", timeout=2.0)
+        data = await self._send_text("snsr 0 108", timeout=0.5)
         if not data:
             return None, 0, 0
         try:
@@ -479,8 +494,8 @@ class RobotBackend(_BackendBase):
         decouples sensor latency from the 50 Hz control tick.
 
         Caps to 10 Hz regardless of firmware response time to reduce Arduino load.
-        Triggers a reconnect after 3 consecutive timeouts so a dead connection is
-        detected within ~6 s rather than waiting for a higher-level exception.
+        Triggers a reconnect after 2 consecutive timeouts (0.5 s each) so a dead
+        connection is detected within ~1 s rather than waiting for a higher-level exception.
         """
         consecutive_failures = 0
         while self._connected:
@@ -494,14 +509,14 @@ class RobotBackend(_BackendBase):
                     consecutive_failures = 0
                 else:
                     consecutive_failures += 1
-                    if consecutive_failures >= 3:
+                    if consecutive_failures >= 2:
                         print(
                             f"[RobotBackend] Sensor read timed out {consecutive_failures}× — "
                             "declaring connection dead and reconnecting."
                         )
                         self._connected = False
                         if self.auto_reconnect and not self._reconnecting:
-                            asyncio.get_running_loop().create_task(self._reconnect_loop())
+                            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
                         break
                 # Cap to ~10 Hz so we don't flood the Arduino with back-to-back requests.
                 elapsed = time.monotonic() - t0
@@ -540,8 +555,11 @@ class RobotBackend(_BackendBase):
     async def disable_torques(self) -> None:
         if self._ws is None:
             return
-        for mid in self._discovered_motors or list(range(1, 8)):
-            await self._ws.send(_encode_mit_disable(mid))
+        try:
+            for mid in self._discovered_motors or list(range(1, 8)):
+                await self._ws.send(_encode_mit_disable(mid))
+        except Exception:
+            pass
 
     async def write_home_offsets(self) -> None:
         # Solicit a fresh frame from every motor, then yield to the receive
@@ -556,24 +574,41 @@ class RobotBackend(_BackendBase):
 
     async def _reconnect_loop(self) -> None:
         self._reconnecting = True
-        attempt = 0
-        while not self._connected:
-            attempt += 1
-            print(f"[RobotBackend] Reconnect attempt {attempt}...")
-            try:
-                ip = self._resolved_ip or await self._resolve_host()
-                if ip and await self._connect_with_ip(ip):
-                    self._connected = True
-                    print("[RobotBackend] Reconnected.")
-                    break
-            except Exception as e:
-                print(f"[RobotBackend] Reconnect error: {e}")
-                # Only clear the cached IP if it looks like a resolution problem;
-                # for ordinary connection failures the IP hasn't changed.
-                if not self._resolved_ip:
-                    pass  # nothing to clear
-            await asyncio.sleep(self.reconnect_delay)
-        self._reconnecting = False
+        try:
+            # Tear down the old connection so the Arduino releases its slot.
+            # Without an explicit close, the server sees the old TCP connection
+            # as still alive and refuses new connection attempts.
+            if self._receive_task and not self._receive_task.done():
+                self._receive_task.cancel()
+                self._receive_task = None
+            if self._sensor_poll_task and not self._sensor_poll_task.done():
+                self._sensor_poll_task.cancel()
+                self._sensor_poll_task = None
+            if self._ws is not None:
+                try:
+                    await asyncio.wait_for(self._ws.close(), timeout=2.0)
+                except Exception:
+                    pass
+                self._ws = None
+            for fut in self._pending_requests.values():
+                if not fut.done():
+                    fut.cancel()
+            self._pending_requests.clear()
+
+            attempt = 0
+            while not self._connected:
+                attempt += 1
+                print(f"[RobotBackend] Reconnect attempt {attempt}...")
+                try:
+                    ip = self._resolved_ip or await self._resolve_host()
+                    if ip and await self._connect_with_ip(ip, _is_reconnect=True):
+                        print("[RobotBackend] Reconnected.")
+                        break
+                except Exception as e:
+                    print(f"[RobotBackend] Reconnect error: {e}")
+                await asyncio.sleep(self.reconnect_delay)
+        finally:
+            self._reconnecting = False
 
     async def set_home(self) -> None:
         captured: list[int] = []
@@ -632,7 +667,7 @@ class RobotBackend(_BackendBase):
             print(f"[RobotBackend] WebSocket receive loop ended: {e!r}")
             self._connected = False
             if self.auto_reconnect and not self._reconnecting:
-                asyncio.get_running_loop().create_task(self._reconnect_loop())
+                self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     def _handle_api_response(self, msg: str) -> None:
         req_raw, _, data = msg.partition(":")
