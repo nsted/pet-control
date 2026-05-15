@@ -11,7 +11,7 @@ from typing import Optional, Sequence
 
 import websockets
 
-from petctl.config import MOTOR_LIMITS
+from petctl.config import LOOP_LIMITS, MOTOR_LIMITS
 from petctl.protocols import RobotBackend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
@@ -38,6 +38,25 @@ def _ping_payload_ok(data: Optional[str]) -> bool:
         return False
     stripped = data.strip().lower()
     return "pong" in stripped or stripped == ""
+
+
+class _TxTokenBucket:
+    """Leaky-bucket rate limiter for outbound WebSocket messages."""
+
+    def __init__(self, rate: float) -> None:
+        self._rate = rate
+        self._tokens = rate
+        self._last = time.monotonic()
+
+    async def acquire(self) -> None:
+        while True:
+            now = time.monotonic()
+            self._tokens = min(self._rate, self._tokens + (now - self._last) * self._rate)
+            self._last = now
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            await asyncio.sleep((1.0 - self._tokens) / self._rate)
 
 
 class RobotBackend(_BackendBase):
@@ -97,6 +116,12 @@ class RobotBackend(_BackendBase):
         self._latest_battery_current_raw: int = 0
         self._latest_battery_voltage_raw: int = 0
         self._sensor_poll_task: Optional[asyncio.Task] = None
+
+        # Outbound WS serialization: lock prevents motor batches and sensor requests
+        # from interleaving; bucket caps total messages/sec across all channels.
+        self._ws_send_lock: asyncio.Lock = asyncio.Lock()
+        self._tx_bucket: _TxTokenBucket = _TxTokenBucket(LOOP_LIMITS.ws_max_tx_messages_per_sec)
+        self._idle_poll_idx: int = 0
 
     # ------------------------------------------------------------------
     # RobotBackend interface
@@ -211,6 +236,7 @@ class RobotBackend(_BackendBase):
         if not self._connected or self._ws is None:
             return
         now = time.monotonic()
+        frames: list[str] = []
         for cmd in commands:
             if cmd.position is None:
                 continue
@@ -226,8 +252,8 @@ class RobotBackend(_BackendBase):
                 vel = 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
-            frame = _encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff)
-            await self._ws.send(frame)
+            frames.append(_encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff))
+        await self._ws_send_batch(frames)
 
     @property
     def is_connected(self) -> bool:
@@ -391,12 +417,27 @@ class RobotBackend(_BackendBase):
         req_id = self._next_req_id()
         fut = asyncio.get_running_loop().create_future()
         self._pending_requests[req_id] = fut
-        await self._ws.send(f"{req_id}:{command}")
+        await self._tx_bucket.acquire()
+        async with self._ws_send_lock:
+            await self._ws.send(f"{req_id}:{command}")
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             self._pending_requests.pop(req_id, None)
             return None
+
+    async def _ws_send_batch(self, frames: list[str]) -> None:
+        """Rate-limit and serialize a batch of outbound SLCAN/text frames.
+
+        Joins all frames into one WebSocket message so the Arduino handles a single
+        frame instead of N, reducing its WebSocket processing overhead by up to 7×
+        during active motor control.
+        """
+        if not frames or self._ws is None:
+            return
+        await self._tx_bucket.acquire()
+        async with self._ws_send_lock:
+            await self._ws.send("\n".join(frames))
 
     # ------------------------------------------------------------------
     # Discovery
@@ -518,10 +559,11 @@ class RobotBackend(_BackendBase):
                         if self.auto_reconnect and not self._reconnecting:
                             self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
                         break
-                # Cap to ~10 Hz so we don't flood the Arduino with back-to-back requests.
+                # Cap to sensor_poll_hz so we don't flood the Arduino with back-to-back requests.
                 elapsed = time.monotonic() - t0
-                if elapsed < 0.1:
-                    await asyncio.sleep(0.1 - elapsed)
+                period = 1.0 / LOOP_LIMITS.sensor_poll_hz
+                if elapsed < period:
+                    await asyncio.sleep(period - elapsed)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -549,15 +591,30 @@ class RobotBackend(_BackendBase):
         # Poll all configured IDs (or 1–7) rather than just _discovered_motors, so
         # motors that missed the discovery window still get fresh state each tick.
         ids = self._configured_motor_ids if self._configured_motor_ids else range(1, 8)
-        for mid in ids:
-            await self._ws.send(_encode_mit_zero(mid))
+        frames = [_encode_mit_zero(mid) for mid in ids]
+        await self._ws_send_batch(frames)
+
+    async def poll_next_motor(self) -> None:
+        """Poll one motor in round-robin order and advance the index.
+
+        Call once per idle tick instead of poll_positions() to spread CAN
+        transactions evenly across the control period rather than bursting
+        all motors at once.
+        """
+        if self._ws is None:
+            return
+        ids = list(self._configured_motor_ids) if self._configured_motor_ids else list(range(1, 8))
+        mid = ids[self._idle_poll_idx % len(ids)]
+        self._idle_poll_idx += 1
+        await self._ws_send_batch([_encode_mit_zero(mid)])
 
     async def disable_torques(self) -> None:
         if self._ws is None:
             return
         try:
-            for mid in self._discovered_motors or list(range(1, 8)):
-                await self._ws.send(_encode_mit_disable(mid))
+            ids = self._discovered_motors or list(range(1, 8))
+            frames = [_encode_mit_disable(mid) for mid in ids]
+            await self._ws_send_batch(frames)
         except Exception:
             pass
 

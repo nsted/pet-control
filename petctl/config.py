@@ -56,6 +56,14 @@ class ControlLoopLimits:
     # so this only applies when the control scheme produces no output.
     idle_motor_poll_hz: float = 5.0
 
+    # Background sensor poll rate (touch + FSR). Previously hardcoded as 10 Hz.
+    sensor_poll_hz: float = 10.0
+
+    # Hard cap on total outbound WebSocket messages/sec across all channels.
+    # With batching: 30 Hz motor (1 msg/tick) + 10 Hz sensor = 40 msgs/sec.
+    # Set above that sum so the limiter only fires if something runs away.
+    ws_max_tx_messages_per_sec: float = 60.0
+
 
 @dataclass(frozen=True)
 class BehaviorLimits:
