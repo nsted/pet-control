@@ -101,6 +101,10 @@ class RobotBackend(_BackendBase):
         # Last MIT absolute position / wall time for velocity feedforward.
         self._last_mit_abs_pos: dict[int, float] = {}
         self._last_mit_wall_s: dict[int, float] = {}
+        # Last commanded position/gains per motor for idle hold-position polls.
+        # Stored as (pos_rad, kp, kd) — vel=0 and torque_ff=0 are used at poll
+        # time so stale velocity feedforward doesn't apply unintended torque.
+        self._last_hold: dict[int, tuple[float, float, float]] = {}
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
@@ -252,6 +256,7 @@ class RobotBackend(_BackendBase):
                 vel = 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
+            self._last_hold[sid] = (pos_rad, cmd.kp, cmd.kd)
             frames.append(_encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff))
         await self._ws_send_batch(frames)
 
@@ -429,15 +434,15 @@ class RobotBackend(_BackendBase):
     async def _ws_send_batch(self, frames: list[str]) -> None:
         """Rate-limit and serialize a batch of outbound SLCAN/text frames.
 
-        Joins all frames into one WebSocket message so the Arduino handles a single
-        frame instead of N, reducing its WebSocket processing overhead by up to 7×
-        during active motor control.
+        Sends each frame as a separate WebSocket message — the firmware only
+        processes the first frame in a multi-line message.
         """
         if not frames or self._ws is None:
             return
         await self._tx_bucket.acquire()
-        async with self._ws_send_lock:
-            await self._ws.send("\n".join(frames))
+        for frame in frames:
+            async with self._ws_send_lock:
+                await self._ws.send(frame)
 
     # ------------------------------------------------------------------
     # Discovery
@@ -475,7 +480,7 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
 
     async def _read_sensors(self) -> tuple[Optional[dict[int, ModuleSensors]], int, int]:
-        data = await self._send_text("snsr 0 108", timeout=0.5)
+        data = await self._send_text("snsr 0 108", timeout=1.0)
         if not data:
             return None, 0, 0
         try:
@@ -551,7 +556,7 @@ class RobotBackend(_BackendBase):
                     consecutive_failures = 0
                 else:
                     consecutive_failures += 1
-                    if consecutive_failures >= 2:
+                    if consecutive_failures >= 5:
                         print(
                             f"[RobotBackend] Sensor read timed out {consecutive_failures}× — "
                             "declaring connection dead and reconnecting."
@@ -581,33 +586,39 @@ class RobotBackend(_BackendBase):
         await self.set_home()
 
     async def poll_positions(self) -> None:
-        """Send a zero-torque MIT packet to each motor to solicit a state reply.
+        """Solicit a state reply from every motor.
 
-        All control params (kp, kd, torque_ff) are 0 so no force is applied.
-        Avoids the MIT mode-enter frame (0xFC) which can cause audible clicking
-        as the motor controller briefly re-initialises.
+        Holds the last commanded position (vel=0, same kp/kd) if one exists,
+        otherwise sends a zero-torque frame. Avoids the MIT mode-enter frame
+        (0xFC) which can cause audible clicking on reinitialisation.
         """
         if self._ws is None:
             return
-        # Poll all configured IDs (or 1–7) rather than just _discovered_motors, so
-        # motors that missed the discovery window still get fresh state each tick.
         ids = self._configured_motor_ids if self._configured_motor_ids else range(1, 8)
-        frames = [_encode_mit_zero(mid) for mid in ids]
+        frames = [self._hold_frame(mid) for mid in ids]
         await self._ws_send_batch(frames)
 
     async def poll_next_motor(self) -> None:
         """Poll one motor in round-robin order and advance the index.
 
-        Call once per idle tick instead of poll_positions() to spread CAN
-        transactions evenly across the control period rather than bursting
-        all motors at once.
+        Holds the last commanded position (vel=0, same kp/kd) if one exists,
+        otherwise sends a zero-torque frame. Only called on idle ticks when the
+        control scheme produces no commands.
         """
         if self._ws is None:
             return
         ids = list(self._configured_motor_ids) if self._configured_motor_ids else list(range(1, 8))
         mid = ids[self._idle_poll_idx % len(ids)]
         self._idle_poll_idx += 1
-        await self._ws_send_batch([_encode_mit_zero(mid)])
+        await self._ws_send_batch([self._hold_frame(mid)])
+
+    def _hold_frame(self, motor_id: int) -> str:
+        """Return a hold-position frame if a prior command exists, else zero-torque."""
+        hold = self._last_hold.get(motor_id)
+        if hold is None:
+            return _encode_mit_zero(motor_id)
+        pos_rad, kp, kd = hold
+        return _encode_mit_packet(motor_id, pos_rad, 0.0, kp, kd, 0.0)
 
     async def disable_torques(self) -> None:
         if self._ws is None:

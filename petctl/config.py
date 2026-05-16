@@ -36,7 +36,7 @@ class ControlLoopLimits:
 
     poll_hz_min: float = 5.0
     poll_hz_max: float = 50.0
-    poll_hz_default: float = 30.0
+    poll_hz_default: float = 15.0
 
     # First-order smoothing of commanded position toward the scheme (see Controller).
     # Larger tau = softer motion; 0 disables (only max_angle_step_per_tick_deg applies).
@@ -59,9 +59,9 @@ class ControlLoopLimits:
     # Background sensor poll rate (touch + FSR). Previously hardcoded as 10 Hz.
     sensor_poll_hz: float = 10.0
 
-    # Hard cap on total outbound WebSocket messages/sec across all channels.
-    # With batching: 30 Hz motor (1 msg/tick) + 10 Hz sensor = 40 msgs/sec.
-    # Set above that sum so the limiter only fires if something runs away.
+    # Hard cap on outbound WebSocket message batches/sec.
+    # Each motor tick counts as 1 batch (not 7 individual frames) toward this limit.
+    # 15 Hz motor + 10 Hz sensor = 25 batches/sec. Set well above to only catch runaways.
     ws_max_tx_messages_per_sec: float = 60.0
 
 
