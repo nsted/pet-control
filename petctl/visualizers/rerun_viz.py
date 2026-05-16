@@ -107,16 +107,16 @@ _SENSOR_FACE_NAMES = ("left", "middle", "right")
 # until verified against live hardware; rows/columns may need swapping.
 # ------------------------------------------------------------------
 _PAD_CENTERS: list[list[float]] = [
-    # Right face (x=+3.51), 2×2 grid
-    [3.51,  0.25, -1.75],   # right_0  top-near
-    [3.51, -1.75, -1.75],   # right_1  top-far
-    [3.51,  0.25, -3.75],   # right_2  bot-near
-    [3.51, -1.75, -3.75],   # right_3  bot-far
-    # Left face (x=-3.51), 2×2 grid (mirrored)
-    [-3.51, -1.75, -1.75],  # left_0
-    [-3.51,  0.25, -1.75],  # left_1
-    [-3.51, -1.75, -3.75],  # left_2
-    [-3.51,  0.25, -3.75],  # left_3
+    # Right face (x=+3.51): pad_0 lone corner; pads 1,3,2 along -45° line, 3 in centre
+    [3.51,  0.25,  -1.75],   # right_0  top-near  (verified)
+    [3.51, -0.42,  -5.08],   # right_1  one step from pad_3 along -45°
+    [3.51, -3.08,  -2.42],   # right_2  opposite side of pad_3 from pad_1
+    [3.51, -1.75,  -3.75],   # right_3  centre of line (verified)
+    # Left face (x=-3.51): pad_0 lone corner; pads 1,3,2 along -45° line, 3 in centre
+    [-3.51, -1.75,  -1.75],  # left_0   (verified)
+    [-3.51, -1.08,  -5.08],  # left_1   one step from pad_3 along -45°
+    [-3.51,  1.58,  -2.42],  # left_2   opposite side of pad_3 from pad_1
+    [-3.51,  0.25,  -3.75],  # left_3   centre of line (verified)
     # Middle face (angled), 2-col × 3-row
     [-1.5,  2.67, -2.83],   # middle_0  top-left
     [ 1.5,  2.67, -2.83],   # middle_1  top-right
@@ -141,6 +141,13 @@ _PAD_QUATS_XYZW: list[list[float]] = (
     [_PAD_QUAT_RIGHT]  * 4
     + [_PAD_QUAT_LEFT]   * 4
     + [_PAD_QUAT_MIDDLE] * 6
+)
+
+# Temporary pad ID labels — to be removed once pad layout is verified on hardware
+_PAD_LABELS: list[str] = (
+    ["R0", "R1", "R2", "R3"]
+    + ["L0", "L1", "L2", "L3"]
+    + ["M0", "M1", "M2", "M3", "M4", "M5"]
 )
 
 
@@ -208,6 +215,7 @@ class RerunVisualizer(Visualizer):
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         self._setup_overlay_geometry(rr)
+        self._log_pad_labels_static(rr)
         self._send_blueprint()
         self._setup_motor_series()
         self._setup_battery_series()
@@ -340,6 +348,25 @@ class RerunVisualizer(Visualizer):
             )
             for mod in self._module_meta
         }
+
+    def _log_pad_labels_static(self, rr) -> None:
+        """Log temporary pad ID labels as black text at each pad center (static, one-time)."""
+        if self._pad_centers_np is None:
+            return
+        black = [0, 0, 0, 255]
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            entity_base = self._entity_path_cache[mod_id]
+            rr.log(
+                f"{entity_base}/sensor_overlay/pad_labels",
+                rr.Points3D(
+                    positions=self._pad_centers_np,
+                    labels=_PAD_LABELS,
+                    colors=[black] * len(_PAD_LABELS),
+                    radii=[0.01] * len(_PAD_LABELS),
+                ),
+                static=True,
+            )
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """

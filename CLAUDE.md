@@ -19,12 +19,12 @@ Components are swappable ABCs. Control schemes never touch the backend directly 
 
 - **Module 0 is the head — no servo.** Servo IDs are 1–7 (modules 1–7 each have one joint).
 - **Odd modules have left/right sensors swapped** for body-frame consistency (handled in RobotBackend.\_read_sensors, transparent to everything above)
-- **All joints are single-axis Z revolute** — positive angle = one direction, negative = the other
+- **All joints are single-axis Z revolute** — positive angle = one direction, negative = the other, muli-turn
 - **Motor hardware:** CubeMars GL40 II BLDC motors in MIT mode over CAN bus
 - **Position units:** radians (`0.0` = software home offset per motor)
 - **Protocol:** SLCAN text frames over WebSocket (`t{id:03X}8...`), no binary WS frames
 - **Robot hostname:** pet-robot.local:8080
-- **Control loop:** 20Hz async
+- **Control loop:** 30Hz async
 
 ## Code Conventions
 
