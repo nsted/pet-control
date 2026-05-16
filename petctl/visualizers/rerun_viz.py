@@ -100,26 +100,24 @@ _SENSOR_FACE_NAMES = ("left", "middle", "right")
 #   left  pads  0-3  (nibbles 4-7)
 #   middle pads 0-5  (nibbles 8-13)
 #
-# Right/left: triangular end faces.  The triangle has a wide horizontal
-# top edge (y=-2.25 to +2.25 at z=-1.41) tapering to an apex at
-# z≈-5.75, y≈-2.09.  Layout: 3 pads across the upper row + 1 below.
+# Right/left: 2×2 grid on the flat rectangular face.
 # Middle: 2-col × 3-row grid on the angled rectangular face.
 #
-# Pad ordering within each face is an assumption until verified on hardware.
+# Pad ordering within each face (top-left→top-right→...) is an assumption
+# until verified against live hardware; rows/columns may need swapping.
 # ------------------------------------------------------------------
 _PAD_CENTERS: list[list[float]] = [
-    # Right face (x=+3.51) — triangular face, 3 across top + 1 below
-    # Face bounds at z=-2.2: y_left≈-2.23, y_right≈+1.43, center≈-0.40
-    [3.51, -1.5, -2.2],    # right_0  upper-left
-    [3.51, -0.4, -2.2],    # right_1  upper-center
-    [3.51,  0.7, -2.2],    # right_2  upper-right
-    [3.51, -1.1, -3.75],   # right_3  lower-center
-    # Left face (x=-3.51) — triangular face, same layout
-    [-3.51, -1.5, -2.2],   # left_0   upper-left
-    [-3.51, -0.4, -2.2],   # left_1   upper-center
-    [-3.51,  0.7, -2.2],   # left_2   upper-right
-    [-3.51, -1.1, -3.75],  # left_3   lower-center
-    # Middle face (angled rectangular), 2-col × 3-row
+    # Right face (x=+3.51), 2×2 grid
+    [3.51,  0.25, -1.75],   # right_0  top-near
+    [3.51, -1.75, -1.75],   # right_1  top-far
+    [3.51,  0.25, -3.75],   # right_2  bot-near
+    [3.51, -1.75, -3.75],   # right_3  bot-far
+    # Left face (x=-3.51), 2×2 grid (mirrored)
+    [-3.51, -1.75, -1.75],  # left_0
+    [-3.51,  0.25, -1.75],  # left_1
+    [-3.51, -1.75, -3.75],  # left_2
+    [-3.51,  0.25, -3.75],  # left_3
+    # Middle face (angled), 2-col × 3-row
     [-1.5,  2.67, -2.83],   # middle_0  top-left
     [ 1.5,  2.67, -2.83],   # middle_1  top-right
     [-1.5,  0.90, -4.60],   # middle_2  mid-left
@@ -128,11 +126,12 @@ _PAD_CENTERS: list[list[float]] = [
     [ 1.5, -0.87, -6.37],   # middle_5  bot-right
 ]
 
-# half_sizes in box-local frame: [vertical_half, horizontal_half, thickness]
-# (local-Z = face normal = "thickness"; local-X/Y span the face plane)
-# All pads use the same square shape so they look identical across faces.
-_PAD_HALF_SIZE_SQ = [0.6, 0.6, 0.05]   # 1.2 × 1.2 cm square, 0.1 cm thick
-_PAD_HALF_SIZES: list[list[float]] = [_PAD_HALF_SIZE_SQ] * 14
+# half_sizes in box-local frame (local-Z = face normal, so local-Z is "thickness")
+_PAD_HALF_SIZES: list[list[float]] = (
+    [[0.75, 0.75, 0.05]] * 4   # right: 1.5 cm square
+    + [[0.75, 0.75, 0.05]] * 4  # left:  1.5 cm square
+    + [[0.60, 0.75, 0.05]] * 6  # middle: 1.2 × 1.5 cm
+)
 
 # Per-pad quaternions (same orientation as the containing face)
 _PAD_QUAT_RIGHT  = [0.0,  _INV_SQRT2, 0.0, _INV_SQRT2]
