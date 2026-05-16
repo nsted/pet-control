@@ -184,6 +184,12 @@ _IMU_MODULE_ID: int = 7
 # Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
 _IMU_CENTER: tuple[float, float, float] = (0.0, -3.65, -2.7)
 
+# World-space position where module 7's joint origin must sit so the IMU lands at (0,0,0).
+# At rest, module 7's accumulated world rotation = I, so target = -I @ _IMU_CENTER = -_IMU_CENTER.
+_IMU_WORLD_TARGET: tuple[float, float, float] = (
+    -_IMU_CENTER[0], -_IMU_CENTER[1], -_IMU_CENTER[2]
+)
+
 # Quaternion (xyzw) that orients the IMU slab flat on the -Y face.
 # 90° around +X: maps local-Z → (0, -1, 0).
 _IMU_QUATERNION_XYZW: tuple[float, float, float, float] = (0.707, 0.0, 0.0, 0.707)
@@ -580,16 +586,16 @@ class RerunVisualizer(Visualizer):
 
         print(f"[RerunVisualizer] Loaded assembly with {len(self._module_meta)} modules")
 
-    def _compute_imu_rest_pos(self) -> np.ndarray:
-        """World-space position of the IMU with all joints at zero (FK from assembly)."""
-        chain = self._ancestor_chain(_IMU_MODULE_ID)
+    def _fk_to_module(self, mod_id: int, state: RobotState) -> tuple[np.ndarray, np.ndarray]:
+        """Cumulative FK position and rotation of mod_id in robot-local space."""
         pos = np.zeros(3, dtype=np.float64)
         R = np.eye(3, dtype=np.float64)
-        for mod_id in chain:
-            pos = pos + R @ np.array(self._module_offsets[mod_id], dtype=np.float64)
-            R = R @ self._hpr_mats[mod_id].astype(np.float64)
-        pos = pos + R @ np.array(_IMU_CENTER, dtype=np.float64)
-        return pos
+        for mid in self._ancestor_chain(mod_id):
+            pos = pos + R @ np.array(self._module_offsets[mid], dtype=np.float64)
+            angle_rad = -self._servo_angle_rad(mid, state)
+            R = R @ (self._hpr_mats[mid].astype(np.float64)
+                     @ _axis_angle_to_mat3(self._joint_axes[mid], angle_rad).astype(np.float64))
+        return pos, R
 
     def _setup_3d_geometry(self) -> None:
         """Log static OBJ mesh for each module (once, time-independent)."""
@@ -597,10 +603,6 @@ class RerunVisualizer(Visualizer):
         if not self._module_meta:
             print("[RerunVisualizer] No assembly data — skipping 3D geometry")
             return
-
-        # Shift the robot entity so the IMU rest position sits at world origin
-        imu_world = self._compute_imu_rest_pos()
-        rr.log("robot", rr.Transform3D(translation=(-imu_world).tolist()), static=True)
 
         for mod in self._module_meta:
             mod_id = int(mod["id"])
@@ -664,6 +666,16 @@ class RerunVisualizer(Visualizer):
         """
         if not self._module_meta:
             return
+
+        # Recompute the robot entity transform every tick so module 7 stays fixed
+        # at the world origin (IMU at 0,0,0) regardless of joint angles.
+        # Inverse of module 7's current world transform: R_robot = R7^T, t_robot = target - R7^T @ p7
+        p7, R7 = self._fk_to_module(_IMU_MODULE_ID, state)
+        target = np.array(_IMU_WORLD_TARGET, dtype=np.float64)
+        rr.log("robot", rr.Transform3D(
+            translation=(target - R7.T @ p7).tolist(),
+            mat3x3=R7.T.tolist(),
+        ))
 
         for mod in self._module_meta:
             mod_id = int(mod["id"])
