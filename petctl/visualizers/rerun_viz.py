@@ -272,7 +272,10 @@ class RerunVisualizer(Visualizer):
             rrb.TimeSeriesView(origin="sensors/capacitive", name="Capacitive touch (0–1)"),
             rrb.TimeSeriesView(origin="sensors/fsr", name="FSR pressure (0–1)"),
         ))
-        rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views)))
+        rr.send_blueprint(rrb.Blueprint(
+            rrb.Horizontal(*views),
+            rrb.SelectionPanel(state="hidden"),
+        ))
 
     def _setup_motor_series(self) -> None:
         """Declare SeriesLines for each motor telemetry metric."""
