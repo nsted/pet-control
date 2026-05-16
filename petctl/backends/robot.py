@@ -551,16 +551,17 @@ class RobotBackend(_BackendBase):
                         )
                     break
 
-                # Motor frames — one WS message
-                parts: list[str] = []
-                for mid in ids:
-                    frame = (self._pending_frames.pop(mid, None)
-                             or self._last_sent_frames.get(mid, _encode_mit_zero(mid)))
-                    parts.append(frame)
-                    self._last_sent_frames[mid] = frame
-                if self._ws is not None and parts:
+                # Motor frames — one WS send per motor.
+                # The Arduino SLCAN bridge processes exactly one SLCAN frame per WS
+                # message; batching multiple frames in one send (newline-separated)
+                # only executes the first and silently drops the rest.
+                if self._ws is not None:
                     async with self._ws_send_lock:
-                        await self._ws.send("\n".join(parts))
+                        for mid in ids:
+                            frame = (self._pending_frames.pop(mid, None)
+                                     or self._last_sent_frames.get(mid, _encode_mit_zero(mid)))
+                            self._last_sent_frames[mid] = frame
+                            await self._ws.send(frame)
 
                 # Sensor request — separate WS message, reply awaited before next tick
                 if tick % sensor_interval == 0:
