@@ -86,7 +86,8 @@ class RobotBackend(_BackendBase):
         # TX task double-buffer: pending (latest from control loop) and last sent (for poll).
         self._pending_frames: dict[int, str] = {}
         self._last_sent_frames: dict[int, str] = {}
-        self._mit_tx_task: Optional[asyncio.Task] = None
+        # Single unified WS TX task (motor frames + sensor requests, one send per tick).
+        self._ws_tx_task: Optional[asyncio.Task] = None
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
@@ -96,15 +97,12 @@ class RobotBackend(_BackendBase):
         # Set by _try_bare_ping; receive loop completes it on a plain "pong" line.
         self._bare_reply_fut: Optional[asyncio.Future[str]] = None
 
-        # Latest sensor data from background poll task — decouples sensor reads
+        # Latest sensor data populated by _ws_tx_loop — decouples sensor latency
         # from the control loop so get_state() never blocks on a network round-trip.
         self._latest_sensors: Optional[dict] = None
         self._latest_battery_current_raw: int = 0
         self._latest_battery_voltage_raw: int = 0
-        self._sensor_poll_task: Optional[asyncio.Task] = None
 
-        # Outbound WS serialization: lock prevents the MIT TX task and sensor requests
-        # from interleaving frames.
         self._ws_send_lock: asyncio.Lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -124,12 +122,9 @@ class RobotBackend(_BackendBase):
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
             self._reconnect_task = None
-        if self._sensor_poll_task:
-            self._sensor_poll_task.cancel()
-            self._sensor_poll_task = None
-        if self._mit_tx_task:
-            self._mit_tx_task.cancel()
-            self._mit_tx_task = None
+        if self._ws_tx_task:
+            self._ws_tx_task.cancel()
+            self._ws_tx_task = None
         if self._receive_task:
             self._receive_task.cancel()
             self._receive_task = None
@@ -363,14 +358,11 @@ class RobotBackend(_BackendBase):
             if self.calibrate_on_connect and self._discovered_modules:
                 await self._calibrate()
 
-        # Cancel any leftover tasks from a previous connection, then start fresh.
-        if self._sensor_poll_task and not self._sensor_poll_task.done():
-            self._sensor_poll_task.cancel()
-        if self._mit_tx_task and not self._mit_tx_task.done():
-            self._mit_tx_task.cancel()
+        # Cancel any leftover task from a previous connection, then start fresh.
+        if self._ws_tx_task and not self._ws_tx_task.done():
+            self._ws_tx_task.cancel()
         self._latest_sensors = None
-        self._sensor_poll_task = asyncio.create_task(self._sensor_poll_loop())
-        self._mit_tx_task = asyncio.create_task(self._mit_tx_loop())
+        self._ws_tx_task = asyncio.create_task(self._ws_tx_loop())
 
         print("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
@@ -448,8 +440,10 @@ class RobotBackend(_BackendBase):
     # Sensor reading
     # ------------------------------------------------------------------
 
-    async def _read_sensors(self) -> tuple[Optional[dict[int, ModuleSensors]], int, int]:
-        data = await self._send_text("snsr 0 108", timeout=1.0)
+    def _parse_sensor_response(
+        self, data: Optional[str]
+    ) -> tuple[Optional[dict[int, ModuleSensors]], int, int]:
+        """Parse a CSV sensor response string into (modules, battery_current_raw, battery_voltage_raw)."""
         if not data:
             return None, 0, 0
         try:
@@ -497,95 +491,115 @@ class RobotBackend(_BackendBase):
             )
         return modules, battery_current_raw, battery_voltage_raw
 
+    async def _read_sensors(self) -> tuple[Optional[dict[int, ModuleSensors]], int, int]:
+        """Synchronous sensor request used only for the first-tick fallback in get_state()."""
+        data = await self._send_text("snsr 0 108", timeout=1.0)
+        return self._parse_sensor_response(data)
+
     # ------------------------------------------------------------------
-    # Background sensor polling
+    # Unified WS TX background task
     # ------------------------------------------------------------------
 
-    async def _sensor_poll_loop(self) -> None:
-        """Continuously poll touch/FSR sensors in the background.
+    async def _ws_tx_loop(self) -> None:
+        """Single outbound WS send loop at ws_tx_hz.
 
-        Motor state (positions, velocities, torques) arrives asynchronously via
-        the CAN receive loop. Sensor data requires a request-reply round-trip that
-        can take 20-50 ms on real hardware. Running this loop in the background
-        decouples sensor latency from the 50 Hz control tick.
+        Every tick sends all motor MIT frames. Every sensor_interval ticks the
+        sensor API request is appended to the same ws.send() call, so the Arduino
+        receives motor commands and sensor poll in one message rather than two.
+        The sensor response arrives asynchronously via _handle_api_response.
 
-        Caps to 10 Hz regardless of firmware response time to reduce Arduino load.
-        Triggers a reconnect after 2 consecutive timeouts (0.5 s each) so a dead
-        connection is detected within ~1 s rather than waiting for a higher-level exception.
+        Total outbound: ws_tx_hz messages/sec (10/sec default), down from the
+        prior two-loop design's 15/sec.
         """
-        consecutive_failures = 0
-        while self._connected:
-            try:
-                t0 = time.monotonic()
-                sensors, batt_cur, batt_vol = await self._read_sensors()
-                if sensors is not None:
-                    self._latest_sensors = sensors
-                    self._latest_battery_current_raw = batt_cur
-                    self._latest_battery_voltage_raw = batt_vol
-                    consecutive_failures = 0
-                else:
-                    consecutive_failures += 1
-                    if consecutive_failures >= 5:
-                        print(
-                            f"[RobotBackend] Sensor read timed out {consecutive_failures}× — "
-                            "declaring connection dead and reconnecting."
-                        )
-                        self._connected = False
-                        if self.auto_reconnect and not self._reconnecting:
-                            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
-                        break
-                # Cap to sensor_poll_hz so we don't flood the Arduino with back-to-back requests.
-                elapsed = time.monotonic() - t0
-                period = 1.0 / LOOP_LIMITS.sensor_poll_hz
-                if elapsed < period:
-                    await asyncio.sleep(period - elapsed)
-            except asyncio.CancelledError:
-                raise
-            except websockets.ConnectionClosed:
-                break  # connection died; _receive_loop handles reconnect
-            except Exception:
-                if not self._connected:
-                    break
-                await asyncio.sleep(0.05)  # brief pause before retrying after error
+        sensor_interval = max(1, round(LOOP_LIMITS.ws_tx_hz / LOOP_LIMITS.sensor_poll_hz))
+        tick = 0
+        sensor_failures = 0
+        pending_sensor_fut: Optional[asyncio.Future] = None
+        pending_sensor_req_id: Optional[int] = None
+        sensor_sent_at: float = 0.0
 
-    # ------------------------------------------------------------------
-    # MIT TX background task
-    # ------------------------------------------------------------------
-
-    async def _mit_tx_loop(self) -> None:
-        """Send all motor MIT frames in one batched WS message per tick at mit_tx_hz.
-
-        All motors are collected into a single newline-joined WS send per tick,
-        reducing outbound WS messages from ~105/sec (one per motor per stagger
-        interval) to mit_tx_hz (~10/sec). Each motor still receives its frame at
-        mit_tx_hz; the control loop runs independently at poll_hz_default.
-        """
         while self._connected:
             try:
                 t0 = time.monotonic()
                 ids = self._discovered_motors or list(range(1, 8))
-                frames = []
+
+                # Motor frames — always included
+                parts: list[str] = []
                 for mid in ids:
                     frame = (self._pending_frames.pop(mid, None)
                              or self._last_sent_frames.get(mid, _encode_mit_zero(mid)))
-                    frames.append(frame)
+                    parts.append(frame)
                     self._last_sent_frames[mid] = frame
-                if self._ws is not None and frames:
+
+                # Check whether the previous sensor request has resolved
+                if pending_sensor_fut is not None:
+                    if pending_sensor_fut.done():
+                        try:
+                            sensors, batt_cur, batt_vol = self._parse_sensor_response(
+                                pending_sensor_fut.result()
+                            )
+                            if sensors is not None:
+                                self._latest_sensors = sensors
+                                self._latest_battery_current_raw = batt_cur
+                                self._latest_battery_voltage_raw = batt_vol
+                                sensor_failures = 0
+                            else:
+                                sensor_failures += 1
+                        except Exception:
+                            sensor_failures += 1
+                        pending_sensor_fut = None
+                        pending_sensor_req_id = None
+                    elif t0 - sensor_sent_at > 1.0:
+                        # Timeout — clean up and count failure
+                        self._pending_requests.pop(pending_sensor_req_id, None)
+                        pending_sensor_fut.cancel()
+                        pending_sensor_fut = None
+                        pending_sensor_req_id = None
+                        sensor_failures += 1
+
+                # Sensor failure threshold — triggers reconnect
+                if sensor_failures >= 5:
+                    print(
+                        f"[RobotBackend] Sensor read failed {sensor_failures}× — "
+                        "declaring connection dead and reconnecting."
+                    )
+                    self._connected = False
+                    if self.auto_reconnect and not self._reconnecting:
+                        self._reconnect_task = asyncio.get_running_loop().create_task(
+                            self._reconnect_loop()
+                        )
+                    break
+
+                # Piggyback sensor request on this tick if due and no request in flight
+                if tick % sensor_interval == 0 and pending_sensor_fut is None:
+                    req_id = self._next_req_id()
+                    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+                    self._pending_requests[req_id] = fut
+                    pending_sensor_fut = fut
+                    pending_sensor_req_id = req_id
+                    sensor_sent_at = t0
+                    parts.append(f"{req_id}:snsr 0 108")
+
+                # One ws.send() per tick
+                if self._ws is not None and parts:
                     async with self._ws_send_lock:
-                        await self._ws.send("\n".join(frames))
-                period = 1.0 / LOOP_LIMITS.mit_tx_hz
+                        await self._ws.send("\n".join(parts))
+
+                tick += 1
+                period = 1.0 / LOOP_LIMITS.ws_tx_hz
                 elapsed = time.monotonic() - t0
                 remaining = period - elapsed
                 if remaining > 0:
                     await asyncio.sleep(remaining)
+
             except asyncio.CancelledError:
                 raise
             except websockets.ConnectionClosed:
-                break  # connection died; _receive_loop handles reconnect
+                break  # _receive_loop handles reconnect
             except Exception as e:
                 if not self._connected:
                     break
-                print(f"[RobotBackend] MIT TX loop error: {e}")
+                print(f"[RobotBackend] WS TX loop error: {e}")
                 await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
@@ -644,12 +658,9 @@ class RobotBackend(_BackendBase):
             if self._receive_task and not self._receive_task.done():
                 self._receive_task.cancel()
                 self._receive_task = None
-            if self._sensor_poll_task and not self._sensor_poll_task.done():
-                self._sensor_poll_task.cancel()
-                self._sensor_poll_task = None
-            if self._mit_tx_task and not self._mit_tx_task.done():
-                self._mit_tx_task.cancel()
-                self._mit_tx_task = None
+            if self._ws_tx_task and not self._ws_tx_task.done():
+                self._ws_tx_task.cancel()
+                self._ws_tx_task = None
             if self._ws is not None:
                 try:
                     await asyncio.wait_for(self._ws.close(), timeout=2.0)
