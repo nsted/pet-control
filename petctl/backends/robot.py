@@ -103,6 +103,10 @@ class RobotBackend(_BackendBase):
         self._latest_battery_current_raw: int = 0
         self._latest_battery_voltage_raw: int = 0
 
+        # Monotonic timestamp of the last WS message received from the robot.
+        # Used by _ws_tx_loop to detect silent TCP drops (no WS close frame).
+        self._last_rx_time: float = 0.0
+
         self._ws_send_lock: asyncio.Lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -503,12 +507,15 @@ class RobotBackend(_BackendBase):
     async def _ws_tx_loop(self) -> None:
         """Single outbound WS send loop at ws_tx_hz.
 
-        Every tick: collect motor frames + (every sensor_interval ticks) append
-        the sensor API request, then send as one ws.send(). When a sensor request
-        is included, the reply is awaited (or times out) before the next tick so
-        transmissions are strictly serial — no overlapping sends or outstanding
-        requests.
+        Each tick sends motor frames as one WS message. Every sensor_interval
+        ticks a sensor request is sent as a SEPARATE WS message (not combined
+        with motor frames) and its reply is awaited before the next tick —
+        transmissions are strictly serial.
+
+        An RX watchdog detects silent TCP drops: if no message arrives from the
+        robot in _RX_SILENCE_TIMEOUT seconds the connection is declared dead.
         """
+        _RX_SILENCE_TIMEOUT = 5.0
         sensor_interval = max(1, round(LOOP_LIMITS.ws_tx_hz / LOOP_LIMITS.sensor_poll_hz))
         tick = 0
         sensor_failures = 0
@@ -518,13 +525,18 @@ class RobotBackend(_BackendBase):
                 t0 = time.monotonic()
                 ids = self._discovered_motors or list(range(1, 8))
 
-                # Motor frames — always included
-                parts: list[str] = []
-                for mid in ids:
-                    frame = (self._pending_frames.pop(mid, None)
-                             or self._last_sent_frames.get(mid, _encode_mit_zero(mid)))
-                    parts.append(frame)
-                    self._last_sent_frames[mid] = frame
+                # RX watchdog — detect silent TCP drops
+                if self._last_rx_time > 0 and t0 - self._last_rx_time > _RX_SILENCE_TIMEOUT:
+                    print(
+                        f"[RobotBackend] No message received in "
+                        f"{t0 - self._last_rx_time:.1f}s — connection silent, reconnecting."
+                    )
+                    self._connected = False
+                    if self.auto_reconnect and not self._reconnecting:
+                        self._reconnect_task = asyncio.get_running_loop().create_task(
+                            self._reconnect_loop()
+                        )
+                    break
 
                 # Sensor failure threshold
                 if sensor_failures >= 5:
@@ -539,34 +551,27 @@ class RobotBackend(_BackendBase):
                         )
                     break
 
-                # Piggyback sensor request on this tick if due
-                sensor_fut: Optional[asyncio.Future] = None
-                sensor_req_id: Optional[int] = None
-                if tick % sensor_interval == 0:
-                    sensor_req_id = self._next_req_id()
-                    sensor_fut = asyncio.get_running_loop().create_future()
-                    self._pending_requests[sensor_req_id] = sensor_fut
-                    parts.append(f"{sensor_req_id}:snsr 0 108")
-
-                # One ws.send() per tick
+                # Motor frames — one WS message
+                parts: list[str] = []
+                for mid in ids:
+                    frame = (self._pending_frames.pop(mid, None)
+                             or self._last_sent_frames.get(mid, _encode_mit_zero(mid)))
+                    parts.append(frame)
+                    self._last_sent_frames[mid] = frame
                 if self._ws is not None and parts:
                     async with self._ws_send_lock:
                         await self._ws.send("\n".join(parts))
 
-                # Collect sensor reply before proceeding — no overlapping requests
-                if sensor_fut is not None:
-                    try:
-                        data = await asyncio.wait_for(sensor_fut, timeout=1.0)
-                        sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
-                        if sensors is not None:
-                            self._latest_sensors = sensors
-                            self._latest_battery_current_raw = batt_cur
-                            self._latest_battery_voltage_raw = batt_vol
-                            sensor_failures = 0
-                        else:
-                            sensor_failures += 1
-                    except asyncio.TimeoutError:
-                        self._pending_requests.pop(sensor_req_id, None)
+                # Sensor request — separate WS message, reply awaited before next tick
+                if tick % sensor_interval == 0:
+                    data = await self._send_text("snsr 0 108", timeout=1.0)
+                    sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
+                    if sensors is not None:
+                        self._latest_sensors = sensors
+                        self._latest_battery_current_raw = batt_cur
+                        self._latest_battery_voltage_raw = batt_vol
+                        sensor_failures = 0
+                    else:
                         sensor_failures += 1
 
                 tick += 1
@@ -692,6 +697,7 @@ class RobotBackend(_BackendBase):
             return
         try:
             async for msg in self._ws:
+                self._last_rx_time = time.monotonic()
                 if isinstance(msg, bytes):
                     if self._rx_binary_logged < 4:
                         self._rx_binary_logged += 1
@@ -727,7 +733,13 @@ class RobotBackend(_BackendBase):
         except Exception as e:
             print(f"[RobotBackend] WebSocket receive loop ended: {e!r}")
         else:
-            print("[RobotBackend] WebSocket receive loop ended: server closed connection cleanly")
+            try:
+                code = self._ws.close_code if self._ws else None
+                reason = self._ws.close_reason if self._ws else ""
+                detail = f" code={code} reason={reason!r}" if code is not None else ""
+            except Exception:
+                detail = ""
+            print(f"[RobotBackend] WebSocket closed cleanly by server{detail}")
         # Reach here on clean close OR exception (not CancelledError) — trigger reconnect.
         if self._connected:
             self._connected = False
