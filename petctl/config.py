@@ -56,8 +56,14 @@ class ControlLoopLimits:
     # so this only applies when the control scheme produces no output.
     idle_motor_poll_hz: float = 5.0
 
-    # Background sensor poll rate (touch + FSR). Previously hardcoded as 10 Hz.
-    sensor_poll_hz: float = 10.0
+    # Background sensor poll rate (touch + FSR).
+    sensor_poll_hz: float = 5.0
+
+    # Rate at which batched MIT motor frames are sent over WebSocket.
+    # Decoupled from poll_hz_default so control-loop rate and WS TX rate can be
+    # tuned independently. Lower values reduce Arduino WS server load directly.
+    # At 10 Hz with 7 motors batched per send: ~10 WS messages/sec motor traffic.
+    mit_tx_hz: float = 10.0
 
     # Hard cap on outbound WebSocket message batches/sec.
     # Each motor tick counts as 1 batch (not 7 individual frames) toward this limit.

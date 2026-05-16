@@ -553,27 +553,27 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
 
     async def _mit_tx_loop(self) -> None:
-        """Send one MIT frame per motor in round-robin at a paced rate.
+        """Send all motor MIT frames in one batched WS message per tick at mit_tx_hz.
 
-        Uses the latest pending frame from the control loop if one arrived since
-        the last tick, otherwise resends the last transmitted frame verbatim —
-        this is the correct poll: same position, kp, kd, so the MIT control law
-        is unchanged. Falls back to zero-torque for motors never commanded.
+        All motors are collected into a single newline-joined WS send per tick,
+        reducing outbound WS messages from ~105/sec (one per motor per stagger
+        interval) to mit_tx_hz (~10/sec). Each motor still receives its frame at
+        mit_tx_hz; the control loop runs independently at poll_hz_default.
         """
-        idx = 0
         while self._connected:
             try:
                 t0 = time.monotonic()
                 ids = self._discovered_motors or list(range(1, 8))
-                mid = ids[idx % len(ids)]
-                idx += 1
-                frame = self._pending_frames.pop(mid, None) \
-                        or self._last_sent_frames.get(mid, _encode_mit_zero(mid))
-                if self._ws is not None:
-                    async with self._ws_send_lock:
-                        await self._ws.send(frame)
+                frames = []
+                for mid in ids:
+                    frame = (self._pending_frames.pop(mid, None)
+                             or self._last_sent_frames.get(mid, _encode_mit_zero(mid)))
+                    frames.append(frame)
                     self._last_sent_frames[mid] = frame
-                period = 1.0 / (LOOP_LIMITS.poll_hz_default * len(ids))
+                if self._ws is not None and frames:
+                    async with self._ws_send_lock:
+                        await self._ws.send("\n".join(frames))
+                period = 1.0 / LOOP_LIMITS.mit_tx_hz
                 elapsed = time.monotonic() - t0
                 remaining = period - elapsed
                 if remaining > 0:
