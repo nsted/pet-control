@@ -248,15 +248,6 @@ class Controller:
                     await self.backend.send_commands(commands)
                 except Exception as e:
                     print(f"[Controller] Backend send_commands error: {e}")
-            elif self.backend.is_connected:
-                # No commands this tick — poll one motor in round-robin order to
-                # keep _motor_state current without bursting all motors at once.
-                poll_next = getattr(self.backend, "poll_next_motor", None)
-                if poll_next is not None:
-                    try:
-                        await poll_next()
-                    except Exception:
-                        pass
 
             # 3b. Save-home: write EEPROM offsets so current position reports as 0
             take_save_home = getattr(self.scheme, "take_save_home", None)

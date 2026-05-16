@@ -40,24 +40,6 @@ def _ping_payload_ok(data: Optional[str]) -> bool:
     return "pong" in stripped or stripped == ""
 
 
-class _TxTokenBucket:
-    """Leaky-bucket rate limiter for outbound WebSocket messages."""
-
-    def __init__(self, rate: float) -> None:
-        self._rate = rate
-        self._tokens = rate
-        self._last = time.monotonic()
-
-    async def acquire(self) -> None:
-        while True:
-            now = time.monotonic()
-            self._tokens = min(self._rate, self._tokens + (now - self._last) * self._rate)
-            self._last = now
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-                return
-            await asyncio.sleep((1.0 - self._tokens) / self._rate)
-
 
 class RobotBackend(_BackendBase):
     """Backend for the real PET robot."""
@@ -101,10 +83,10 @@ class RobotBackend(_BackendBase):
         # Last MIT absolute position / wall time for velocity feedforward.
         self._last_mit_abs_pos: dict[int, float] = {}
         self._last_mit_wall_s: dict[int, float] = {}
-        # Last commanded position/gains per motor for idle hold-position polls.
-        # Stored as (pos_rad, kp, kd) — vel=0 and torque_ff=0 are used at poll
-        # time so stale velocity feedforward doesn't apply unintended torque.
-        self._last_hold: dict[int, tuple[float, float, float]] = {}
+        # TX task double-buffer: pending (latest from control loop) and last sent (for poll).
+        self._pending_frames: dict[int, str] = {}
+        self._last_sent_frames: dict[int, str] = {}
+        self._mit_tx_task: Optional[asyncio.Task] = None
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
@@ -121,11 +103,9 @@ class RobotBackend(_BackendBase):
         self._latest_battery_voltage_raw: int = 0
         self._sensor_poll_task: Optional[asyncio.Task] = None
 
-        # Outbound WS serialization: lock prevents motor batches and sensor requests
-        # from interleaving; bucket caps total messages/sec across all channels.
+        # Outbound WS serialization: lock prevents the MIT TX task and sensor requests
+        # from interleaving frames.
         self._ws_send_lock: asyncio.Lock = asyncio.Lock()
-        self._tx_bucket: _TxTokenBucket = _TxTokenBucket(LOOP_LIMITS.ws_max_tx_messages_per_sec)
-        self._idle_poll_idx: int = 0
 
     # ------------------------------------------------------------------
     # RobotBackend interface
@@ -147,6 +127,9 @@ class RobotBackend(_BackendBase):
         if self._sensor_poll_task:
             self._sensor_poll_task.cancel()
             self._sensor_poll_task = None
+        if self._mit_tx_task:
+            self._mit_tx_task.cancel()
+            self._mit_tx_task = None
         if self._receive_task:
             self._receive_task.cancel()
             self._receive_task = None
@@ -237,10 +220,9 @@ class RobotBackend(_BackendBase):
             )
 
     async def send_commands(self, commands: list[ServoCommand]) -> None:
-        if not self._connected or self._ws is None:
+        if not self._connected:
             return
         now = time.monotonic()
-        frames: list[str] = []
         for cmd in commands:
             if cmd.position is None:
                 continue
@@ -256,9 +238,7 @@ class RobotBackend(_BackendBase):
                 vel = 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
-            self._last_hold[sid] = (pos_rad, cmd.kp, cmd.kd)
-            frames.append(_encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff))
-        await self._ws_send_batch(frames)
+            self._pending_frames[sid] = _encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff)
 
     @property
     def is_connected(self) -> bool:
@@ -383,11 +363,14 @@ class RobotBackend(_BackendBase):
             if self.calibrate_on_connect and self._discovered_modules:
                 await self._calibrate()
 
-        # Cancel any leftover poll task from a previous connection, then start fresh.
+        # Cancel any leftover tasks from a previous connection, then start fresh.
         if self._sensor_poll_task and not self._sensor_poll_task.done():
             self._sensor_poll_task.cancel()
+        if self._mit_tx_task and not self._mit_tx_task.done():
+            self._mit_tx_task.cancel()
         self._latest_sensors = None
         self._sensor_poll_task = asyncio.create_task(self._sensor_poll_loop())
+        self._mit_tx_task = asyncio.create_task(self._mit_tx_loop())
 
         print("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
@@ -422,7 +405,6 @@ class RobotBackend(_BackendBase):
         req_id = self._next_req_id()
         fut = asyncio.get_running_loop().create_future()
         self._pending_requests[req_id] = fut
-        await self._tx_bucket.acquire()
         async with self._ws_send_lock:
             await self._ws.send(f"{req_id}:{command}")
         try:
@@ -430,19 +412,6 @@ class RobotBackend(_BackendBase):
         except asyncio.TimeoutError:
             self._pending_requests.pop(req_id, None)
             return None
-
-    async def _ws_send_batch(self, frames: list[str]) -> None:
-        """Rate-limit and serialize a batch of outbound SLCAN/text frames.
-
-        Sends each frame as a separate WebSocket message — the firmware only
-        processes the first frame in a multi-line message.
-        """
-        if not frames or self._ws is None:
-            return
-        await self._tx_bucket.acquire()
-        for frame in frames:
-            async with self._ws_send_lock:
-                await self._ws.send(frame)
 
     # ------------------------------------------------------------------
     # Discovery
@@ -578,6 +547,44 @@ class RobotBackend(_BackendBase):
                 await asyncio.sleep(0.05)  # brief pause before retrying after error
 
     # ------------------------------------------------------------------
+    # MIT TX background task
+    # ------------------------------------------------------------------
+
+    async def _mit_tx_loop(self) -> None:
+        """Send one MIT frame per motor in round-robin at a paced rate.
+
+        Uses the latest pending frame from the control loop if one arrived since
+        the last tick, otherwise resends the last transmitted frame verbatim —
+        this is the correct poll: same position, kp, kd, so the MIT control law
+        is unchanged. Falls back to zero-torque for motors never commanded.
+        """
+        idx = 0
+        while self._connected:
+            try:
+                t0 = time.monotonic()
+                ids = self._discovered_motors or list(range(1, 8))
+                mid = ids[idx % len(ids)]
+                idx += 1
+                frame = self._pending_frames.pop(mid, None) \
+                        or self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+                if self._ws is not None:
+                    async with self._ws_send_lock:
+                        await self._ws.send(frame)
+                    self._last_sent_frames[mid] = frame
+                period = 1.0 / (LOOP_LIMITS.poll_hz_default * len(ids))
+                elapsed = time.monotonic() - t0
+                remaining = period - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if not self._connected:
+                    break
+                print(f"[RobotBackend] MIT TX loop error: {e}")
+                await asyncio.sleep(0.01)
+
+    # ------------------------------------------------------------------
     # Sensor calibration & normalization
     # ------------------------------------------------------------------
 
@@ -588,45 +595,26 @@ class RobotBackend(_BackendBase):
     async def poll_positions(self) -> None:
         """Solicit a state reply from every motor.
 
-        Holds the last commanded position (vel=0, same kp/kd) if one exists,
-        otherwise sends a zero-torque frame. Avoids the MIT mode-enter frame
-        (0xFC) which can cause audible clicking on reinitialisation.
+        Resends the last transmitted frame verbatim so the MIT control law is
+        unchanged. Falls back to zero-torque for motors never commanded. Bypasses
+        the TX task — used only during calibration where synchronous ordering matters.
         """
         if self._ws is None:
             return
         ids = self._configured_motor_ids if self._configured_motor_ids else range(1, 8)
-        frames = [self._hold_frame(mid) for mid in ids]
-        await self._ws_send_batch(frames)
-
-    async def poll_next_motor(self) -> None:
-        """Poll one motor in round-robin order and advance the index.
-
-        Holds the last commanded position (vel=0, same kp/kd) if one exists,
-        otherwise sends a zero-torque frame. Only called on idle ticks when the
-        control scheme produces no commands.
-        """
-        if self._ws is None:
-            return
-        ids = list(self._configured_motor_ids) if self._configured_motor_ids else list(range(1, 8))
-        mid = ids[self._idle_poll_idx % len(ids)]
-        self._idle_poll_idx += 1
-        await self._ws_send_batch([self._hold_frame(mid)])
-
-    def _hold_frame(self, motor_id: int) -> str:
-        """Return a hold-position frame if a prior command exists, else zero-torque."""
-        hold = self._last_hold.get(motor_id)
-        if hold is None:
-            return _encode_mit_zero(motor_id)
-        pos_rad, kp, kd = hold
-        return _encode_mit_packet(motor_id, pos_rad, 0.0, kp, kd, 0.0)
+        for mid in ids:
+            frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+            async with self._ws_send_lock:
+                await self._ws.send(frame)
 
     async def disable_torques(self) -> None:
         if self._ws is None:
             return
         try:
             ids = self._discovered_motors or list(range(1, 8))
-            frames = [_encode_mit_disable(mid) for mid in ids]
-            await self._ws_send_batch(frames)
+            for mid in ids:
+                async with self._ws_send_lock:
+                    await self._ws.send(_encode_mit_disable(mid))
         except Exception:
             pass
 
@@ -653,6 +641,9 @@ class RobotBackend(_BackendBase):
             if self._sensor_poll_task and not self._sensor_poll_task.done():
                 self._sensor_poll_task.cancel()
                 self._sensor_poll_task = None
+            if self._mit_tx_task and not self._mit_tx_task.done():
+                self._mit_tx_task.cancel()
+                self._mit_tx_task = None
             if self._ws is not None:
                 try:
                     await asyncio.wait_for(self._ws.close(), timeout=2.0)
