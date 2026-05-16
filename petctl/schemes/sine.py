@@ -54,7 +54,7 @@ class SineControlScheme(ControlScheme):
     Travelling sine-wave control scheme.
 
     Args:
-        amplitude_deg:  Peak deflection from home in degrees (default: 15°).
+        amplitude_deg:  Peak deflection from home in degrees (default: 60°).
         hz:             Oscillation frequency in Hz (default: 0.2 Hz = 5 s period).
         servo_id:       If set, only this servo is driven. If None, all active
                         servos are driven with staggered phases.
@@ -64,7 +64,7 @@ class SineControlScheme(ControlScheme):
 
     def __init__(
         self,
-        amplitude_deg: float = 30.0,
+        amplitude_deg: float = 60.0,
         hz: float = 0.2,
         servo_id: Optional[int] = None,
     ) -> None:
