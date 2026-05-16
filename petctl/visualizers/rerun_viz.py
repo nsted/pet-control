@@ -85,11 +85,11 @@ _SENSOR_FACES: dict[str, dict] = {
 _PRESSURE_RADIUS    = 0.75  # cm — FSR disc radius
 _PRESSURE_THICKNESS = 0.15  # cm
 
-# Base RGB colours; alpha is proportional to sensor level (min 30 so overlays
-# are always faintly visible even when sensors read zero)
-_TOUCH_COLOR_RGB    = (50, 180, 220)   # cyan-blue
-_PRESSURE_COLOR_RGB = (230, 100, 20)   # warm orange
-_MIN_ALPHA = 30
+# Base RGB colours; alpha is proportional to sensor level
+_TOUCH_COLOR_RGB    = (255, 215, 0)    # gold
+_PRESSURE_COLOR_RGB = (50, 120, 220)   # royal blue
+_MIN_ALPHA = 38   # 15% opacity at zero activation
+_MAX_ALPHA = 204  # 80% opacity at full activation
 
 _SENSOR_FACE_NAMES = ("left", "middle", "right")
 
@@ -107,11 +107,11 @@ _SENSOR_FACE_NAMES = ("left", "middle", "right")
 # until verified against live hardware; rows/columns may need swapping.
 # ------------------------------------------------------------------
 _PAD_CENTERS: list[list[float]] = [
-    # Right face (x=+3.51): pad_0 lone corner; pads 1,2,3 along -45° line, 2 in centre
-    [3.51,  0.25,  -1.75],   # right_0  top-near  (verified)
-    [3.51, -0.42,  -5.08],   # right_1  one step from pad_2 along -45°
-    [3.51, -1.75,  -3.75],   # right_2  centre of line (verified)
-    [3.51, -3.08,  -2.42],   # right_3  opposite side of pad_2 from pad_1
+    # Right face (x=+3.51): rotated +90° around face normal to match left face orientation
+    [3.51, -1.75,  -1.75],   # right_0
+    [3.51,  1.58,  -2.42],   # right_1
+    [3.51,  0.25,  -3.75],   # right_2
+    [3.51, -1.08,  -5.08],   # right_3
     # Left face (x=-3.51): pad_0 lone corner; pads 1,2,3 along -45° line, 2 in centre
     [-3.51, -1.75,  -1.75],  # left_0   (verified)
     [-3.51, -1.08,  -5.08],  # left_1   one step from pad_2 along -45°
@@ -126,12 +126,26 @@ _PAD_CENTERS: list[list[float]] = [
     [ 1.5, -0.87, -6.37],   # middle_5  bot-right
 ]
 
-# half_sizes in box-local frame (local-Z = face normal, so local-Z is "thickness")
-_PAD_HALF_SIZES: list[list[float]] = (
-    [[0.75, 0.75, 0.05]] * 4   # right: 1.5 cm square
-    + [[0.75, 0.75, 0.05]] * 4  # left:  1.5 cm square
-    + [[0.60, 0.75, 0.05]] * 6  # middle: 1.2 × 1.5 cm
-)
+# half_sizes in face-local frame (local-Z = face normal = thickness)
+# Equal x/y → circular disc when rendered as Ellipsoids3D
+_PAD_HALF_SIZES: list[list[float]] = [[0.75, 0.75, 0.05]] * 14
+
+# How far (cm) to push sensor centres along the face normal so they sit on the surface
+_FSR_SURFACE_OFFSET = 0.01   # FSR sits just on the face, under the cap pads
+_PAD_SURFACE_OFFSET = 0.03   # cap pads sit slightly proud of the FSR
+
+# Face-normal vectors (world-space, per pad group and per FSR face)
+_NORMAL_RIGHT  = np.array([ 1.0,  0.0,       0.0      ], dtype=np.float32)
+_NORMAL_LEFT   = np.array([-1.0,  0.0,       0.0      ], dtype=np.float32)
+_NORMAL_MIDDLE = np.array([ 0.0,  _INV_SQRT2, -_INV_SQRT2], dtype=np.float32)
+
+# Per-pad surface-offset vectors in the same order as _PAD_CENTERS
+_PAD_NORMAL_OFFSETS: np.ndarray = np.array(
+    [_NORMAL_RIGHT]  * 4
+    + [_NORMAL_LEFT]   * 4
+    + [_NORMAL_MIDDLE] * 6,
+    dtype=np.float32,
+) * _PAD_SURFACE_OFFSET
 
 # Per-pad quaternions (same orientation as the containing face)
 _PAD_QUAT_RIGHT  = [0.0,  _INV_SQRT2, 0.0, _INV_SQRT2]
@@ -198,6 +212,7 @@ class RerunVisualizer(Visualizer):
         self._pad_half_sizes_np: Optional[np.ndarray] = None
         self._pad_quats: list = []
         self._rr = None
+        self._show_pad_labels: bool = False
 
     # ------------------------------------------------------------------
     # Visualizer interface
@@ -324,9 +339,13 @@ class RerunVisualizer(Visualizer):
 
     def _setup_overlay_geometry(self, rr) -> None:
         """Pre-compute static arrays used every tick by _log_sensor_overlays."""
-        # FSR pressure: one ellipsoid per face, left/middle/right order
-        self._overlay_centers = np.array(
-            [_SENSOR_FACES[f]["center"] for f in _SENSOR_FACE_NAMES], dtype=np.float32
+        # FSR pressure: one ellipsoid per face (left/middle/right), offset onto face surface
+        _fsr_normals = np.array(
+            [_NORMAL_LEFT, _NORMAL_MIDDLE, _NORMAL_RIGHT], dtype=np.float32
+        )
+        self._overlay_centers = (
+            np.array([_SENSOR_FACES[f]["center"] for f in _SENSOR_FACE_NAMES], dtype=np.float32)
+            + _fsr_normals * _FSR_SURFACE_OFFSET
         )
         self._overlay_pressure_hs = np.array(
             [[_PRESSURE_RADIUS, _PRESSURE_RADIUS, _PRESSURE_THICKNESS]] * 3, dtype=np.float32
@@ -334,8 +353,39 @@ class RerunVisualizer(Visualizer):
         self._overlay_quats = [
             rr.Quaternion(xyzw=_SENSOR_FACES[f]["quaternion"]) for f in _SENSOR_FACE_NAMES
         ]
-        # Capacitive touch: one box per pad (14 total)
-        self._pad_centers_np = np.array(_PAD_CENTERS, dtype=np.float32)
+        # Capacitive touch: one disc per pad (14 total)
+        # Shift each pad toward its face's FSR centre by one pad radius, then
+        # push outward along the face normal to sit on the surface.
+        raw_centers = np.array(_PAD_CENTERS, dtype=np.float32)
+        face_centers_per_pad = np.array(
+            [_SENSOR_FACES["right"]["center"]] * 4
+            + [_SENSOR_FACES["left"]["center"]]  * 4
+            + [_SENSOR_FACES["middle"]["center"]] * 6,
+            dtype=np.float32,
+        )
+        to_center = face_centers_per_pad - raw_centers
+        dist = np.linalg.norm(to_center, axis=1, keepdims=True)
+        direction = np.where(dist > 1e-6, to_center / dist, np.float32(0.0))
+        pad_radius = _PAD_HALF_SIZES[0][0]
+        centers = raw_centers + direction * pad_radius
+        # M2 (idx 10) and M3 (idx 11) are at the FSR height, so their shift is
+        # purely in X and overshoots the column. Pin their X to match M0/M4 and M1/M5.
+        centers[10, 0] = centers[8, 0]   # m2.x ← m0.x
+        centers[11, 0] = centers[9, 0]   # m3.x ← m1.x
+        # Pad 2 is the midpoint of pads 1 and 3.
+        # Pad 0 is the reflection of pad 2 through the FSR centre.
+        # Pads 1 and 3 are spaced the same distance from pad 2 as pad 0 is.
+        fsr_r = np.array(_SENSOR_FACES["right"]["center"], dtype=np.float32)
+        fsr_l = np.array(_SENSOR_FACES["left"]["center"],  dtype=np.float32)
+        for i0, i1, i2, i3, fsr in ((0, 1, 2, 3, fsr_r), (4, 5, 6, 7, fsr_l)):
+            centers[i2] = 0.5 * (centers[i1] + centers[i3])
+            centers[i0] = 2.0 * fsr - centers[i2]
+            spacing = float(np.linalg.norm(centers[i0] - centers[i2]))
+            axis = centers[i3] - centers[i1]
+            axis /= np.linalg.norm(axis)
+            centers[i3] = centers[i2] + axis * spacing
+            centers[i1] = centers[i2] - axis * spacing
+        self._pad_centers_np = centers + _PAD_NORMAL_OFFSETS
         self._pad_half_sizes_np = np.array(_PAD_HALF_SIZES, dtype=np.float32)
         self._pad_quats = [rr.Quaternion(xyzw=q) for q in _PAD_QUATS_XYZW]
         # Per-module: True if left/right sensor reads should be swapped for correct display.
@@ -351,7 +401,7 @@ class RerunVisualizer(Visualizer):
 
     def _log_pad_labels_static(self, rr) -> None:
         """Log temporary pad ID labels as black text at each pad center (static, one-time)."""
-        if self._pad_centers_np is None:
+        if self._pad_centers_np is None or not self._show_pad_labels:
             return
         black = [0, 0, 0, 255]
         for mod in self._module_meta:
@@ -368,11 +418,32 @@ class RerunVisualizer(Visualizer):
                 static=True,
             )
 
+    def toggle_pad_labels(self) -> None:
+        """Toggle visibility of the pad-ID label overlays (bound to Shift+K)."""
+        rr = self._rr
+        if rr is None or self._pad_centers_np is None:
+            return
+        self._show_pad_labels = not self._show_pad_labels
+        black = [0, 0, 0, 255]
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            entity_base = self._entity_path_cache[mod_id]
+            path = f"{entity_base}/sensor_overlay/pad_labels"
+            if self._show_pad_labels:
+                rr.log(path, rr.Points3D(
+                    positions=self._pad_centers_np,
+                    labels=_PAD_LABELS,
+                    colors=[black] * len(_PAD_LABELS),
+                    radii=[0.01] * len(_PAD_LABELS),
+                ))
+            else:
+                rr.log(path, rr.Clear(recursive=False))
+
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
-        Log per-pad capacitive touch boxes and per-face FSR pressure discs for
-        every module. Touch = 14 cyan boxes (one per cap pad); pressure = 3 orange
-        discs (one per face). Alpha is proportional to sensor value.
+        Log per-pad capacitive touch discs and per-face FSR pressure discs for
+        every module. Touch = 14 gold ellipsoids (one per cap pad); pressure = 3 olive
+        ellipsoids (one per face). Alpha is proportional to sensor value.
 
         Pad boxes are logged as children of the module's joint entity so they ride
         along automatically as the robot articulates.
@@ -398,10 +469,10 @@ class RerunVisualizer(Visualizer):
             all_pad_vals = (*right_pads, *left_pads, *sensors.touch_middle_pads)
 
             pad_colors = [
-                (*_TOUCH_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, v)) * (255 - _MIN_ALPHA)))
+                (*_TOUCH_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, v)) * (_MAX_ALPHA - _MIN_ALPHA)))
                 for v in all_pad_vals
             ]
-            rr.log(f"{entity_base}/sensor_overlay/touch", rr.Boxes3D(
+            rr.log(f"{entity_base}/sensor_overlay/touch", rr.Ellipsoids3D(
                 centers=self._pad_centers_np,
                 half_sizes=self._pad_half_sizes_np,
                 quaternions=self._pad_quats,
@@ -415,7 +486,7 @@ class RerunVisualizer(Visualizer):
             else:
                 pressure_vals = [sensors.pressure_left, sensors.pressure_middle, sensors.pressure_right]
             pressure_colors = [
-                (*_PRESSURE_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, p)) * (255 - _MIN_ALPHA)))
+                (*_PRESSURE_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, p)) * (_MAX_ALPHA - _MIN_ALPHA)))
                 for p in pressure_vals
             ]
             rr.log(f"{entity_base}/sensor_overlay/pressure", rr.Ellipsoids3D(

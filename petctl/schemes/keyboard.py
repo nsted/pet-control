@@ -79,7 +79,7 @@ class KeyboardControlScheme(ControlScheme):
         self._start_listener()
         print(
             "[Keyboard] Ready.\n"
-            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+`: save home  |  q/Esc: quit"
+            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+`: save home  |  Shift+K: toggle sensor labels  |  q/Esc: quit"
         )
 
     # Seconds to keep re-issuing position commands after the last key press.
@@ -179,6 +179,14 @@ class KeyboardControlScheme(ControlScheme):
     # Internal
     # ------------------------------------------------------------------
 
+    def _dispatch_toggle_labels(self) -> None:
+        if self._controller is None:
+            return
+        for viz in self._controller.visualizers:
+            toggle = getattr(viz, "toggle_pad_labels", None)
+            if toggle is not None:
+                toggle()
+
     def _start_listener(self) -> None:
         try:
             from pynput import keyboard
@@ -190,6 +198,7 @@ class KeyboardControlScheme(ControlScheme):
 
         def on_press(key):
             stop_requested = False
+            toggle_labels = False
             with self._lock:
                 if key in cmd_keys:
                     self._cmd_held = True
@@ -207,6 +216,8 @@ class KeyboardControlScheme(ControlScheme):
                     if char == "`" and self._cmd_held:
                         self._save_home_requested = True
                         return
+                    if char == "K":   # Shift+K
+                        toggle_labels = True
                     if char in ("q", "Q"):
                         stop_requested = True
                         # No return — fall through so stop() is called after lock
@@ -228,7 +239,9 @@ class KeyboardControlScheme(ControlScheme):
                     elif key == keyboard.Key.esc:
                         stop_requested = True
 
-            # Call stop() outside the lock — thread-safe via call_soon_threadsafe
+            # Dispatch actions outside the lock
+            if toggle_labels:
+                self._dispatch_toggle_labels()
             if stop_requested and self._controller:
                 self._controller.stop()
 
