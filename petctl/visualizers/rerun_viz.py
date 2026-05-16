@@ -164,6 +164,41 @@ _PAD_LABELS: list[str] = (
     + ["M0", "M1", "M2", "M3", "M4", "M5"]
 )
 
+# ------------------------------------------------------------------
+# IMU overlay — BNO085 on the rear (no-sensor) face of module 7
+#
+# In module 7's model-local frame (before HPR rotation):
+#   The no-sensor face is the flat rectangular face with normal (0, -1, 0).
+#   It sits at Y = -3.5 and spans Z = 0.175 to Z ≈ -5.59 along the tail.
+#   Face centre (midpoint of Z extent): (0, -3.5, -2.7)
+#   Offset 0.15 cm outward along normal (-Y) for PCB surface placement.
+#
+# Quaternion: 90° around +X → rotates local-Z to face normal (0, -1, 0).
+#
+# The PCB rectangle and axes live as a static child entity that
+# Rerun automatically carries with the tail as it articulates.
+# ------------------------------------------------------------------
+_IMU_MODULE_ID: int = 7
+
+# Centre of the PCB on the no-sensor face, in module 7's local frame (cm).
+# Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
+_IMU_CENTER: tuple[float, float, float] = (0.0, -3.65, -2.7)
+
+# Quaternion (xyzw) that orients the IMU slab flat on the -Y face.
+# 90° around +X: maps local-Z → (0, -1, 0).
+_IMU_QUATERNION_XYZW: tuple[float, float, float, float] = (0.707, 0.0, 0.0, 0.707)
+
+# BNO085 PCB half-extents in the IMU's local frame (cm):
+#   X: width along module X (face width direction)
+#   Y: height along the angled face (face height direction)
+#   Z: thickness (along face normal, perpendicular to board surface)
+_IMU_PCB_HALF_SIZES: tuple[float, float, float] = (1.5, 1.0, 0.15)
+
+# Length of each axis arrow drawn at the IMU centre (cm)
+_IMU_AXIS_LENGTH: float = 1.5
+
+_IMU_COLOR: tuple[int, int, int, int] = (180, 220, 255, 200)   # light blue, semi-opaque
+
 
 class RerunVisualizer(Visualizer):
     """
@@ -566,6 +601,37 @@ class RerunVisualizer(Visualizer):
                 ), static=True)
             else:
                 rr.log(mesh_path, rr.Asset3D(path=obj_path), static=True)
+
+        self._log_imu_static(rr)
+
+    def _log_imu_static(self, rr) -> None:
+        """Log a static PCB slab and axes indicator for the BNO085 on module 7's back face."""
+        if _IMU_MODULE_ID not in self._entity_path_cache:
+            return
+        base = self._entity_path_cache[_IMU_MODULE_ID]
+        imu_path = f"{base}/imu"
+        al = _IMU_AXIS_LENGTH
+
+        # Child frame: translate to face centre + rotate so local-Z = face normal
+        rr.log(imu_path, rr.Transform3D(
+            translation=list(_IMU_CENTER),
+            quaternion=rr.Quaternion(xyzw=list(_IMU_QUATERNION_XYZW)),
+        ), static=True)
+
+        # Thin PCB slab centred at the IMU child origin (flat in local XY plane)
+        rr.log(f"{imu_path}/pcb", rr.Boxes3D(
+            centers=[[0.0, 0.0, 0.0]],
+            half_sizes=[list(_IMU_PCB_HALF_SIZES)],
+            colors=[list(_IMU_COLOR)],
+        ), static=True)
+
+        # Coordinate axes: red=X, green=Y, blue=Z (in IMU local frame)
+        rr.log(f"{imu_path}/axes", rr.Arrows3D(
+            origins=[[0.0, 0.0, 0.0]] * 3,
+            vectors=[[al, 0.0, 0.0], [0.0, al, 0.0], [0.0, 0.0, al]],
+            colors=[[220, 50, 50, 255], [50, 200, 50, 255], [50, 100, 220, 255]],
+            radii=[0.08] * 3,
+        ), static=True)
 
     def _log_3d_pose(self, rr, state: RobotState) -> None:
         """
