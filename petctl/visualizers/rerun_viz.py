@@ -580,12 +580,27 @@ class RerunVisualizer(Visualizer):
 
         print(f"[RerunVisualizer] Loaded assembly with {len(self._module_meta)} modules")
 
+    def _compute_imu_rest_pos(self) -> np.ndarray:
+        """World-space position of the IMU with all joints at zero (FK from assembly)."""
+        chain = self._ancestor_chain(_IMU_MODULE_ID)
+        pos = np.zeros(3, dtype=np.float64)
+        R = np.eye(3, dtype=np.float64)
+        for mod_id in chain:
+            pos = pos + R @ np.array(self._module_offsets[mod_id], dtype=np.float64)
+            R = R @ self._hpr_mats[mod_id].astype(np.float64)
+        pos = pos + R @ np.array(_IMU_CENTER, dtype=np.float64)
+        return pos
+
     def _setup_3d_geometry(self) -> None:
         """Log static OBJ mesh for each module (once, time-independent)."""
         rr = self._rr
         if not self._module_meta:
             print("[RerunVisualizer] No assembly data — skipping 3D geometry")
             return
+
+        # Shift the robot entity so the IMU rest position sits at world origin
+        imu_world = self._compute_imu_rest_pos()
+        rr.log("robot", rr.Transform3D(translation=(-imu_world).tolist()), static=True)
 
         for mod in self._module_meta:
             mod_id = int(mod["id"])
