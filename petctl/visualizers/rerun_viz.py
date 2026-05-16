@@ -107,16 +107,16 @@ _SENSOR_FACE_NAMES = ("left", "middle", "right")
 # until verified against live hardware; rows/columns may need swapping.
 # ------------------------------------------------------------------
 _PAD_CENTERS: list[list[float]] = [
-    # Right face (x=+3.51): pad_0 lone corner; pads 1,3,2 along -45° line, 3 in centre
+    # Right face (x=+3.51): pad_0 lone corner; pads 1,2,3 along -45° line, 2 in centre
     [3.51,  0.25,  -1.75],   # right_0  top-near  (verified)
-    [3.51, -0.42,  -5.08],   # right_1  one step from pad_3 along -45°
-    [3.51, -3.08,  -2.42],   # right_2  opposite side of pad_3 from pad_1
-    [3.51, -1.75,  -3.75],   # right_3  centre of line (verified)
-    # Left face (x=-3.51): pad_0 lone corner; pads 1,3,2 along -45° line, 3 in centre
+    [3.51, -0.42,  -5.08],   # right_1  one step from pad_2 along -45°
+    [3.51, -1.75,  -3.75],   # right_2  centre of line (verified)
+    [3.51, -3.08,  -2.42],   # right_3  opposite side of pad_2 from pad_1
+    # Left face (x=-3.51): pad_0 lone corner; pads 1,2,3 along -45° line, 2 in centre
     [-3.51, -1.75,  -1.75],  # left_0   (verified)
-    [-3.51, -1.08,  -5.08],  # left_1   one step from pad_3 along -45°
-    [-3.51,  1.58,  -2.42],  # left_2   opposite side of pad_3 from pad_1
-    [-3.51,  0.25,  -3.75],  # left_3   centre of line (verified)
+    [-3.51, -1.08,  -5.08],  # left_1   one step from pad_2 along -45°
+    [-3.51,  0.25,  -3.75],  # left_2   centre of line (verified)
+    [-3.51,  1.58,  -2.42],  # left_3   opposite side of pad_2 from pad_1
     # Middle face (angled), 2-col × 3-row
     [-1.5,  2.67, -2.83],   # middle_0  top-left
     [ 1.5,  2.67, -2.83],   # middle_1  top-right
