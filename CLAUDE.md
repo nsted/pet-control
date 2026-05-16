@@ -103,3 +103,18 @@ If `docs/vendor/` contains third-party snapshots (e.g. historical servo SDKs),
 treat them as **read-only** archival reference; do not modify. CubeMars MIT and
 the live robot protocol are implemented in `petctl/backends/robot.py` and
 firmware docs outside this repo unless vendored here.
+
+## Permissions
+
+- You have my permission to do whatever you need to complete the task with the following exceptions:
+- Do not delete any files or directories outside of the working folder without explicitly asking permission
+- Do not do any operations at root level without explicitly asking permission
+- Do not move the robot without explicitly asking permission
+- Do not install any software or files from the internet without explicitly asking permission
+
+## Preferences
+
+- Work independently and iteratively as much as possible without user intervention to complete tasks
+- Run programs independently to validate changes before assuming they are successful and complete
+- Use logging to assist validation, and read the results
+- Look through codebase and documentation to answer questions and only if you don't find an answer then ask the user
