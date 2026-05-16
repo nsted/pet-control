@@ -541,6 +541,8 @@ class RobotBackend(_BackendBase):
                     await asyncio.sleep(period - elapsed)
             except asyncio.CancelledError:
                 raise
+            except websockets.ConnectionClosed:
+                break  # connection died; _receive_loop handles reconnect
             except Exception:
                 if not self._connected:
                     break
@@ -578,6 +580,8 @@ class RobotBackend(_BackendBase):
                     await asyncio.sleep(remaining)
             except asyncio.CancelledError:
                 raise
+            except websockets.ConnectionClosed:
+                break  # connection died; _receive_loop handles reconnect
             except Exception as e:
                 if not self._connected:
                     break
@@ -630,6 +634,8 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
 
     async def _reconnect_loop(self) -> None:
+        if self._reconnecting:
+            return  # deduplicate concurrent invocations
         self._reconnecting = True
         try:
             # Tear down the old connection so the Arduino releases its slot.
@@ -725,6 +731,10 @@ class RobotBackend(_BackendBase):
             return
         except Exception as e:
             print(f"[RobotBackend] WebSocket receive loop ended: {e!r}")
+        else:
+            print("[RobotBackend] WebSocket receive loop ended: server closed connection cleanly")
+        # Reach here on clean close OR exception (not CancelledError) — trigger reconnect.
+        if self._connected:
             self._connected = False
             if self.auto_reconnect and not self._reconnecting:
                 self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
