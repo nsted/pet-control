@@ -503,20 +503,15 @@ class RobotBackend(_BackendBase):
     async def _ws_tx_loop(self) -> None:
         """Single outbound WS send loop at ws_tx_hz.
 
-        Every tick sends all motor MIT frames. Every sensor_interval ticks the
-        sensor API request is appended to the same ws.send() call, so the Arduino
-        receives motor commands and sensor poll in one message rather than two.
-        The sensor response arrives asynchronously via _handle_api_response.
-
-        Total outbound: ws_tx_hz messages/sec (10/sec default), down from the
-        prior two-loop design's 15/sec.
+        Every tick: collect motor frames + (every sensor_interval ticks) append
+        the sensor API request, then send as one ws.send(). When a sensor request
+        is included, the reply is awaited (or times out) before the next tick so
+        transmissions are strictly serial — no overlapping sends or outstanding
+        requests.
         """
         sensor_interval = max(1, round(LOOP_LIMITS.ws_tx_hz / LOOP_LIMITS.sensor_poll_hz))
         tick = 0
         sensor_failures = 0
-        pending_sensor_fut: Optional[asyncio.Future] = None
-        pending_sensor_req_id: Optional[int] = None
-        sensor_sent_at: float = 0.0
 
         while self._connected:
             try:
@@ -531,33 +526,7 @@ class RobotBackend(_BackendBase):
                     parts.append(frame)
                     self._last_sent_frames[mid] = frame
 
-                # Check whether the previous sensor request has resolved
-                if pending_sensor_fut is not None:
-                    if pending_sensor_fut.done():
-                        try:
-                            sensors, batt_cur, batt_vol = self._parse_sensor_response(
-                                pending_sensor_fut.result()
-                            )
-                            if sensors is not None:
-                                self._latest_sensors = sensors
-                                self._latest_battery_current_raw = batt_cur
-                                self._latest_battery_voltage_raw = batt_vol
-                                sensor_failures = 0
-                            else:
-                                sensor_failures += 1
-                        except Exception:
-                            sensor_failures += 1
-                        pending_sensor_fut = None
-                        pending_sensor_req_id = None
-                    elif t0 - sensor_sent_at > 1.0:
-                        # Timeout — clean up and count failure
-                        self._pending_requests.pop(pending_sensor_req_id, None)
-                        pending_sensor_fut.cancel()
-                        pending_sensor_fut = None
-                        pending_sensor_req_id = None
-                        sensor_failures += 1
-
-                # Sensor failure threshold — triggers reconnect
+                # Sensor failure threshold
                 if sensor_failures >= 5:
                     print(
                         f"[RobotBackend] Sensor read failed {sensor_failures}× — "
@@ -570,20 +539,35 @@ class RobotBackend(_BackendBase):
                         )
                     break
 
-                # Piggyback sensor request on this tick if due and no request in flight
-                if tick % sensor_interval == 0 and pending_sensor_fut is None:
-                    req_id = self._next_req_id()
-                    fut: asyncio.Future = asyncio.get_running_loop().create_future()
-                    self._pending_requests[req_id] = fut
-                    pending_sensor_fut = fut
-                    pending_sensor_req_id = req_id
-                    sensor_sent_at = t0
-                    parts.append(f"{req_id}:snsr 0 108")
+                # Piggyback sensor request on this tick if due
+                sensor_fut: Optional[asyncio.Future] = None
+                sensor_req_id: Optional[int] = None
+                if tick % sensor_interval == 0:
+                    sensor_req_id = self._next_req_id()
+                    sensor_fut = asyncio.get_running_loop().create_future()
+                    self._pending_requests[sensor_req_id] = sensor_fut
+                    parts.append(f"{sensor_req_id}:snsr 0 108")
 
                 # One ws.send() per tick
                 if self._ws is not None and parts:
                     async with self._ws_send_lock:
                         await self._ws.send("\n".join(parts))
+
+                # Collect sensor reply before proceeding — no overlapping requests
+                if sensor_fut is not None:
+                    try:
+                        data = await asyncio.wait_for(sensor_fut, timeout=1.0)
+                        sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
+                        if sensors is not None:
+                            self._latest_sensors = sensors
+                            self._latest_battery_current_raw = batt_cur
+                            self._latest_battery_voltage_raw = batt_vol
+                            sensor_failures = 0
+                        else:
+                            sensor_failures += 1
+                    except asyncio.TimeoutError:
+                        self._pending_requests.pop(sensor_req_id, None)
+                        sensor_failures += 1
 
                 tick += 1
                 period = 1.0 / LOOP_LIMITS.ws_tx_hz
