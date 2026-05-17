@@ -58,29 +58,17 @@ class StepResult:
         return f"  {self.hz:>5.0f} Hz  {status}  {sensor_str}"
 
 
-# ── Instrumented TX loop ───────────────────────────────────────────────────────
+# ── Instrumented loops ────────────────────────────────────────────────────────
 
-async def _instrumented_tx_loop(
+async def _instrumented_motor_loop(
     backend: RobotBackend,
     hz: float,
-    sensor_poll_hz: float,
     result: StepResult,
     stop_event: asyncio.Event,
 ) -> None:
-    """
-    Replacement _ws_tx_loop that uses the given hz and feeds stats into result.
-
-    Mirrors the real loop but:
-    - reads hz from the argument instead of LOOP_LIMITS.ws_tx_hz each tick
-    - accepts an explicit sensor_poll_hz override
-    - counts sensor ok/fail into result
-    - exits when stop_event is set
-    """
+    """Motor-frame TX loop mirroring _motor_tx_loop at the given hz."""
     _RX_SILENCE_TIMEOUT = 5.0
-    sensor_poll_hz = min(sensor_poll_hz, hz)
-    sensor_interval = max(1, round(hz / sensor_poll_hz))
-    tick = 0
-    sensor_failures = 0
+    period = 1.0 / hz
 
     while not stop_event.is_set() and backend._connected:
         try:
@@ -96,40 +84,66 @@ async def _instrumented_tx_loop(
                 backend._connected = False
                 break
 
-            if sensor_failures >= 5:
-                print(f"[rate_test] Sensor timeout ×{sensor_failures} at {hz} Hz — dropout")
+            if backend._ws is not None:
+                frames = []
+                for mid in ids:
+                    frame = (
+                        backend._pending_frames.pop(mid, None)
+                        or backend._last_sent_frames.get(mid, robot_module._encode_mit_zero(mid))
+                    )
+                    backend._last_sent_frames[mid] = frame
+                    frames.append(frame)
+                async with backend._ws_send_lock:
+                    await backend._ws.send("\n".join(frames))
+                result.send_count += len(frames)
+
+            elapsed = time.monotonic() - t0
+            remaining = period - elapsed
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            else:
+                await asyncio.sleep(0)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if not backend._connected:
+                break
+            print(f"[rate_test] Motor TX loop error at {hz} Hz: {e}")
+            await asyncio.sleep(0.01)
+
+
+async def _instrumented_sensor_loop(
+    backend: RobotBackend,
+    result: StepResult,
+    stop_event: asyncio.Event,
+) -> None:
+    """Sensor polling loop mirroring _sensor_loop using backend.sensor_poll_hz."""
+    _FAIL_THRESHOLD = 5
+    sensor_failures = 0
+
+    while not stop_event.is_set() and backend._connected:
+        try:
+            if sensor_failures >= _FAIL_THRESHOLD:
+                print(f"[rate_test] Sensor timeout ×{sensor_failures} — dropout")
                 backend._connected = False
                 break
 
-            # Motor frames — one WS send per motor (Arduino processes one SLCAN frame per message)
-            if backend._ws is not None:
-                async with backend._ws_send_lock:
-                    for mid in ids:
-                        frame = (
-                            backend._pending_frames.pop(mid, None)
-                            or backend._last_sent_frames.get(mid, robot_module._encode_mit_zero(mid))
-                        )
-                        backend._last_sent_frames[mid] = frame
-                        await backend._ws.send(frame)
-                        result.send_count += 1
+            t0 = time.monotonic()
+            data = await backend._send_text("snsr 0 108", timeout=1.0)
+            sensors, batt_cur, batt_vol = backend._parse_sensor_response(data)
+            if sensors is not None:
+                backend._latest_sensors = sensors
+                backend._latest_battery_current_raw = batt_cur
+                backend._latest_battery_voltage_raw = batt_vol
+                sensor_failures = 0
+                result.sensor_ok += 1
+            else:
+                sensor_failures += 1
+                result.sensor_fail += 1
 
-            # Sensor request
-            if tick % sensor_interval == 0:
-                data = await backend._send_text("snsr 0 108", timeout=1.0)
-                sensors, batt_cur, batt_vol = backend._parse_sensor_response(data)
-                if sensors is not None:
-                    backend._latest_sensors = sensors
-                    backend._latest_battery_current_raw = batt_cur
-                    backend._latest_battery_voltage_raw = batt_vol
-                    sensor_failures = 0
-                    result.sensor_ok += 1
-                else:
-                    sensor_failures += 1
-                    result.sensor_fail += 1
-
-            tick += 1
-            period = 1.0 / hz
             elapsed = time.monotonic() - t0
+            period = 1.0 / backend.sensor_poll_hz
             remaining = period - elapsed
             if remaining > 0:
                 await asyncio.sleep(remaining)
@@ -139,7 +153,7 @@ async def _instrumented_tx_loop(
         except Exception as e:
             if not backend._connected:
                 break
-            print(f"[rate_test] TX loop error at {hz} Hz: {e}")
+            print(f"[rate_test] Sensor loop error: {e}")
             await asyncio.sleep(0.01)
 
 
@@ -148,37 +162,41 @@ async def _instrumented_tx_loop(
 async def run_step(backend: RobotBackend, hz: float, sensor_poll_hz: float, dwell: float) -> StepResult:
     result = StepResult(hz, dwell)
 
-    # Cancel any existing TX task
-    if backend._ws_tx_task and not backend._ws_tx_task.done():
-        backend._ws_tx_task.cancel()
-        try:
-            await backend._ws_tx_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    # Cancel any existing tasks from a previous step.
+    for task in (backend._motor_tx_task, backend._sensor_task):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     backend._latest_sensors = None
+    backend.sensor_poll_hz = sensor_poll_hz
 
     stop_event = asyncio.Event()
-    tx_task = asyncio.create_task(_instrumented_tx_loop(backend, hz, sensor_poll_hz, result, stop_event))
-    backend._ws_tx_task = tx_task
+    motor_task = asyncio.create_task(_instrumented_motor_loop(backend, hz, result, stop_event))
+    sensor_task = asyncio.create_task(_instrumented_sensor_loop(backend, result, stop_event))
+    backend._motor_tx_task = motor_task
+    backend._sensor_task = sensor_task
 
     t_start = time.monotonic()
     while time.monotonic() - t_start < dwell:
         await asyncio.sleep(0.25)
-        if not backend.is_connected or tx_task.done():
+        if not backend.is_connected or motor_task.done():
             result.dropout = True
             break
 
     result.elapsed = time.monotonic() - t_start
 
-    # Stop the loop
     stop_event.set()
-    if not tx_task.done():
-        tx_task.cancel()
-    try:
-        await tx_task
-    except (asyncio.CancelledError, Exception):
-        pass
+    for task in (motor_task, sensor_task):
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     return result
 

@@ -58,10 +58,11 @@ class ControlLoopLimits:
 
     # Background sensor poll rate (touch + FSR).
     sensor_poll_hz: float = 10.0
+    sensor_poll_hz_min: float = 0.5
+    sensor_poll_hz_max: float = 30.0
 
-    # Master rate for all outbound WS traffic (motor frames + sensor requests).
-    # One ws.send() per tick; lower values reduce Arduino WS server load directly.
-    # sensor_poll_hz must be <= ws_tx_hz; sensor_interval = ws_tx_hz / sensor_poll_hz.
+    # Master rate for the motor TX task (independent of sensor polling).
+    # One ws.send() per motor per tick; lower values reduce Arduino WS server load directly.
     ws_tx_hz: float = 35.0
 
     # Hard cap on outbound WebSocket messages/sec (safety; actual rate ≈ ws_tx_hz).
