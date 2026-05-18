@@ -475,9 +475,10 @@ class RobotBackend(_BackendBase):
                 nibbles.append((b >> 4) & 0xF)
                 nibbles.append(b & 0xF)
 
-            right_pads  = tuple(max(0.0, min(1.0, nibbles[i] / 15.0)) for i in range(0, 4))
-            left_pads   = tuple(max(0.0, min(1.0, nibbles[i] / 15.0)) for i in range(4, 8))
-            middle_pads = tuple(max(0.0, min(1.0, nibbles[i] / 15.0)) for i in range(8, 14))
+            _cap_scale = 15.0 * SENSOR_LIMITS.cap_full_scale
+            raw_right   = tuple(max(0.0, min(1.0, nibbles[i] / _cap_scale)) for i in range(0, 4))
+            raw_left    = tuple(max(0.0, min(1.0, nibbles[i] / _cap_scale)) for i in range(4, 8))
+            middle_pads = tuple(max(0.0, min(1.0, nibbles[i] / _cap_scale)) for i in range(8, 14))
 
             f = fsr[mod_idx * 6:(mod_idx + 1) * 6]
             right_p = _int16_be(f[0], f[1])
@@ -485,8 +486,22 @@ class RobotBackend(_BackendBase):
             middle_p = _int16_be(f[4], f[5])
 
             if mod_id % 2 == 1:
-                left_pads, right_pads = right_pads, left_pads
+                raw_left, raw_right = raw_right, raw_left
                 left_p, right_p = right_p, left_p
+
+            # Canonical pad order: 0=top_head, 1=top_mid, 2=top_rear, 3=bottom_solo.
+            # Hardware right face is reversed along the top row: hw[0,1,2,3] = [top_rear,top_mid,top_head,bottom_solo].
+            right_pads = (raw_right[2], raw_right[1], raw_right[0], raw_right[3])
+            left_pads  = raw_left  # hw left already: [top_head, top_mid, top_rear, bottom_solo]
+
+            # Odd-module swap puts left-face data into raw_right and vice versa, inverting the
+            # top-row reorder above. Fix by reversing top row on both faces after the swap.
+            # m0 (head) has the same top-row reversal issue plus reversed middle pads.
+            if mod_id % 2 == 1 or mod_id == 0:
+                left_pads  = (left_pads[2],  left_pads[1],  left_pads[0],  left_pads[3])
+                right_pads = (right_pads[2], right_pads[1], right_pads[0], right_pads[3])
+            if mod_id == 0:
+                middle_pads = middle_pads[::-1]
 
             modules[mod_id] = ModuleSensors(
                 module_id=mod_id,

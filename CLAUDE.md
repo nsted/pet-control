@@ -19,6 +19,7 @@ Components are swappable ABCs. Control schemes never touch the backend directly 
 
 - **Module 0 is the head — no servo.** Servo IDs are 1–7 (modules 1–7 each have one joint).
 - **Odd modules have left/right sensors swapped** for body-frame consistency (handled in RobotBackend.\_read_sensors, transparent to everything above)
+- **m0 and all odd modules**: top-row pad order is front↔rear reversed (index 0↔2 swapped) on both side faces — corrected in `_parse_sensor_response`. m0 additionally has its middle pads fully reversed.
 - **All joints are single-axis Z revolute** — positive angle = one direction, negative = the other, muli-turn
 - **Motor hardware:** CubeMars GL40 II BLDC motors in MIT mode over CAN bus
 - **Position units:** radians (`0.0` = software home offset per motor)
