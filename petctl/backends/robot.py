@@ -11,7 +11,7 @@ from typing import Optional, Sequence
 
 import websockets
 
-from petctl.config import LOOP_LIMITS, MOTOR_LIMITS
+from petctl.config import LOOP_LIMITS, MOTOR_LIMITS, SENSOR_LIMITS
 from petctl.protocols import RobotBackend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
@@ -798,7 +798,7 @@ class RobotBackend(_BackendBase):
 
 
 def _normalize_pressure(value: int) -> float:
-    return max(0.0, min(1.0, float(value) / 32767.0))
+    return max(0.0, min(1.0, float(value) / SENSOR_LIMITS.fsr_max_raw))
 
 
 def _int16_be(msb: int, lsb: int) -> int:

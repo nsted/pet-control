@@ -91,6 +91,14 @@ class BehaviorLimits:
     speed_max: float = 1.0
 
 
+@dataclass(frozen=True)
+class SensorLimits:
+    """Hardware limits for onboard sensors."""
+
+    # FSR ADC resolution (12-bit → max raw value 4095).
+    fsr_max_raw: int = 4095
+
+
 # ---------------------------------------------------------------------------
 # Singleton instances — import these
 # ---------------------------------------------------------------------------
@@ -98,3 +106,4 @@ class BehaviorLimits:
 MOTOR_LIMITS = MotorLimits()
 LOOP_LIMITS = ControlLoopLimits()
 BEHAVIOR_LIMITS = BehaviorLimits()
+SENSOR_LIMITS = SensorLimits()
