@@ -44,7 +44,10 @@ def run(
     ),
     control: str = typer.Option(
         "keyboard",
-        help="Control scheme: 'keyboard', 'passthrough', or 'sine'",
+        help=(
+            "Control scheme: keyboard, passthrough, sine, "
+            "ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil"
+        ),
     ),
     no_viz: bool = typer.Option(
         False,
@@ -137,8 +140,15 @@ def run(
     elif control == "sine":
         from petctl.schemes.sine import SineControlScheme
         _scheme = SineControlScheme(servo_id=servo_id)
+    elif control in ("ripple", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil"):
+        from petctl.schemes.patterns import ALL_PATTERNS
+        _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
     else:
-        typer.echo(f"Unknown control scheme '{control}'. Choose: keyboard, passthrough, sine", err=True)
+        typer.echo(
+            f"Unknown control scheme '{control}'. "
+            "Choose: keyboard, passthrough, sine, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil",
+            err=True,
+        )
         raise typer.Exit(1)
 
     # --- Build visualizers ---
