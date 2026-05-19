@@ -44,6 +44,7 @@ pip install -e .
 petctl run                              # mock backend, keyboard control, Rerun viz
 petctl run --backend robot              # real robot
 petctl run --backend robot --limp       # limp mode for calibration
+petctl run --backend robot --calibrate  # re-zero software offsets to current pose on connect
 petctl run --backend mock --mode sine   # animated demo
 petctl info                             # print robot status
 ```

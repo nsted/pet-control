@@ -48,7 +48,7 @@ class RobotBackend(_BackendBase):
         self,
         host: str = ROBOT_DEFAULT_HOST,
         port: int = ROBOT_DEFAULT_PORT,
-        calibrate_on_connect: bool = True,
+        calibrate_on_connect: bool = False,
         calibration_samples: int = 10,
         auto_reconnect: bool = True,
         reconnect_delay: float = 2.0,

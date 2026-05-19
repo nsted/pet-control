@@ -86,10 +86,10 @@ def run(
         ROBOT_DEFAULT_PORT,
         help="Robot WebSocket port (robot backend)",
     ),
-    no_calibrate: bool = typer.Option(
+    calibrate: bool = typer.Option(
         False,
-        "--no-calibrate",
-        help="Skip sensor calibration on connect (robot backend)",
+        "--calibrate",
+        help="Re-zero software offsets to current pose on connect (robot backend)",
     ),
     motors: Optional[str] = typer.Option(
         None,
@@ -123,7 +123,7 @@ def run(
         _backend = RobotBackend(
             host=host,
             port=port,
-            calibrate_on_connect=not no_calibrate,
+            calibrate_on_connect=calibrate,
             motor_ids=_parse_motor_ids(motors),
         )
     else:
