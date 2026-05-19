@@ -136,6 +136,20 @@ _NORMAL_RIGHT  = np.array([ 1.0,  0.0,       0.0      ], dtype=np.float32)
 _NORMAL_LEFT   = np.array([-1.0,  0.0,       0.0      ], dtype=np.float32)
 _NORMAL_MIDDLE = np.array([ 0.0,  _INV_SQRT2, -_INV_SQRT2], dtype=np.float32)
 
+# Touch blob sphere: face-surface anchor points and display constants.
+# Each entry is the face centre offset outward by _BLOB_SPHERE_OFFSET cm,
+# in module-local coordinates.  The sphere lives here so it sits outside
+# the body surface.
+_BLOB_SPHERE_OFFSET: float = 1.5          # cm beyond face surface
+_BLOB_ACTIVATION_THRESHOLD: float = 0.08  # minimum per-face mean to contribute
+_BLOB_RADIUS_CM: float = 0.8              # sphere radius in cm
+
+_BLOB_FACE_POINTS: dict[str, np.ndarray] = {
+    "left":   np.array(_SENSOR_FACES["left"]["center"],   dtype=np.float32) + _NORMAL_LEFT   * _BLOB_SPHERE_OFFSET,
+    "right":  np.array(_SENSOR_FACES["right"]["center"],  dtype=np.float32) + _NORMAL_RIGHT  * _BLOB_SPHERE_OFFSET,
+    "middle": np.array(_SENSOR_FACES["middle"]["center"], dtype=np.float32) + _NORMAL_MIDDLE * _BLOB_SPHERE_OFFSET,
+}
+
 # Per-pad surface-offset vectors in the same order as _PAD_CENTERS
 _PAD_NORMAL_OFFSETS: np.ndarray = np.array(
     [_NORMAL_RIGHT]  * 4
@@ -287,6 +301,7 @@ class RerunVisualizer(Visualizer):
         if self.show_3d:
             self._log_3d_pose(rr, state)
             self._log_sensor_overlays(rr, state)
+            self._log_touch_blob_spheres(rr, state)
 
     def on_stop(self) -> None:
         pass  # Rerun viewer stays open after the script exits (by design)
@@ -310,6 +325,7 @@ class RerunVisualizer(Visualizer):
             rrb.TimeSeriesView(origin="telemetry/current_amps", name="Battery current (A)"),
             rrb.TimeSeriesView(origin="sensors/capacitive", name="Capacitive touch (0–1)"),
             rrb.TimeSeriesView(origin="sensors/fsr", name="FSR pressure (0–1)"),
+            rrb.TimeSeriesView(origin="stroke/velocity", name="Stroke velocity (mod/s)"),
         ))
         rr.send_blueprint(rrb.Blueprint(
             rrb.Horizontal(*views),
@@ -487,6 +503,49 @@ class RerunVisualizer(Visualizer):
                 ))
             else:
                 rr.log(path, rr.Clear(recursive=False))
+
+    def _log_touch_blob_spheres(self, rr, state: RobotState) -> None:
+        """Log one black sphere per module at the face-weighted surface position.
+
+        The sphere sits outside the body on whichever face(s) are being touched.
+        If two faces are active simultaneously (e.g. left + middle) the sphere
+        lands between them, weighted by activation.  Logged as a child of each
+        module's entity so it rides along with the FK hierarchy automatically.
+        """
+        for mod in self._module_meta:
+            mod_id = int(mod["id"])
+            sens = state.sensors.get(mod_id)
+            path = self._entity_path_cache[mod_id] + "/touch_blob"
+
+            if sens is None:
+                rr.log(path, rr.Clear(recursive=False))
+                continue
+
+            swap = self._overlay_swap_lr.get(mod_id, False)
+            tl = sens.touch_right if swap else sens.touch_left
+            tr = sens.touch_left  if swap else sens.touch_right
+            tm = sens.touch_middle
+
+            wl = max(0.0, tl - _BLOB_ACTIVATION_THRESHOLD)
+            wr = max(0.0, tr - _BLOB_ACTIVATION_THRESHOLD)
+            wm = max(0.0, tm - _BLOB_ACTIVATION_THRESHOLD)
+            w_total = wl + wr + wm
+
+            if w_total < 1e-6:
+                rr.log(path, rr.Clear(recursive=False))
+                continue
+
+            pos = (
+                wl * _BLOB_FACE_POINTS["left"]
+                + wr * _BLOB_FACE_POINTS["right"]
+                + wm * _BLOB_FACE_POINTS["middle"]
+            ) / w_total
+
+            rr.log(path, rr.Points3D(
+                positions=[pos.tolist()],
+                radii=[_BLOB_RADIUS_CM],
+                colors=[[0, 0, 0, 220]],
+            ))
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """

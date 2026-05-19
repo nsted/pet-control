@@ -773,6 +773,53 @@ class CurlControlScheme(ControlScheme):
         ]
 
 
+class StrokeWatchScheme(ControlScheme):
+    """Observer scheme: detects strokes along the body and logs them to console + Rerun.
+
+    Emits no servo commands. Run with --observe to avoid moving the robot.
+    Rerun paths logged: stroke/centroid, stroke/velocity, stroke/blob_count,
+    stroke/activation/mod_<i>.
+    """
+
+    name = "stroke-watch"
+
+    def __init__(self) -> None:
+        from petctl.perception.stroke import StrokeDetector
+        self._detector = StrokeDetector()
+        self._tick = 0
+        self._rr = None
+        try:
+            import rerun as rr
+            self._rr = rr
+        except ImportError:
+            pass
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        self._tick += 1
+
+        reading = self._detector.update(state)
+
+        rr = self._rr
+        if rr is not None:
+            # Scheme runs before RerunVisualizer.update(); set time explicitly
+            # (Rerun timeline is per-thread).
+            rr.set_time("time", duration=state.timestamp)
+            rr.log("stroke/velocity", rr.Scalars(reading.velocity if reading else 0.0))
+
+        # Console output at most every 3 ticks to keep it readable
+        if reading is not None and self._tick % 3 == 0:
+            arrow = "→" if reading.direction == "head_to_tail" else "←"
+            print(
+                f"[STROKE]  dir={reading.direction.replace('_', ' ')} {arrow}"
+                f"  speed={reading.speed:.1f} mod/s"
+                f"  centroid={reading.centroid:.1f}"
+                f"  intensity={reading.intensity:.2f}"
+                f"  conf={reading.confidence:.2f}"
+            )
+
+        return []
+
+
 ALL_PATTERNS: list[type[ControlScheme]] = [
     RippleControlScheme,
     PulseControlScheme,
@@ -789,6 +836,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     WanderControlScheme,
     DriftControlScheme,
     ExploreControlScheme,
+    StrokeWatchScheme,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]
