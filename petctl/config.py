@@ -118,11 +118,26 @@ class BatteryConfig:
     we negate so positive = discharge (battery draining).
 
     I_amps = -(raw * ads_v_per_bit - zero_v) / sensitivity_v_per_a
+
+    Voltage sensor: ESP32 onboard ADC via esp_adc_cal_raw_to_voltage() —
+    firmware sends calibrated millivolts, not raw ADC counts.
+    100 kΩ / 10 kΩ voltage divider scales the battery voltage down to ADC range.
+    ESP32 ADC non-linearity requires two-point calibration; single-ratio fit
+    is inaccurate across the battery discharge range.
+
+    Two calibration points (raw_mV → V_actual):
+        1318 mV → 14.700 V  (adapter connected)
+        1068 mV → 12.320 V  (on battery)
+
+    V_battery = (voltage_slope * raw_mV + voltage_offset_mv) / 1000
     """
 
     sensitivity_v_per_a: float = 0.132   # 132 mV/A (ACS37041 at 3.3 V VCC)
     zero_v: float = 1.65                  # VCC/2 at zero current
     ads_v_per_bit: float = 0.002         # ADS1015 GAIN_ONE: 2 mV/LSB
+
+    voltage_slope: float = 9.52          # mV_actual / mV_raw — two-point empirical fit
+    voltage_offset_mv: float = 2152.64   # mV — two-point empirical fit
 
 
 # ---------------------------------------------------------------------------

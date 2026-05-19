@@ -305,7 +305,7 @@ class RerunVisualizer(Visualizer):
         views.append(rrb.Vertical(
             rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
             rrb.TimeSeriesView(origin="motors/torque", name="Torque (Nm)"),
-            rrb.TimeSeriesView(origin="telemetry/voltage_raw", name="Battery voltage (raw ADC)"),
+            rrb.TimeSeriesView(origin="telemetry/voltage_v", name="Battery voltage (V)"),
             rrb.TimeSeriesView(origin="telemetry/current_amps", name="Battery current (A)"),
             rrb.TimeSeriesView(origin="sensors/capacitive", name="Capacitive touch (0–1)"),
             rrb.TimeSeriesView(origin="sensors/fsr", name="FSR pressure (0–1)"),
@@ -335,8 +335,8 @@ class RerunVisualizer(Visualizer):
         """Declare SeriesLines for head battery telemetry."""
         rr = self._rr
         rr.log(
-            "telemetry/voltage_raw",
-            rr.SeriesLines(names="voltage (raw ADC)"),
+            "telemetry/voltage_v",
+            rr.SeriesLines(names="voltage (V)"),
             static=True,
         )
         rr.log(
@@ -348,7 +348,7 @@ class RerunVisualizer(Visualizer):
     def _log_battery_series(self, rr, state: RobotState) -> None:
         if not state.battery_current_raw and not state.battery_voltage_raw:
             return
-        rr.log("telemetry/voltage_raw", rr.Scalars(float(state.battery_voltage_raw)))
+        rr.log("telemetry/voltage_v", rr.Scalars(state.battery_voltage_v))
         rr.log("telemetry/current_amps", rr.Scalars(state.battery_current_amps))
 
     def _setup_sensor_face_series(self) -> None:

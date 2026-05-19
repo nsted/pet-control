@@ -106,6 +106,12 @@ class RobotState:
         cfg = BATTERY_CONFIG
         return -(self.battery_current_raw * cfg.ads_v_per_bit - cfg.zero_v) / cfg.sensitivity_v_per_a
 
+    @property
+    def battery_voltage_v(self) -> float:
+        """Battery supply voltage in Volts, two-point calibrated for ESP32 ADC non-linearity."""
+        cfg = BATTERY_CONFIG
+        return (cfg.voltage_slope * self.battery_voltage_raw + cfg.voltage_offset_mv) / 1000.0
+
     @classmethod
     def empty(cls) -> "RobotState":
         """Return a disconnected, all-zero state."""
