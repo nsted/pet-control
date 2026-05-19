@@ -108,6 +108,23 @@ class SensorLimits:
     cap_full_scale: float = 11 / 15
 
 
+@dataclass(frozen=True)
+class BatteryConfig:
+    """Conversion constants for head-board battery telemetry.
+
+    Current sensor: ACS37041KLHBLT-010B3 (±10 A, 3.3 V supply).
+    ADC: ADS1015 external (head.ino) at GAIN_ONE (±4.096 V) → 2 mV/bit.
+    Sensor is oriented so discharge current is in the negative direction;
+    we negate so positive = discharge (battery draining).
+
+    I_amps = -(raw * ads_v_per_bit - zero_v) / sensitivity_v_per_a
+    """
+
+    sensitivity_v_per_a: float = 0.132   # 132 mV/A (ACS37041 at 3.3 V VCC)
+    zero_v: float = 1.65                  # VCC/2 at zero current
+    ads_v_per_bit: float = 0.002         # ADS1015 GAIN_ONE: 2 mV/LSB
+
+
 # ---------------------------------------------------------------------------
 # Singleton instances — import these
 # ---------------------------------------------------------------------------
@@ -116,3 +133,4 @@ MOTOR_LIMITS = MotorLimits()
 LOOP_LIMITS = ControlLoopLimits()
 BEHAVIOR_LIMITS = BehaviorLimits()
 SENSOR_LIMITS = SensorLimits()
+BATTERY_CONFIG = BatteryConfig()

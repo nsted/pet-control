@@ -3,7 +3,7 @@ RerunVisualizer — real-time visualization via Rerun.io.
 
 Displays in the Rerun viewer:
   1. Motor state time-series (velocity, torque per motor)
-  2. Battery telemetry (raw ADC voltage and current)
+  2. Battery telemetry (raw ADC voltage, current in Amps)
   3. Capacitive touch and FSR pressure (0–1 per module face) as separate charts
   4. 3D robot pose from actual OBJ mesh files, forward-kinematics driven
 
@@ -306,7 +306,7 @@ class RerunVisualizer(Visualizer):
             rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
             rrb.TimeSeriesView(origin="motors/torque", name="Torque (Nm)"),
             rrb.TimeSeriesView(origin="telemetry/voltage_raw", name="Battery voltage (raw ADC)"),
-            rrb.TimeSeriesView(origin="telemetry/current_raw", name="Battery current (raw ADC)"),
+            rrb.TimeSeriesView(origin="telemetry/current_amps", name="Battery current (A)"),
             rrb.TimeSeriesView(origin="sensors/capacitive", name="Capacitive touch (0–1)"),
             rrb.TimeSeriesView(origin="sensors/fsr", name="FSR pressure (0–1)"),
         ))
@@ -332,7 +332,7 @@ class RerunVisualizer(Visualizer):
             rr.log(f"motors/torque/motor_{sid}", rr.Scalars(float(val)))
 
     def _setup_battery_series(self) -> None:
-        """Declare SeriesLines for head battery raw ADC streams."""
+        """Declare SeriesLines for head battery telemetry."""
         rr = self._rr
         rr.log(
             "telemetry/voltage_raw",
@@ -340,14 +340,16 @@ class RerunVisualizer(Visualizer):
             static=True,
         )
         rr.log(
-            "telemetry/current_raw",
-            rr.SeriesLines(names="current (raw ADC)"),
+            "telemetry/current_amps",
+            rr.SeriesLines(names="current (A)"),
             static=True,
         )
 
     def _log_battery_series(self, rr, state: RobotState) -> None:
+        if not state.battery_current_raw and not state.battery_voltage_raw:
+            return
         rr.log("telemetry/voltage_raw", rr.Scalars(float(state.battery_voltage_raw)))
-        rr.log("telemetry/current_raw", rr.Scalars(float(state.battery_current_raw)))
+        rr.log("telemetry/current_amps", rr.Scalars(state.battery_current_amps))
 
     def _setup_sensor_face_series(self) -> None:
         """Declare SeriesLines for each capacitive pad and per-face FSR."""
@@ -371,11 +373,13 @@ class RerunVisualizer(Visualizer):
         for mod in self._module_meta:
             mod_id = int(mod["id"])
             sens = state.sensors.get(mod_id)
+            if sens is None:
+                continue
             for face in _SENSOR_FACE_NAMES:
-                pads: tuple[float, ...] = getattr(sens, f"touch_{face}_pads", ()) if sens else ()
+                pads: tuple[float, ...] = getattr(sens, f"touch_{face}_pads", ())
                 for i, v in enumerate(pads):
                     rr.log(f"sensors/capacitive/{mod_id}_{face}_{i}", rr.Scalars(float(v)))
-                pv = float(getattr(sens, f"pressure_{face}", 0.0)) if sens else 0.0
+                pv = float(getattr(sens, f"pressure_{face}", 0.0))
                 rr.log(f"sensors/fsr/{mod_id}_{face}", rr.Scalars(pv))
 
     def _setup_overlay_geometry(self, rr) -> None:

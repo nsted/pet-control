@@ -12,7 +12,7 @@ import time
 import math
 from dataclasses import asdict, dataclass, field
 
-from petctl.config import MOTOR_LIMITS
+from petctl.config import BATTERY_CONFIG, MOTOR_LIMITS
 
 
 @dataclass
@@ -99,6 +99,12 @@ class RobotState:
     connected: bool = False
     # Seconds since last update — useful for time-based control schemes
     dt: float = 0.0
+
+    @property
+    def battery_current_amps(self) -> float:
+        """Battery discharge current in Amps (positive = discharging)."""
+        cfg = BATTERY_CONFIG
+        return -(self.battery_current_raw * cfg.ads_v_per_bit - cfg.zero_v) / cfg.sensitivity_v_per_a
 
     @classmethod
     def empty(cls) -> "RobotState":

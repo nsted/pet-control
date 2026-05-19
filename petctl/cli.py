@@ -4,7 +4,7 @@ petctl command-line interface.
 Usage:
     petctl run                                  # keyboard + Rerun, mock backend
     petctl run --backend robot                  # use real robot
-    petctl run --backend mock --mode sine       # animated sensor data
+    petctl run --backend mock --control sine    # animated sensor data
     petctl run --control sine                   # sine wave on real or mock robot
     petctl run --backend mock --state s.json    # load sensor values from file
     petctl run --no-viz                         # headless (sensors only, no Rerun)
@@ -140,13 +140,13 @@ def run(
     elif control == "sine":
         from petctl.schemes.sine import SineControlScheme
         _scheme = SineControlScheme(servo_id=servo_id)
-    elif control in ("ripple", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "wander", "explore"):
+    elif control in ("ripple", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "wander", "drift", "explore"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
     else:
         typer.echo(
             f"Unknown control scheme '{control}'. "
-            "Choose: keyboard, passthrough, sine, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, wander, explore",
+            "Choose: keyboard, passthrough, sine, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, wander, drift, explore",
             err=True,
         )
         raise typer.Exit(1)
