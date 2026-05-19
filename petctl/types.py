@@ -84,8 +84,10 @@ class RobotState:
     # Keyed by servo_id (int). Position in radians; home = 0.0.
     servo_positions: dict[int, float] = field(default_factory=dict)
     # Per-motor feedback from hardware (all keyed by servo_id).
-    motor_velocities: dict[int, float] = field(default_factory=dict)  # rad/s
-    motor_torques: dict[int, float] = field(default_factory=dict)      # Nm
+    motor_velocities: dict[int, float] = field(default_factory=dict)     # rad/s
+    motor_torques: dict[int, float] = field(default_factory=dict)        # Nm
+    motor_temperatures: dict[int, int] = field(default_factory=dict)     # °C (byte 6 of MIT response)
+    motor_errors: dict[int, int] = field(default_factory=dict)           # error code (byte 7)
     # Head-only battery telemetry raw ADC values.
     battery_current_raw: int = 0
     battery_voltage_raw: int = 0

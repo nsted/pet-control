@@ -408,6 +408,203 @@ class StrokeReactControlScheme(ControlScheme):
         return cmds
 
 
+class WanderControlScheme(ControlScheme):
+    """Each joint turns until it stalls under load, then reverses direction.
+
+    Stall requires two conditions to both be true within STALL_WINDOW_S:
+      1. Position has not advanced STALL_THRESHOLD_RAD (motor is stuck).
+      2. Peak torque during the window has reached STALL_TORQUE_NM (motor is
+         actively pushing — not just drifting or coasting to a slow stop).
+
+    On reversal, _pos_cmd syncs to actual position and the controller slew
+    filter is reset to match via take_slew_resets(), so the motor begins
+    moving in the new direction on the very next tick.
+    """
+
+    name = "wander"
+
+    SPEED_DEG_PER_S: float = 45.0
+    STALL_THRESHOLD_RAD: float = 0.3   # ~17° minimum travel per window
+    STALL_WINDOW_S: float = 0.8
+    STALL_TORQUE_NM: float = 0.9       # peak torque that must be seen during the window
+    REVERSAL_COOLDOWN_S: float = 0.5
+    MAX_POS_RAD: float = 12.4
+
+    def __init__(self, speed_deg_per_s: float = SPEED_DEG_PER_S) -> None:
+        self._speed_rad_s = math.radians(speed_deg_per_s)
+        self._pos_cmd: dict[int, float] = {}
+        self._direction: dict[int, float] = {}
+        self._stall_since: dict[int, float] = {}
+        self._stall_pos_snap: dict[int, float] = {}
+        self._stall_peak_torque: dict[int, float] = {}
+        self._reversed_at: dict[int, float] = {}
+        self._pending_slew_resets: dict[int, float] = {}
+
+    def on_start(self, controller: "Controller") -> None:
+        self._pos_cmd = {}
+        self._direction = {}
+        self._stall_since = {}
+        self._stall_pos_snap = {}
+        self._stall_peak_torque = {}
+        self._reversed_at = {}
+        self._pending_slew_resets = {}
+        print(
+            f"[Wander] Each joint turns at {math.degrees(self._speed_rad_s):.0f}°/s, "
+            "reversing on stall. Ctrl-C to stop."
+        )
+
+    def take_slew_resets(self) -> dict[int, float]:
+        """Called by the controller before _apply_slew_to_commands each tick."""
+        resets = self._pending_slew_resets
+        self._pending_slew_resets = {}
+        return resets
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
+        dt = max(state.dt, 1e-4)
+        cmds: list[ServoCommand] = []
+
+        for sid in sorted(state.active_servo_ids):
+            if sid not in self._pos_cmd:
+                self._pos_cmd[sid] = state.servo_positions.get(sid, 0.0)
+                self._direction[sid] = random.choice([-1.0, 1.0])
+                self._stall_since[sid] = 0.0
+                self._reversed_at[sid] = now
+
+            in_cooldown = (now - self._reversed_at[sid]) < self.REVERSAL_COOLDOWN_S
+
+            stall_triggered = False
+            if not in_cooldown:
+                actual = state.servo_positions.get(sid)
+                torque = abs(state.motor_torques.get(sid, 0.0))
+
+                if actual is not None:
+                    if sid not in self._stall_pos_snap:
+                        self._stall_since[sid] = now
+                        self._stall_pos_snap[sid] = actual
+                        self._stall_peak_torque[sid] = torque
+                    elif abs(actual - self._stall_pos_snap[sid]) >= self.STALL_THRESHOLD_RAD:
+                        # Motor moved — slide the window forward and reset peak
+                        self._stall_since[sid] = now
+                        self._stall_pos_snap[sid] = actual
+                        self._stall_peak_torque[sid] = torque
+                    else:
+                        self._stall_peak_torque[sid] = max(self._stall_peak_torque[sid], torque)
+                        if now - self._stall_since[sid] >= self.STALL_WINDOW_S:
+                            if self._stall_peak_torque[sid] >= self.STALL_TORQUE_NM:
+                                stall_triggered = True
+                            else:
+                                # Position stalled but not under load — restart window
+                                self._stall_since[sid] = now
+                                self._stall_pos_snap[sid] = actual
+                                self._stall_peak_torque[sid] = torque
+            else:
+                self._stall_since[sid] = 0.0
+                self._stall_pos_snap.pop(sid, None)
+                self._stall_peak_torque.pop(sid, None)
+
+            # Fallback: always reverse at the MIT encoding ceiling.
+            if not stall_triggered and not in_cooldown and abs(self._pos_cmd[sid]) >= self.MAX_POS_RAD:
+                stall_triggered = True
+
+            if stall_triggered:
+                actual = state.servo_positions.get(sid, self._pos_cmd[sid])
+                clamped = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, actual))
+                peak_t = self._stall_peak_torque.get(sid, 0.0)
+                self._pos_cmd[sid] = clamped
+                self._pending_slew_resets[sid] = clamped
+                self._direction[sid] *= -1.0
+                self._reversed_at[sid] = now
+                self._stall_since[sid] = 0.0
+                self._stall_pos_snap.pop(sid, None)
+                self._stall_peak_torque.pop(sid, None)
+                print(f"[Wander] Motor {sid} → reversing at {math.degrees(clamped):.1f}° (peak torque {peak_t:.2f} Nm)")
+
+            self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+            self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
+
+            cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
+
+        return cmds
+
+
+class ExploreControlScheme(ControlScheme):
+    """Copy of WanderControlScheme for parameter tuning.
+
+    Identical behaviour to wander — tweak the class constants here
+    without disturbing the reference.
+    """
+
+    name = "explore"
+
+    SPEED_DEG_PER_S: float = 45.0
+    STALL_VEL_THRESHOLD: float = 0.15
+    STALL_WINDOW_S: float = 0.6
+    REVERSAL_COOLDOWN_S: float = 0.4
+    MAX_POS_RAD: float = 12.4
+
+    def __init__(self, speed_deg_per_s: float = SPEED_DEG_PER_S) -> None:
+        self._speed_rad_s = math.radians(speed_deg_per_s)
+        self._pos_cmd: dict[int, float] = {}
+        self._direction: dict[int, float] = {}
+        self._stall_since: dict[int, float] = {}
+        self._reversed_at: dict[int, float] = {}
+
+    def on_start(self, controller: "Controller") -> None:
+        self._pos_cmd = {}
+        self._direction = {}
+        self._stall_since = {}
+        self._reversed_at = {}
+        print(
+            f"[Explore] Each joint turns at {math.degrees(self._speed_rad_s):.0f}°/s, "
+            "reversing on stall. Ctrl-C to stop."
+        )
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
+        dt = max(state.dt, 1e-4)
+        cmds: list[ServoCommand] = []
+
+        for sid in sorted(state.active_servo_ids):
+            if sid not in self._pos_cmd:
+                self._pos_cmd[sid] = state.servo_positions.get(sid, 0.0)
+                self._direction[sid] = random.choice([-1.0, 1.0])
+                self._stall_since[sid] = 0.0
+                self._reversed_at[sid] = now
+
+            vel = state.motor_velocities.get(sid, 0.0)
+            in_cooldown = (now - self._reversed_at[sid]) < self.REVERSAL_COOLDOWN_S
+
+            stall_triggered = False
+            if not in_cooldown:
+                if abs(vel) < self.STALL_VEL_THRESHOLD:
+                    if self._stall_since[sid] == 0.0:
+                        self._stall_since[sid] = now
+                    elif now - self._stall_since[sid] >= self.STALL_WINDOW_S:
+                        stall_triggered = True
+                else:
+                    self._stall_since[sid] = 0.0
+            else:
+                self._stall_since[sid] = 0.0
+
+            if not stall_triggered and abs(self._pos_cmd[sid]) >= self.MAX_POS_RAD:
+                stall_triggered = True
+
+            if stall_triggered:
+                self._pos_cmd[sid] = state.servo_positions.get(sid, self._pos_cmd[sid])
+                self._direction[sid] *= -1.0
+                self._reversed_at[sid] = now
+                self._stall_since[sid] = 0.0
+                print(f"[Explore] Motor {sid} → reversing (vel={vel:.3f} rad/s)")
+
+            self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+            self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
+
+            cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
+
+        return cmds
+
+
 class CurlControlScheme(ControlScheme):
     """Ramp all joints to the same angle on one side, coiling the body into a tight ball, then hold."""
 
@@ -439,6 +636,8 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     CurlControlScheme,
     Spin7ControlScheme,
     StrokeReactControlScheme,
+    WanderControlScheme,
+    ExploreControlScheme,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]

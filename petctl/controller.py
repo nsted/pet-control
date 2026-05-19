@@ -240,6 +240,14 @@ class Controller:
                 print(f"[Controller] Scheme '{self.scheme.name}' error: {e}")
                 commands = []
 
+            # Let schemes reset the slew state for specific servos before this
+            # tick's filter runs — needed when a stall reversal must take effect
+            # immediately rather than waiting for the filter to unwind.
+            _take_slew_resets = getattr(self.scheme, "take_slew_resets", None)
+            if _take_slew_resets is not None:
+                for _sid, _pos in _take_slew_resets().items():
+                    self._slew_last_sent_rad[_sid] = _pos
+
             self._apply_slew_to_commands(commands)
 
             # 3. Send commands (unless dry run)
@@ -278,11 +286,19 @@ class Controller:
             if now - self._last_stats_print >= self._STATS_INTERVAL:
                 self._print_stats(now)
 
-            # 6. Periodically print servo positions for debugging
+            # 6. Periodically print MIT state for debugging
             if now - self._last_pos_print >= 2.0:
-                pos = self._state.servo_positions
-                if pos:
-                    print("[positions] " + "  ".join(f"{sid}:{p}" for sid, p in sorted(pos.items())))
+                sids = sorted(self._state.servo_positions)
+                if sids:
+                    header = f"{'id':>3}  {'pos°':>8}  {'vel r/s':>8}  {'torq Nm':>8}  {'temp°C':>7}  {'err':>4}"
+                    print(f"[MIT]\n{header}")
+                    for sid in sids:
+                        p = math.degrees(self._state.servo_positions.get(sid, 0.0))
+                        v = self._state.motor_velocities.get(sid, 0.0)
+                        t = self._state.motor_torques.get(sid, 0.0)
+                        tmp = self._state.motor_temperatures.get(sid, 0)
+                        err = self._state.motor_errors.get(sid, 0)
+                        print(f"  {sid:>3}  {p:>8.2f}  {v:>8.3f}  {t:>8.3f}  {tmp:>7}  {err:>4}")
                 self._last_pos_print = now
 
             # 7. Pace the loop so mock/offline runs do not spin at CPU-limited rate

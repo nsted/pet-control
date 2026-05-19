@@ -183,6 +183,8 @@ class RobotBackend(_BackendBase):
                 },
                 motor_velocities={mid: data["vel"] for mid, data in self._motor_state.items()},
                 motor_torques={mid: data["torque"] for mid, data in self._motor_state.items()},
+                motor_temperatures={mid: data.get("temp", 0) for mid, data in self._motor_state.items()},
+                motor_errors={mid: data.get("error", 0) for mid, data in self._motor_state.items()},
                 battery_current_raw=battery_current_raw,
                 battery_voltage_raw=battery_voltage_raw,
                 active_modules=self._discovered_modules,
@@ -845,7 +847,9 @@ class RobotBackend(_BackendBase):
         pos = _uint_to_float(p_raw, 16, MOTOR_LIMITS.pos_min, MOTOR_LIMITS.pos_max)
         vel = _uint_to_float(v_raw, 12, MOTOR_LIMITS.vel_min, MOTOR_LIMITS.vel_max)
         torque = _uint_to_float(t_raw, 12, MOTOR_LIMITS.torque_min, MOTOR_LIMITS.torque_max)
-        self._motor_state[motor_id] = {"pos": pos, "vel": vel, "torque": torque}
+        temp = payload[6] if len(payload) >= 7 else 0
+        error = payload[7] if len(payload) >= 8 else 0
+        self._motor_state[motor_id] = {"pos": pos, "vel": vel, "torque": torque, "temp": temp, "error": error}
 
 
 def _normalize_pressure(value: int) -> float:
