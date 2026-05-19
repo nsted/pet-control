@@ -219,14 +219,18 @@ class RobotBackend(_BackendBase):
             if cmd.position is None:
                 continue
             sid = cmd.servo_id
-            pos_rad = cmd.position + self._angle_offsets.get(sid, 0.0)
+            p_target = cmd.position + self._angle_offsets.get(sid, 0.0)
             last_p = self._last_mit_abs_pos.get(sid)
             last_t = self._last_mit_wall_s.get(sid)
             if last_p is not None and last_t is not None:
-                dt_cmd = max(now - last_t, 1.0 / 120.0)
-                vel = (pos_rad - last_p) / dt_cmd
+                dt = max(now - last_t, 1.0 / 120.0)
+                max_step = LOOP_LIMITS.max_speed_rad_s * dt
+                delta = p_target - last_p
+                pos_rad = last_p + max(min(delta, max_step), -max_step)
+                vel = (pos_rad - last_p) / dt
                 vel = max(MOTOR_LIMITS.vel_min, min(MOTOR_LIMITS.vel_max, vel))
             else:
+                pos_rad = p_target
                 vel = 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
@@ -659,8 +663,11 @@ class RobotBackend(_BackendBase):
         # Allow EEPROM write to complete and next CAN frame to arrive with pos≈0.
         await asyncio.sleep(0.25)
         self._angle_offsets.clear()
-        self._last_mit_abs_pos.clear()
-        self._last_mit_wall_s.clear()
+        # After hardware zero the motor will report 0.0 at the current position.
+        # Seed ramp at 0.0 so the first command after zeroing doesn't snap.
+        now = time.monotonic()
+        self._last_mit_abs_pos = {mid: 0.0 for mid in ids}
+        self._last_mit_wall_s = {mid: now for mid in ids}
         print(f"[RobotBackend] Hardware zero written — {len(ids)} motor(s) zeroed.")
 
     async def poll_positions(self) -> None:
@@ -755,8 +762,11 @@ class RobotBackend(_BackendBase):
                 "[RobotBackend] set_home: captured "
                 + "  ".join(f"{mid}:{self._angle_offsets[mid]:.4f}" for mid in sorted(captured))
             )
-        self._last_mit_abs_pos.clear()
-        self._last_mit_wall_s.clear()
+        # Seed ramp state from current physical positions so the first post-home command
+        # doesn't snap. Motors with no data are dropped (old absolute coords are invalid).
+        now = time.monotonic()
+        self._last_mit_abs_pos = {mid: self._motor_state[mid]["pos"] for mid in captured}
+        self._last_mit_wall_s = {mid: now for mid in captured}
 
     def reset_motor_zero(self, motor_id: int) -> None:
         """Redefine the current physical position of motor_id as software zero.
@@ -769,8 +779,10 @@ class RobotBackend(_BackendBase):
         if state is None:
             return
         self._angle_offsets[motor_id] = state["pos"]
-        self._last_mit_abs_pos.pop(motor_id, None)
-        self._last_mit_wall_s.pop(motor_id, None)
+        # Seed ramp at the new absolute coordinate (== current physical pos) so
+        # the first command after the wrap doesn't snap.
+        self._last_mit_abs_pos[motor_id] = state["pos"]
+        self._last_mit_wall_s[motor_id] = time.monotonic()
 
     async def _receive_loop(self) -> None:
         if self._ws is None:

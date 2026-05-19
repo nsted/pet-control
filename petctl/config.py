@@ -47,6 +47,11 @@ class ControlLoopLimits:
     # Hard cap on single-tick commanded delta (degrees) after smoothing (safety).
     max_angle_step_per_tick_deg: float = 4.0
 
+    # Maximum slew rate for the backend position ramping filter (rad/s).
+    # Caps how fast p_des_commanded can move toward p_des_target each cycle.
+    # Acts as a final safety net after scheme-level smoothing.
+    max_speed_rad_s: float = 8.0
+
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10
 
