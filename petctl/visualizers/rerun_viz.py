@@ -505,20 +505,24 @@ class RerunVisualizer(Visualizer):
                 rr.log(path, rr.Clear(recursive=False))
 
     def _log_touch_blob_spheres(self, rr, state: RobotState) -> None:
-        """Log one black sphere per module at the face-weighted surface position.
+        """Log a single black sphere at the world-space centroid of all active touch.
 
-        The sphere sits outside the body on whichever face(s) are being touched.
-        If two faces are active simultaneously (e.g. left + middle) the sphere
-        lands between them, weighted by activation.  Logged as a child of each
-        module's entity so it rides along with the FK hierarchy automatically.
+        Each active module contributes a face-weighted surface point (in its own
+        local frame) transformed to robot-local space via FK.  All contributions
+        are averaged by activation weight, producing one sphere that slides along
+        the body as a hand strokes front-to-back.
+
+        Logged at robot/touch_centroid so Rerun applies the robot entity transform
+        and the sphere sits correctly in the 3D scene.
         """
+        path = "robot/touch_centroid"
+        weighted_sum = np.zeros(3, dtype=np.float64)
+        total_weight = 0.0
+
         for mod in self._module_meta:
             mod_id = int(mod["id"])
             sens = state.sensors.get(mod_id)
-            path = self._entity_path_cache[mod_id] + "/touch_blob"
-
             if sens is None:
-                rr.log(path, rr.Clear(recursive=False))
                 continue
 
             swap = self._overlay_swap_lr.get(mod_id, False)
@@ -529,23 +533,35 @@ class RerunVisualizer(Visualizer):
             wl = max(0.0, tl - _BLOB_ACTIVATION_THRESHOLD)
             wr = max(0.0, tr - _BLOB_ACTIVATION_THRESHOLD)
             wm = max(0.0, tm - _BLOB_ACTIVATION_THRESHOLD)
-            w_total = wl + wr + wm
+            w_face = wl + wr + wm
 
-            if w_total < 1e-6:
-                rr.log(path, rr.Clear(recursive=False))
+            if w_face < 1e-6:
                 continue
 
-            pos = (
+            # Surface point in module-local space (face-weighted)
+            local_pt = (
                 wl * _BLOB_FACE_POINTS["left"]
                 + wr * _BLOB_FACE_POINTS["right"]
                 + wm * _BLOB_FACE_POINTS["middle"]
-            ) / w_total
+            ) / w_face
 
-            rr.log(path, rr.Points3D(
-                positions=[pos.tolist()],
-                radii=[_BLOB_RADIUS_CM],
-                colors=[[0, 0, 0, 220]],
-            ))
+            # FK: transform surface point to robot-local space
+            pos_m, R_m = self._fk_to_module(mod_id, state)
+            p3d = pos_m + R_m @ local_pt.astype(np.float64)
+
+            weighted_sum += w_face * p3d
+            total_weight += w_face
+
+        if total_weight < 1e-6:
+            rr.log(path, rr.Clear(recursive=False))
+            return
+
+        centroid = weighted_sum / total_weight
+        rr.log(path, rr.Points3D(
+            positions=[centroid.tolist()],
+            radii=[_BLOB_RADIUS_CM],
+            colors=[[0, 0, 0, 220]],
+        ))
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:
         """
