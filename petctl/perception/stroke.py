@@ -1,23 +1,37 @@
 """
 Stroke detector — tracks a hand moving along the robot body.
 
-Classifies touch blobs (contiguous active modules) and fits a linear
-velocity to the primary blob's centroid over a rolling time window.
-No FSR data is used; capacitive touch_total per module is sufficient.
+Computes a weighted pad-level centroid along the body axis each tick and fits a
+linear velocity over a rolling window.  Working at pad resolution means even a
+stroke across two neighbouring pads on the same module is detectable.
+
+No FSR data is used; capacitive pad readings are sufficient.
 """
 
 from __future__ import annotations
 
-import time
 from collections import deque
 from dataclasses import dataclass, field
 
 from petctl.types import RobotState
 
-TOUCH_THRESHOLD: float = 0.08   # minimum touch_total to count as active
-VELOCITY_THRESHOLD: float = 0.8  # modules/second — below this is not a stroke
-WINDOW_FRAMES: int = 15          # rolling window depth (~0.75s at 20 Hz)
+PAD_THRESHOLD: float = 0.15     # minimum per-pad value to contribute to centroid
+TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grouping
+VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
+WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
+
+# Sub-position of each pad along the body axis within its module (0 = head-end, 1 = tail-end).
+# Derived from _PAD_CENTERS z-coordinates in rerun_viz.py:
+#   z range: -1.75 (head) to -6.37 (tail), span = 4.62 cm
+# Order: right pads 0-3, left pads 0-3, middle pads 0-5
+# Canonical pad order: top_head(0), top_mid(1), top_rear(2), bottom_solo(3) for side faces;
+#                      top×2(0-1), mid×2(2-3), bot×2(4-5) for middle face.
+_PAD_BODY_SUB: tuple[float, ...] = (
+    0.14, 0.43, 0.72, 0.0,          # right: top_head, top_mid, top_rear, bottom_solo
+    0.14, 0.43, 0.72, 0.0,          # left:  top_head, top_mid, top_rear, bottom_solo
+    0.23, 0.23, 0.62, 0.62, 1.0, 1.0,  # middle: top×2, mid×2, bot×2
+)
 
 
 @dataclass
@@ -32,11 +46,11 @@ class TouchBlob:
 @dataclass
 class StrokeReading:
     """Output of StrokeDetector when a stroke is detected."""
-    centroid: float      # primary blob centroid this tick
-    velocity: float      # modules/second, signed (+ = head→tail, − = tail→head)
+    centroid: float      # pad-level centroid this tick (body-axis units)
+    velocity: float      # body-units/second, signed (+ = head→tail, − = tail→head)
     speed: float         # abs(velocity)
     direction: str       # "head_to_tail" | "tail_to_head"
-    intensity: float     # primary blob intensity
+    intensity: float     # mean pad activation of the active region
     confidence: float    # R² of the linear fit over the centroid window
     blobs: list[TouchBlob] = field(default_factory=list)
 
@@ -45,29 +59,22 @@ class StrokeDetector:
     """
     Detects a stroking gesture along the robot body.
 
-    Call update() every control tick. Returns a StrokeReading when the
-    primary touch blob is moving fast enough to be a stroke, or None otherwise.
+    Call update() every control tick. Returns a StrokeReading when touch is
+    moving fast enough to be a stroke, or None otherwise.
     """
 
     def __init__(self) -> None:
-        # Rolling buffer of (timestamp, centroid) for the primary blob
         self._window: deque[tuple[float, float]] = deque(maxlen=WINDOW_FRAMES)
 
     def update(self, state: RobotState) -> StrokeReading | None:
         """Process one tick of RobotState. Returns StrokeReading or None."""
-        activations = {
-            mod_id: sens.touch_total
-            for mod_id, sens in state.sensors.items()
-        }
+        centroid, intensity = _pad_centroid(state)
 
-        blobs = _find_blobs(activations)
-
-        if not blobs:
+        if centroid is None:
             self._window.clear()
             return None
 
-        primary = max(blobs, key=lambda b: b.intensity)
-        self._window.append((state.timestamp, primary.centroid))
+        self._window.append((state.timestamp, centroid))
 
         if len(self._window) < MIN_WINDOW_FRAMES:
             return None
@@ -77,12 +84,15 @@ class StrokeDetector:
         if abs(velocity) < VELOCITY_THRESHOLD:
             return None
 
+        activations = {mid: s.touch_total for mid, s in state.sensors.items()}
+        blobs = _find_blobs(activations)
+
         return StrokeReading(
-            centroid=primary.centroid,
+            centroid=centroid,
             velocity=velocity,
             speed=abs(velocity),
             direction="head_to_tail" if velocity > 0 else "tail_to_head",
-            intensity=primary.intensity,
+            intensity=intensity,
             confidence=r_squared,
             blobs=blobs,
         )
@@ -91,6 +101,30 @@ class StrokeDetector:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _pad_centroid(state: RobotState) -> tuple[float | None, float]:
+    """
+    Weighted centroid of all active pads along the body axis.
+
+    Returns (centroid, mean_intensity) where centroid is in body-axis units
+    (module_id + sub-position within module) and mean_intensity is the
+    average active-pad value.  Returns (None, 0.0) when no pad is above threshold.
+    """
+    weighted_sum = 0.0
+    total_weight = 0.0
+    n_active = 0
+    for mod_id, sens in state.sensors.items():
+        all_pads = (*sens.touch_right_pads, *sens.touch_left_pads, *sens.touch_middle_pads)
+        for pad_idx, val in enumerate(all_pads):
+            if val >= PAD_THRESHOLD:
+                body_pos = mod_id + _PAD_BODY_SUB[pad_idx]
+                weighted_sum += body_pos * val
+                total_weight += val
+                n_active += 1
+    if total_weight < 1e-6:
+        return None, 0.0
+    return weighted_sum / total_weight, total_weight / n_active
+
 
 def _find_blobs(activations: dict[int, float]) -> list[TouchBlob]:
     """Group contiguous active modules into blobs."""
@@ -134,7 +168,6 @@ def _linear_fit(window: list[tuple[float, float]]) -> tuple[float, float]:
     Fit a line to (timestamp, centroid) pairs.
 
     Returns (velocity, r_squared).
-    velocity is in modules/second; r_squared is the coefficient of determination.
     """
     n = len(window)
     ts = [w[0] for w in window]
