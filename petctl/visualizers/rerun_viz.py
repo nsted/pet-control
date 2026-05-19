@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
+from petctl.perception.stroke import StrokeDetector
 from petctl.protocols import Visualizer
 from petctl.types import RobotState
 
@@ -264,6 +265,8 @@ class RerunVisualizer(Visualizer):
         self._pad_quats: list = []
         self._rr = None
         self._show_pad_labels: bool = False
+        self._stroke_detector = StrokeDetector()
+        self._stroke_active: bool = False
 
     # ------------------------------------------------------------------
     # Visualizer interface
@@ -293,6 +296,7 @@ class RerunVisualizer(Visualizer):
             return
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
+        self._stroke_active = self._stroke_detector.update(state) is not None
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
         if self.show_3d:
@@ -520,10 +524,11 @@ class RerunVisualizer(Visualizer):
             return
 
         centroid = weighted_sum / total_weight
+        color = [220, 30, 30, 220] if self._stroke_active else [0, 0, 0, 220]
         rr.log(path, rr.Points3D(
             positions=[centroid.tolist()],
             radii=[_BLOB_RADIUS_CM],
-            colors=[[0, 0, 0, 220]],
+            colors=[color],
         ))
 
     def _log_sensor_overlays(self, rr, state: RobotState) -> None:

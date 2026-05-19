@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from petctl.types import RobotState
 
 TOUCH_THRESHOLD: float = 0.08   # minimum touch_total to count as active
-VELOCITY_THRESHOLD: float = 1.5  # modules/second — below this is not a stroke
+VELOCITY_THRESHOLD: float = 0.8  # modules/second — below this is not a stroke
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
 
