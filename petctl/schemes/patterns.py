@@ -14,7 +14,7 @@ Patterns:
     twitch    — smoothed per-joint Brownian noise (jittery, organic)
     freeze    — hold all joints at home (0°)
     coil      — quadratic spatial phase → tighter curl toward the tail
-    curl      — ramp all joints to same large angle, coil body into a tight ball and hold
+    curl      — ramp with slalom signs to 70°, looping head-to-tail, then hold
 """
 
 from __future__ import annotations
@@ -732,20 +732,44 @@ class ExploreControlScheme(ControlScheme):
 
 
 class CurlControlScheme(ControlScheme):
-    """Ramp all joints to the same angle on one side, coiling the body into a tight ball, then hold."""
+    """Ramp joints to loop head-to-tail using slalom sign pattern, then hold.
+
+    Alternating signs (odd-enumeration-index +, even −) match the slalom curl
+    direction, producing a consistent right-side curl that brings the head joint
+    origin within ~0.4 cm of the tail at TARGET_DEG per FK geometry.
+    """
 
     name = "curl"
 
-    def __init__(self, target_deg: float = 360.0) -> None:
+    # FK geometry: head/tail MODULE BODIES just touch at ~70° (joint-origin distance ≈ 7 cm = 1 module width).
+    # 88° brings joint origins to 0.4 cm but the snake has spiralled 1.7 turns — deep body overlap.
+    TARGET_DEG: float = 70.0
+    RAMP_S: float = 8.0
+
+    def __init__(
+        self,
+        target_deg: float = TARGET_DEG,
+        ramp_s: float = RAMP_S,
+    ) -> None:
         self.target_deg = target_deg
+        self.ramp_s = ramp_s
+        self._start: float = 0.0
 
     def on_start(self, controller: "Controller") -> None:
-        print(f"[Curl] Coiling all joints to {self.target_deg:.0f}°. Ctrl-C to stop.")
+        self._start = time.monotonic()
+        print(f"[Curl] Looping right to ±{self.target_deg:.0f}° over {self.ramp_s:.0f}s, then hold. Ctrl-C to stop.")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        t = time.monotonic() - self._start
+        alpha = min(1.0, t / self.ramp_s)
+        angle = alpha * self.target_deg
+        ids = sorted(state.active_servo_ids)
         return [
-            ServoCommand.from_angle(servo_id=sid, angle_deg=self.target_deg)
-            for sid in sorted(state.active_servo_ids)
+            ServoCommand.from_angle(
+                servo_id=sid,
+                angle_deg=(1.0 if i % 2 == 0 else -1.0) * angle,
+            )
+            for i, sid in enumerate(ids)
         ]
 
 
