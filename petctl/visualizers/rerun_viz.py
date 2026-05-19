@@ -95,28 +95,25 @@ _SENSOR_FACE_NAMES = ("left", "middle", "right")
 
 # ------------------------------------------------------------------
 # Per-pad box layout (model-local coordinates, cm).
-# Order matches nibble order from the sensor packet:
-#   right pads  0-3  (nibbles 0-3)
-#   left  pads  0-3  (nibbles 4-7)
-#   middle pads 0-5  (nibbles 8-13)
+# Canonical pad order (applied in robot.py before reaching here):
+#   right pads  0-3  (canonical: top_head, top_mid, top_rear, bottom_solo)
+#   left  pads  0-3  (canonical: top_head, top_mid, top_rear, bottom_solo)
+#   middle pads 0-5
 #
-# Right/left: 2×2 grid on the flat rectangular face.
+# Both faces share the same semantic ordering so behavior code can treat them uniformly.
 # Middle: 2-col × 3-row grid on the angled rectangular face.
-#
-# Pad ordering within each face (top-left→top-right→...) is an assumption
-# until verified against live hardware; rows/columns may need swapping.
 # ------------------------------------------------------------------
 _PAD_CENTERS: list[list[float]] = [
-    # Right face (x=+3.51): rotated +90° around face normal to match left face orientation
-    [3.51, -1.75,  -1.75],   # right_0
-    [3.51,  1.58,  -2.42],   # right_1
-    [3.51,  0.25,  -3.75],   # right_2
-    [3.51, -1.08,  -5.08],   # right_3
-    # Left face (x=-3.51): pad_0 lone corner; pads 1,2,3 along -45° line, 2 in centre
-    [-3.51, -1.75,  -1.75],  # left_0   (verified)
-    [-3.51, -1.08,  -5.08],  # left_1   one step from pad_2 along -45°
-    [-3.51,  0.25,  -3.75],  # left_2   centre of line (verified)
-    [-3.51,  1.58,  -2.42],  # left_3   opposite side of pad_2 from pad_1
+    # Right face (x=+3.51): canonical 0=top_head, 1=top_mid, 2=top_rear, 3=bottom_solo
+    [3.51,  1.58,  -2.42],   # right_0  (top_head)
+    [3.51,  0.25,  -3.75],   # right_1  (top_mid)
+    [3.51, -1.08,  -5.08],   # right_2  (top_rear)
+    [3.51, -1.75,  -1.75],   # right_3  (bottom_solo)
+    # Left face (x=-3.51): canonical 0=top_head, 1=top_mid, 2=top_rear, 3=bottom_solo
+    [-3.51,  1.58,  -2.42],  # left_0   (top_head)
+    [-3.51,  0.25,  -3.75],  # left_1   (top_mid)
+    [-3.51, -1.08,  -5.08],  # left_2   (top_rear)
+    [-3.51, -1.75,  -1.75],  # left_3   (bottom_solo)
     # Middle face (angled), 2-col × 3-row
     [-1.5,  2.67, -2.83],   # middle_0  top-left
     [ 1.5,  2.67, -2.83],   # middle_1  top-right
@@ -421,7 +418,7 @@ class RerunVisualizer(Visualizer):
         # Pads 1 and 3 are spaced the same distance from pad 2 as pad 0 is.
         fsr_r = np.array(_SENSOR_FACES["right"]["center"], dtype=np.float32)
         fsr_l = np.array(_SENSOR_FACES["left"]["center"],  dtype=np.float32)
-        for i0, i1, i2, i3, fsr in ((0, 1, 2, 3, fsr_r), (4, 5, 6, 7, fsr_l)):
+        for i0, i1, i2, i3, fsr in ((3, 0, 1, 2, fsr_r), (7, 4, 5, 6, fsr_l)):
             centers[i2] = 0.5 * (centers[i1] + centers[i3])
             centers[i0] = 2.0 * fsr - centers[i2]
             spacing = float(np.linalg.norm(centers[i0] - centers[i2]))

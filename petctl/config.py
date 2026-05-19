@@ -93,10 +93,19 @@ class BehaviorLimits:
 
 @dataclass(frozen=True)
 class SensorLimits:
-    """Hardware limits for onboard sensors."""
+    """Hardware limits for onboard sensors.
 
-    # FSR ADC resolution (12-bit → max raw value 4095).
-    fsr_max_raw: int = 4095
+    Calibrated from sensor survey (2026-05-18, modules 4 and 6, full activation).
+    """
+
+    # FSR: max raw ADC value observed under firm hand pressure across working sensors.
+    # Hardware ceiling is ~1320–1330; 4095 (12-bit max) is never approached.
+    fsr_max_raw: int = 1330
+
+    # Cap touch: max nibble (0–15) observed under firm touch across all pads.
+    # Hardware ceiling is nibble 11; nibbles 12–15 are never reached.
+    # Normalize as: min(raw_nibble_value / cap_full_scale, 1.0)
+    cap_full_scale: float = 11 / 15
 
 
 # ---------------------------------------------------------------------------

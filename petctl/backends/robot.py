@@ -638,6 +638,29 @@ class RobotBackend(_BackendBase):
         await asyncio.sleep(0.05 * max(1, self.calibration_samples))
         await self.set_home()
 
+    async def set_hardware_zero(self) -> None:
+        """Write the current physical position to each motor's EEPROM as its zero.
+
+        Sends the CubeMars MIT 0xFE command ('set zero') to every discovered
+        motor. The motor saves its current encoder position to non-volatile storage
+        so commanding 0.0 returns to this exact physical pose even after a motor
+        power cycle. Software angle offsets are cleared afterward because the motor
+        itself now reports 0 at this position.
+        """
+        if self._ws is None:
+            return
+        ids = self._discovered_motors or list(range(1, 8))
+        print(f"[RobotBackend] Writing hardware zero to motor(s) {ids}...")
+        for mid in ids:
+            async with self._ws_send_lock:
+                await self._ws.send(_encode_mit_set_zero(mid))
+        # Allow EEPROM write to complete and next CAN frame to arrive with pos≈0.
+        await asyncio.sleep(0.25)
+        self._angle_offsets.clear()
+        self._last_mit_abs_pos.clear()
+        self._last_mit_wall_s.clear()
+        print(f"[RobotBackend] Hardware zero written — {len(ids)} motor(s) zeroed.")
+
     async def poll_positions(self) -> None:
         """Solicit a state reply from every motor.
 
@@ -665,11 +688,10 @@ class RobotBackend(_BackendBase):
             pass
 
     async def write_home_offsets(self) -> None:
-        # Solicit a fresh frame from every motor, then yield to the receive
-        # loop so the responses land in _motor_state before we snapshot it.
+        # Solicit a fresh frame so _motor_state is current, then write hardware zero.
         await self.poll_positions()
         await asyncio.sleep(0.08)
-        await self.set_home()
+        await self.set_hardware_zero()
 
     # ------------------------------------------------------------------
     # Auto-reconnect
@@ -733,6 +755,20 @@ class RobotBackend(_BackendBase):
             )
         self._last_mit_abs_pos.clear()
         self._last_mit_wall_s.clear()
+
+    def reset_motor_zero(self, motor_id: int) -> None:
+        """Redefine the current physical position of motor_id as software zero.
+
+        Called synchronously from control schemes that need to wrap a motor's
+        commanded position (e.g. continuous spin) without hitting the ±12.5 rad
+        MIT encoding ceiling.
+        """
+        state = self._motor_state.get(motor_id)
+        if state is None:
+            return
+        self._angle_offsets[motor_id] = state["pos"]
+        self._last_mit_abs_pos.pop(motor_id, None)
+        self._last_mit_wall_s.pop(motor_id, None)
 
     async def _receive_loop(self) -> None:
         if self._ws is None:
@@ -861,6 +897,11 @@ def _encode_mit_enable(motor_id: int) -> str:
 
 def _encode_mit_disable(motor_id: int) -> str:
     return f"t{motor_id:03X}8FFFFFFFFFFFFFFFD"
+
+
+def _encode_mit_set_zero(motor_id: int) -> str:
+    """CubeMars MIT 0xFE — write current encoder position to EEPROM as zero."""
+    return f"t{motor_id:03X}8FFFFFFFFFFFFFFFE"
 
 
 def _encode_mit_zero(motor_id: int) -> str:

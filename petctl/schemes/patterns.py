@@ -1,5 +1,5 @@
 """
-Nine motion patterns for PET — standalone control schemes.
+Ten motion patterns for PET — standalone control schemes.
 
 Each produces a distinct body movement and can be selected via:
     petctl run --control <name>
@@ -14,6 +14,7 @@ Patterns:
     twitch    — smoothed per-joint Brownian noise (jittery, organic)
     freeze    — hold all joints at home (0°)
     coil      — quadratic spatial phase → tighter curl toward the tail
+    curl      — ramp all joints to same large angle, coil body into a tight ball and hold
 """
 
 from __future__ import annotations
@@ -292,6 +293,139 @@ class CoilControlScheme(ControlScheme):
         ]
 
 
+class Spin7ControlScheme(ControlScheme):
+    """Continuously rotate joint 7 (tail); all other joints hold at home.
+
+    Every full revolution the motor's software zero is reset to its current
+    physical position, keeping commanded angles in the safe MIT encoding range
+    indefinitely.
+    """
+
+    name = "spin7"
+
+    def __init__(self, speed_deg_per_s: float = 30.0) -> None:
+        self.speed_deg_per_s = speed_deg_per_s
+        self._pos_deg: float = 0.0
+        self._last_t: float = 0.0
+        self._backend = None
+
+    def on_start(self, controller: "Controller") -> None:
+        self._pos_deg = 0.0
+        self._last_t = time.monotonic()
+        self._backend = controller.backend
+        print(f"[Spin7] Joint 7 spinning at {self.speed_deg_per_s}°/s. Ctrl-C to stop.")
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
+        self._pos_deg += self.speed_deg_per_s * (now - self._last_t)
+        self._last_t = now
+
+        if self._pos_deg >= 360.0:
+            self._pos_deg -= 360.0
+            if hasattr(self._backend, "reset_motor_zero"):
+                self._backend.reset_motor_zero(7)
+
+        cmds = []
+        for sid in sorted(state.active_servo_ids):
+            angle = self._pos_deg if sid == 7 else 0.0
+            cmds.append(ServoCommand.from_angle(servo_id=sid, angle_deg=angle))
+        return cmds
+
+
+class StrokeReactControlScheme(ControlScheme):
+    """React to lateral stroke by continuously spinning toward the touching hand.
+
+    Each module drives its own servo independently from its capacitive sensors.
+    Touch drives rotation velocity — the joint keeps turning as long as the hand
+    is present. Lifting the hand holds the current angle. When left and right
+    activation are equal, the joint picks a random spin direction at first contact.
+    """
+
+    name = "stroke"
+
+    TOUCH_THRESHOLD: float = 0.05   # mean pad activation below this = no touch
+    EQUAL_DEADZONE: float = 0.2     # |net_norm| below this = treat as equal
+    MAX_SPEED_DEG_PER_S: float = 60.0
+    POS_LIMIT_DEG: float = math.degrees(12.5)  # stay inside MIT encoding range
+
+    def __init__(self) -> None:
+        self._angle_deg: dict[int, float] = {}
+        self._rand_dir: dict[int, float] = {}
+        self._was_touching: dict[int, bool] = {}
+
+    def on_start(self, controller: "Controller") -> None:
+        self._angle_deg = {}
+        self._rand_dir = {}
+        self._was_touching = {}
+        print("[StrokeReact] Touch left → spin right; right → spin left. Hand off = hold. Ctrl-C to stop.")
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        dt = max(state.dt, 1e-4)
+        cmds: list[ServoCommand] = []
+
+        for module_id, sensors in state.sensors.items():
+            servo_id = module_id          # module 1–7 maps directly to servo 1–7
+            if servo_id not in state.active_servo_ids:
+                continue
+
+            if servo_id not in self._angle_deg:
+                self._angle_deg[servo_id] = math.degrees(
+                    state.servo_positions.get(servo_id, 0.0)
+                )
+
+            left = sensors.touch_left
+            right = sensors.touch_right
+            total = left + right
+
+            if total < self.TOUCH_THRESHOLD:
+                self._was_touching[servo_id] = False
+                self._rand_dir.pop(servo_id, None)
+                # hold — send current angle so the joint doesn't drift
+                cmds.append(ServoCommand.from_angle(
+                    servo_id=servo_id, angle_deg=self._angle_deg[servo_id]
+                ))
+                continue
+
+            net_norm = (left - right) / max(total, 1e-6)   # –1 (right) … +1 (left)
+
+            if abs(net_norm) < self.EQUAL_DEADZONE:
+                if not self._was_touching.get(servo_id, False) or servo_id not in self._rand_dir:
+                    self._rand_dir[servo_id] = random.choice([-1.0, 1.0])
+                direction = self._rand_dir[servo_id]
+            else:
+                self._rand_dir.pop(servo_id, None)
+                direction = net_norm   # proportional to lateral bias
+
+            self._angle_deg[servo_id] = max(
+                -self.POS_LIMIT_DEG,
+                min(self.POS_LIMIT_DEG, self._angle_deg[servo_id] + direction * self.MAX_SPEED_DEG_PER_S * dt),
+            )
+            self._was_touching[servo_id] = True
+            cmds.append(ServoCommand.from_angle(
+                servo_id=servo_id, angle_deg=self._angle_deg[servo_id]
+            ))
+
+        return cmds
+
+
+class CurlControlScheme(ControlScheme):
+    """Ramp all joints to the same angle on one side, coiling the body into a tight ball, then hold."""
+
+    name = "curl"
+
+    def __init__(self, target_deg: float = 360.0) -> None:
+        self.target_deg = target_deg
+
+    def on_start(self, controller: "Controller") -> None:
+        print(f"[Curl] Coiling all joints to {self.target_deg:.0f}°. Ctrl-C to stop.")
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        return [
+            ServoCommand.from_angle(servo_id=sid, angle_deg=self.target_deg)
+            for sid in sorted(state.active_servo_ids)
+        ]
+
+
 ALL_PATTERNS: list[type[ControlScheme]] = [
     RippleControlScheme,
     PulseControlScheme,
@@ -302,6 +436,9 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     TwitchControlScheme,
     FreezeControlScheme,
     CoilControlScheme,
+    CurlControlScheme,
+    Spin7ControlScheme,
+    StrokeReactControlScheme,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]
