@@ -305,6 +305,7 @@ class RerunVisualizer(Visualizer):
         views.append(rrb.Vertical(
             rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
             rrb.TimeSeriesView(origin="motors/torque", name="Torque (Nm)"),
+            rrb.TimeSeriesView(origin="motors/temperature", name="Temperature (°C)"),
             rrb.TimeSeriesView(origin="telemetry/voltage_v", name="Battery voltage (V)"),
             rrb.TimeSeriesView(origin="telemetry/current_amps", name="Battery current (A)"),
             rrb.TimeSeriesView(origin="sensors/capacitive", name="Capacitive touch (0–1)"),
@@ -323,13 +324,16 @@ class RerunVisualizer(Visualizer):
             label = f"motor {sid}"
             rr.log(f"motors/velocity/motor_{sid}", rr.SeriesLines(names=label), static=True)
             rr.log(f"motors/torque/motor_{sid}", rr.SeriesLines(names=label), static=True)
+            rr.log(f"motors/temperature/motor_{sid}", rr.SeriesLines(names=label), static=True)
 
     def _log_motor_state(self, rr, state: RobotState) -> None:
-        """Log velocity and torque for each motor."""
+        """Log velocity, torque, and temperature for each motor."""
         for sid, val in state.motor_velocities.items():
             rr.log(f"motors/velocity/motor_{sid}", rr.Scalars(float(val)))
         for sid, val in state.motor_torques.items():
             rr.log(f"motors/torque/motor_{sid}", rr.Scalars(float(val)))
+        for sid, val in state.motor_temperatures.items():
+            rr.log(f"motors/temperature/motor_{sid}", rr.Scalars(float(val)))
 
     def _setup_battery_series(self) -> None:
         """Declare SeriesLines for head battery telemetry."""
