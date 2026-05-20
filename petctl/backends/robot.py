@@ -87,7 +87,7 @@ class RobotBackend(_BackendBase):
         # TX task double-buffer: pending (latest from control loop) and last sent (for poll).
         self._pending_frames: dict[int, str] = {}
         self._last_sent_frames: dict[int, str] = {}
-        # Two independent tasks: motor TX at ws_tx_hz, sensor at _sensor_poll_hz.
+        # Two independent tasks: motor TX at motor_update_hz, sensor at _sensor_poll_hz.
         self._motor_tx_task: Optional[asyncio.Task] = None
         self._sensor_task: Optional[asyncio.Task] = None
         self._sensor_poll_hz: float = LOOP_LIMITS.sensor_poll_hz
@@ -529,7 +529,7 @@ class RobotBackend(_BackendBase):
     # ------------------------------------------------------------------
 
     async def _motor_tx_loop(self) -> None:
-        """Motor frame TX loop at ws_tx_hz.
+        """Motor frame TX loop at motor_update_hz.
 
         Batches all motor frames into one WS message per tick (newline-separated
         SLCAN). The Arduino splits on newlines and processes each frame. This
@@ -537,7 +537,7 @@ class RobotBackend(_BackendBase):
         the Arduino batch CAN responses, keeping its broadcastTXT() call rate low.
         """
         _RX_SILENCE_TIMEOUT = 5.0
-        period = 1.0 / LOOP_LIMITS.ws_tx_hz
+        period = 1.0 / LOOP_LIMITS.motor_update_hz
 
         while self._connected:
             try:

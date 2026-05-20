@@ -34,10 +34,6 @@ class MotorLimits:
 class ControlLoopLimits:
     """Timing and rate limits for the control loop."""
 
-    poll_hz_min: float = 5.0
-    poll_hz_max: float = 50.0
-    poll_hz_default: float = 15.0
-
     # First-order smoothing of commanded position toward the scheme (see Controller).
     # Larger tau = softer motion; 0 disables (only max_angle_step_per_tick_deg applies).
     command_smoothing_tau_s: float = 0.10
@@ -68,9 +64,9 @@ class ControlLoopLimits:
 
     # Master rate for the motor TX task (independent of sensor polling).
     # One ws.send() per motor per tick; lower values reduce Arduino WS server load directly.
-    ws_tx_hz: float = 35.0
+    motor_update_hz: float = 35.0
 
-    # Hard cap on outbound WebSocket messages/sec (safety; actual rate ≈ ws_tx_hz).
+    # Hard cap on outbound WebSocket messages/sec (safety; actual rate ≈ motor_update_hz).
     ws_max_tx_messages_per_sec: float = 60.0
 
 

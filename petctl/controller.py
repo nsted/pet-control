@@ -2,19 +2,20 @@
 Controller — the central hub of petctl.
 
 Owns a RobotBackend, a ControlScheme, and a list of Visualizers.
-Runs an async loop paced to `LOOP_LIMITS.poll_hz_default` (50 Hz by default):
+Runs an async loop as fast as possible:
 
   1. state  = await backend.get_state()
   2. cmds   = scheme.update(state)
   2b. smooth = LPF toward scheme targets + per-tick delta cap (LOOP_LIMITS.*)
   3. if not dry_run: await backend.send_commands(cmds)
   4. visualizers.update(state)  ← background thread (one in-flight job; coalesces
- to latest state when the previous job has finished — same rate as the loop).
-  5. sleep if the iteration finished faster than the target period
+     to latest state when the previous job has finished)
+  5. asyncio.sleep(0) to yield to motor TX, sensor, and receive tasks
 
-Iterations that are slower than the target (typical on the real robot) are not
-delayed further. state.dt (seconds since last iteration) is available to schemes.
-Timing stats are printed every few seconds so you can see the real rate.
+The loop itself has no rate limit. Motor TX fires at motor_update_hz (its own task);
+sensor polling fires at sensor_poll_hz (its own task). state.dt reflects the
+true wall-clock tick period and is available to schemes. Timing stats are
+printed every few seconds so you can see the real rate.
 
 Usage:
 
@@ -203,7 +204,7 @@ class Controller:
         max_step = math.radians(LOOP_LIMITS.max_angle_step_per_tick_deg)
         tau = LOOP_LIMITS.command_smoothing_tau_s
         alpha_cap = LOOP_LIMITS.command_smoothing_max_alpha
-        dt_floor = 1.0 / (2.0 * LOOP_LIMITS.poll_hz_max)
+        dt_floor = 1e-3
         dt = max(self._state.dt, dt_floor)
 
         for cmd in commands:
@@ -307,14 +308,9 @@ class Controller:
                         print(f"  {sid:>3}  {p:>8.2f}  {v:>8.3f}  {t:>8.3f}  {tmp:>7}  {err:>4}")
                 self._last_pos_print = now
 
-            # 7. Pace the loop so mock/offline runs do not spin at CPU-limited rate
-            # (skewed stats, Rerun gRPC overload, misleading debug samples).
-            target_period = 1.0 / LOOP_LIMITS.poll_hz_default
-            total_elapsed = time.monotonic() - t0
-            sleep_s = target_period - total_elapsed
-            if sleep_s > 0:
-                await asyncio.sleep(sleep_s)
-            # Wall-clock period per iteration (includes sleep) — drives printed Hz.
+            # 7. Yield to motor TX, sensor, and receive tasks.
+            # Run 4× motor_update_hz so commands are always fresh before the next TX tick.
+            await asyncio.sleep(1.0 / (LOOP_LIMITS.motor_update_hz * 4))
             self._loop_times.append(time.monotonic() - t0)
 
     def _start_visualizer_job_unlocked(self) -> None:

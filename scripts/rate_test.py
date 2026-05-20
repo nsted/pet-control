@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rate stress test: incrementally increase ws_tx_hz until WebSocket dropout.
+Rate stress test: incrementally increase motor_update_hz until WebSocket dropout.
 
 Connects to the real robot backend (no sine control, motors held at zero
 torque) and steps through increasing TX rates. Reports the max stable rate
