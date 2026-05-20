@@ -280,8 +280,10 @@ class RerunVisualizer(Visualizer):
         self._show_pad_labels: bool = False
         self._stroke_detector = StrokeDetector()
         self._stroke_active: bool = False
+        self._stroke_color_until: float = 0.0
         self._hold_detector = HoldDetector()
         self._hold_active: bool = False
+        self._hold_color_until: float = 0.0
 
     # ------------------------------------------------------------------
     # Visualizer interface
@@ -311,10 +313,18 @@ class RerunVisualizer(Visualizer):
             return
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
-        self._stroke_active = self._stroke_detector.update(state) is not None
+        now = state.timestamp
+        _COLOR_HOLD_S = 0.15   # minimum sphere color hold time to prevent flicker
+        stroke_now = self._stroke_detector.update(state) is not None
         hold_reading = self._hold_detector.update(state)
         hold_now = hold_reading is not None
-        self._hold_active = hold_now
+        if stroke_now:
+            self._stroke_color_until = now + _COLOR_HOLD_S
+            self._hold_color_until = 0.0   # stroke cancels any pending hold display
+        if hold_now and not stroke_now:
+            self._hold_color_until = now + _COLOR_HOLD_S
+        self._stroke_active = stroke_now or now < self._stroke_color_until
+        self._hold_active = (hold_now or now < self._hold_color_until) and not self._stroke_active
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
         if self.show_3d:

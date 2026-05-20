@@ -1347,18 +1347,28 @@ class PoseScheme(ControlScheme):
 
     name = "pose"
 
-    VELOCITY_THRESHOLD_RAD_S: float = 0.15
-    TOUCH_THRESHOLD: float = 0.06
+    # Velocity hysteresis: enter following above ON, stay following above OFF.
+    VELOCITY_ON_THRESHOLD_RAD_S: float = 0.40
+    VELOCITY_OFF_THRESHOLD_RAD_S: float = 0.20
+    # Touch hysteresis: enter hand-present above ON, exit below OFF.
+    # EMA smooths the raw touch signal before thresholding.
+    TOUCH_ON_THRESHOLD: float = 0.12
+    TOUCH_OFF_THRESHOLD: float = 0.07
+    TOUCH_EMA_ALPHA: float = 0.05   # per controller tick (~70 ms time constant at 280 Hz)
 
     def __init__(self) -> None:
         self._commanded: dict[int, float] = {}
         self._following: set[int] = set()
         self._verbose = False
+        self._touch_ema: float = 0.0
+        self._hand_state: bool = False
 
     def on_start(self, controller: "Controller") -> None:
         self._commanded = {}
         self._following = set()
         self._verbose = controller.log_touch
+        self._touch_ema = 0.0
+        self._hand_state = False
         print(
             "[Pose] Rotate a joint by hand — it holds that position on release.\n"
             "Pass --log-touch to log follow/lock transitions. Ctrl-C to stop."
@@ -1368,16 +1378,28 @@ class PoseScheme(ControlScheme):
     def _ts() -> str:
         return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-    def _hand_present(self, state: RobotState) -> bool:
-        return any(
-            sens.touch_total >= self.TOUCH_THRESHOLD
-            for sens in state.sensors.values()
-        )
+    def _update_hand(self, state: RobotState) -> bool:
+        """Update EMA + hysteresis hand state. Returns True if hand is present."""
+        raw = max((s.touch_total for s in state.sensors.values()), default=0.0)
+        self._touch_ema = self.TOUCH_EMA_ALPHA * raw + (1.0 - self.TOUCH_EMA_ALPHA) * self._touch_ema
+        if self._touch_ema >= self.TOUCH_ON_THRESHOLD:
+            self._hand_state = True
+        elif self._touch_ema < self.TOUCH_OFF_THRESHOLD:
+            self._hand_state = False
+        # else: stay as-is (hysteresis zone — no transition)
+        return self._hand_state
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         commands = []
         following_now: set[int] = set()
-        hand = self._hand_present(state)
+        prev_hand = self._hand_state
+        hand = self._update_hand(state)
+
+        if self._verbose and hand != prev_hand:
+            if hand:
+                print(f"{self._ts()}  [Pose] hand ON  (ema={self._touch_ema:.3f})")
+            else:
+                print(f"{self._ts()}  [Pose] hand OFF  (ema={self._touch_ema:.3f})")
 
         for sid in sorted(state.active_servo_ids):
             actual = state.servo_positions.get(sid, 0.0)
@@ -1385,9 +1407,16 @@ class PoseScheme(ControlScheme):
                 self._commanded[sid] = actual
 
             velocity = abs(state.motor_velocities.get(sid, 0.0))
-            if velocity > self.VELOCITY_THRESHOLD_RAD_S and hand:
-                following_now.add(sid)
-                self._commanded[sid] = actual
+            if hand:
+                was_following = sid in self._following
+                if was_following:
+                    if velocity >= self.VELOCITY_OFF_THRESHOLD_RAD_S:
+                        following_now.add(sid)
+                        self._commanded[sid] = actual
+                else:
+                    if velocity > self.VELOCITY_ON_THRESHOLD_RAD_S:
+                        following_now.add(sid)
+                        self._commanded[sid] = actual
 
             commands.append(ServoCommand(servo_id=sid, position=self._commanded[sid]))
 
