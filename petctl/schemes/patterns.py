@@ -813,6 +813,7 @@ class StrokeWatchScheme(ControlScheme):
                 f"[STROKE]  dir={reading.direction.replace('_', ' ')} {arrow}"
                 f"  speed={reading.speed:.1f} mod/s"
                 f"  centroid={reading.centroid:.1f}"
+                f"  side={reading.side}"
                 f"  intensity={reading.intensity:.2f}"
                 f"  conf={reading.confidence:.2f}"
             )

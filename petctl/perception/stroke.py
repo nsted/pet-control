@@ -52,6 +52,7 @@ class StrokeReading:
     direction: str       # "head_to_tail" | "tail_to_head"
     intensity: float     # mean pad activation of the active region
     confidence: float    # R² of the linear fit over the centroid window
+    side: str            # which face(s) are active: "top", "left", "right", "top-left", etc.
     blobs: list[TouchBlob] = field(default_factory=list)
 
 
@@ -94,6 +95,7 @@ class StrokeDetector:
             direction="head_to_tail" if velocity > 0 else "tail_to_head",
             intensity=intensity,
             confidence=r_squared,
+            side=_active_side(state),
             blobs=blobs,
         )
 
@@ -161,6 +163,26 @@ def _make_blob(modules: list[int], activations: dict[int, float]) -> TouchBlob:
         intensity=total / len(modules),
         width=len(modules),
     )
+
+
+def _active_side(state: RobotState) -> str:
+    """Return which face(s) have pads above PAD_THRESHOLD: top/left/right combinations."""
+    has_right = has_left = has_top = False
+    for sens in state.sensors.values():
+        if any(v >= PAD_THRESHOLD for v in sens.touch_right_pads):
+            has_right = True
+        if any(v >= PAD_THRESHOLD for v in sens.touch_left_pads):
+            has_left = True
+        if any(v >= PAD_THRESHOLD for v in sens.touch_middle_pads):
+            has_top = True
+    parts = []
+    if has_top:
+        parts.append("top")
+    if has_left:
+        parts.append("left")
+    if has_right:
+        parts.append("right")
+    return "-".join(parts) if parts else "none"
 
 
 def _linear_fit(window: list[tuple[float, float]]) -> tuple[float, float]:
