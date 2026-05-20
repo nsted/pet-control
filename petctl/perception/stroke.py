@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from petctl.types import RobotState
 
-PAD_THRESHOLD: float = 0.15     # minimum per-pad value to contribute to centroid
+PAD_THRESHOLD: float = 0.35     # minimum per-pad value to contribute to centroid
 TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grouping
 VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)

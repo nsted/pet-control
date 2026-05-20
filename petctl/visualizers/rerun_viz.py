@@ -141,7 +141,7 @@ _NORMAL_MIDDLE = np.array([ 0.0,  _INV_SQRT2, -_INV_SQRT2], dtype=np.float32)
 # in module-local coordinates.  The sphere lives here so it sits outside
 # the body surface.
 _BLOB_SPHERE_OFFSET: float = 1.5          # cm beyond face surface
-_BLOB_ACTIVATION_THRESHOLD: float = 0.08  # minimum per-face mean to contribute
+_BLOB_ACTIVATION_THRESHOLD: float = 0.35  # minimum per-pad value to contribute
 _BLOB_RADIUS_CM: float = 0.8              # sphere radius in cm
 
 _BLOB_FACE_POINTS: dict[str, np.ndarray] = {
@@ -475,13 +475,17 @@ class RerunVisualizer(Visualizer):
         """Log up to 2 spheres at the world-space centroid of each active touch blob.
 
         Modules are grouped into contiguous blobs; each blob produces one sphere.
+        A blob is shown when the group contains at least 2 active cap pads in total
+        (covering same-module and neighbouring-module adjacency).  Colour is red
+        during a stroke, black otherwise.
         Logged at robot/touch_centroid/{0,1} so Rerun applies the robot entity
         transform and the spheres sit correctly in the 3D scene.
         """
         _MAX_BLOBS = 2
 
-        # Per-module face weights and world positions
+        # Per-module: active pad count and face-weighted world position
         module_data: dict[int, tuple[float, np.ndarray]] = {}
+        module_pad_count: dict[int, int] = {}
         for mod in self._module_meta:
             mod_id = int(mod["id"])
             sens = state.sensors.get(mod_id)
@@ -489,17 +493,23 @@ class RerunVisualizer(Visualizer):
                 continue
 
             swap = self._overlay_swap_lr.get(mod_id, False)
-            tl = sens.touch_right if swap else sens.touch_left
-            tr = sens.touch_left  if swap else sens.touch_right
-            tm = sens.touch_middle
+            left_pads  = sens.touch_right_pads if swap else sens.touch_left_pads
+            right_pads = sens.touch_left_pads  if swap else sens.touch_right_pads
+            middle_pads = sens.touch_middle_pads
 
-            wl = max(0.0, tl - _BLOB_ACTIVATION_THRESHOLD)
-            wr = max(0.0, tr - _BLOB_ACTIVATION_THRESHOLD)
-            wm = max(0.0, tm - _BLOB_ACTIVATION_THRESHOLD)
-            w_face = wl + wr + wm
-
-            if w_face < 1e-6:
+            n_active = sum(
+                1 for v in (*left_pads, *right_pads, *middle_pads)
+                if v >= _BLOB_ACTIVATION_THRESHOLD
+            )
+            if n_active == 0:
                 continue
+            module_pad_count[mod_id] = n_active
+
+            # Weight each face by its active pad sum for centroid positioning
+            wl = sum(v for v in left_pads   if v >= _BLOB_ACTIVATION_THRESHOLD)
+            wr = sum(v for v in right_pads  if v >= _BLOB_ACTIVATION_THRESHOLD)
+            wm = sum(v for v in middle_pads if v >= _BLOB_ACTIVATION_THRESHOLD)
+            w_face = wl + wr + wm  # > 0 since n_active > 0
 
             local_pt = (
                 wl * _BLOB_FACE_POINTS["left"]
@@ -511,7 +521,7 @@ class RerunVisualizer(Visualizer):
             p3d = pos_m + R_m @ local_pt.astype(np.float64)
             module_data[mod_id] = (w_face, p3d)
 
-        # Group active modules into contiguous blobs
+        # Group active modules into contiguous blobs; require >= 2 total active pads
         blobs: list[list[int]] = []
         current: list[int] = []
         for mod_id in sorted(module_data):
@@ -521,6 +531,7 @@ class RerunVisualizer(Visualizer):
             current.append(mod_id)
         if current:
             blobs.append(current)
+        blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= 2]
 
         color = [220, 30, 30, 220] if self._stroke_active else [0, 0, 0, 220]
         for i in range(_MAX_BLOBS):
