@@ -1170,8 +1170,8 @@ class ContactWatchScheme(ControlScheme):
         self._stroke = StrokeDetector()
         self._hold = HoldDetector()
         self._clf = ContactClassifier()
-        self._tick = 0
         self._verbose = False
+        self._prev_type: str | None = None
         self._start: float | None = None
         self._rr = None
         try:
@@ -1192,8 +1192,15 @@ class ContactWatchScheme(ControlScheme):
     def on_start(self, controller: "Controller") -> None:
         self._verbose = controller.log_touch
 
+    def _log_transition(self, prev: str | None, curr: str | None, details: str) -> None:
+        """Log a type transition. Only called when self._verbose is True."""
+        if prev is not None and curr != prev:
+            print(f"[{_CONTACT_TYPE_LABELS.get(prev, prev.upper()[:8])}] end")
+        if curr is not None and curr != prev:
+            label = _CONTACT_TYPE_LABELS.get(curr, curr.upper()[:8])
+            print(f"[{label}] start  {details}")
+
     def update(self, state: RobotState) -> list[ServoCommand]:
-        self._tick += 1
         if self._start is None:
             self._start = state.timestamp
 
@@ -1213,15 +1220,17 @@ class ContactWatchScheme(ControlScheme):
             rr.log("hold/centroid", rr.Scalars(hold.centroid if hold else 0.0))
 
         if stroke is not None:
-            if self._verbose and self._tick % 3 == 0:
+            curr = "stroke"
+            if self._verbose and curr != self._prev_type:
                 arrow = "→" if stroke.direction == "head_to_tail" else "←"
-                print(
-                    f"[STROKE  ]  {arrow}"
-                    f"  speed={stroke.speed:.1f} mod/s"
+                details = (
+                    f"{arrow}  speed={stroke.speed:.1f} mod/s"
                     f"  centroid={stroke.centroid:.1f}"
                     f"  side={stroke.side}"
                     f"  conf={stroke.confidence:.2f}"
                 )
+                self._log_transition(self._prev_type, curr, details)
+            self._prev_type = curr
             if rr is not None:
                 rr.log("contact/type", rr.Scalars(-1.0))
                 rr.log("contact/torque_peak", rr.Scalars(0.0))
@@ -1229,8 +1238,11 @@ class ContactWatchScheme(ControlScheme):
             return commands
 
         if hold is None:
-            if self._verbose and self._tick % 30 == 0:
-                print("[ContactWatch]  --")
+            self._clf.reset()
+            if self._verbose and self._prev_type is not None:
+                label = _CONTACT_TYPE_LABELS.get(self._prev_type, self._prev_type.upper()[:8])
+                print(f"[{label}] end")
+            self._prev_type = None
             if rr is not None:
                 rr.log("contact/type", rr.Scalars(-1.0))
                 rr.log("contact/torque_peak", rr.Scalars(0.0))
@@ -1238,20 +1250,22 @@ class ContactWatchScheme(ControlScheme):
             return commands
 
         cr = self._clf.classify(hold, state)
-        type_idx = float(self._TYPE_ORDER.index(cr.contact_type.value))
+        curr = cr.contact_type.value
+        type_idx = float(self._TYPE_ORDER.index(curr))
 
         if rr is not None:
             rr.log("contact/type", rr.Scalars(type_idx))
             rr.log("contact/torque_peak", rr.Scalars(cr.torque_peak))
             rr.log("contact/pressure_peak", rr.Scalars(cr.pressure_peak))
 
-        if self._verbose and self._tick % 3 == 0:
-            label = _CONTACT_TYPE_LABELS[cr.contact_type.value]
+        if self._verbose and curr != self._prev_type:
+            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
             servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
             torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
             pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
-            print(f"[{label}]  blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
+            details = f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}"
+            self._log_transition(self._prev_type, curr, details)
+        self._prev_type = curr
 
         return commands
 
