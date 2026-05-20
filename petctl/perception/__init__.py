@@ -1,3 +1,4 @@
+from petctl.perception.contact import ContactClassifier, ContactReading, ContactType
 from petctl.perception.stroke import (
     HoldDetector,
     HoldReading,
@@ -7,6 +8,9 @@ from petctl.perception.stroke import (
 )
 
 __all__ = [
+    "ContactClassifier",
+    "ContactReading",
+    "ContactType",
     "HoldDetector",
     "HoldReading",
     "StrokeDetector",

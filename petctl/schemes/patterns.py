@@ -1121,6 +1121,106 @@ class HoldWatchScheme(ControlScheme):
         return []
 
 
+_CONTACT_TYPE_LABELS: dict[str, str] = {
+    "hold":     "HOLD    ",
+    "squeeze":  "SQUEEZE ",
+    "restrict": "RESTRICT",
+    "wrench":   "WRENCH  ",
+}
+
+
+class ContactWatchScheme(ControlScheme):
+    """Contact sub-type observer: classifies HOLD / SQUEEZE / RESTRICT / WRENCH.
+
+    Drives a slow sine wave on all joints so that RESTRICT and WRENCH are
+    detectable (motors must be pushing against something for those types to fire).
+    The sine is gentle (±20°, 0.15 Hz) — safe to run while handling the robot.
+
+    Console output throttled to every 3 ticks (~10 Hz at 30 Hz loop).
+    Rerun paths: contact/type (enum index 0-3), contact/torque_peak,
+                 contact/pressure_peak, hold/active, hold/centroid.
+
+    To test:
+      HOLD     — grip the body without resisting motion and without squeezing hard
+      SQUEEZE  — grip and compress firmly (FSR pressure above threshold)
+      RESTRICT — grip and prevent the robot from moving while it tries to
+      WRENCH   — physically push a joint away from where it is trying to go
+    """
+
+    name = "contact-watch"
+
+    AMP_DEG: float = 20.0
+    FREQ_HZ: float = 0.15
+    _TYPE_ORDER = ("hold", "squeeze", "restrict", "wrench")
+
+    def __init__(self) -> None:
+        from petctl.perception.contact import ContactClassifier
+        from petctl.perception.stroke import HoldDetector
+        self._hold = HoldDetector()
+        self._clf = ContactClassifier()
+        self._tick = 0
+        self._start: float | None = None
+        self._rr = None
+        try:
+            import rerun as rr
+            self._rr = rr
+        except ImportError:
+            pass
+        print(
+            "[ContactWatch] Running ±20° sine on all joints at 0.15 Hz.\n"
+            "  HOLD     — grip without resisting\n"
+            "  SQUEEZE  — grip and compress (FSR)\n"
+            "  RESTRICT — prevent motion while robot pushes\n"
+            "  WRENCH   — push a joint against the motor\n"
+            "Ctrl-C to stop."
+        )
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        self._tick += 1
+        if self._start is None:
+            self._start = state.timestamp
+
+        t = state.timestamp - self._start
+        amp_rad = math.radians(self.AMP_DEG)
+        angle = amp_rad * math.sin(2 * math.pi * self.FREQ_HZ * t)
+        commands = [ServoCommand(servo_id=sid, position=angle) for sid in state.active_servo_ids]
+
+        hold = self._hold.update(state)
+
+        rr = self._rr
+        if rr is not None:
+            rr.set_time("time", duration=state.timestamp)
+            rr.log("hold/active", rr.Scalars(1.0 if hold else 0.0))
+            rr.log("hold/centroid", rr.Scalars(hold.centroid if hold else 0.0))
+
+        if hold is None:
+            if self._tick % 30 == 0:
+                print("[ContactWatch]  --")
+            if rr is not None:
+                rr.log("contact/type", rr.Scalars(-1.0))
+                rr.log("contact/torque_peak", rr.Scalars(0.0))
+                rr.log("contact/pressure_peak", rr.Scalars(0.0))
+            return commands
+
+        cr = self._clf.classify(hold, state)
+        type_idx = float(self._TYPE_ORDER.index(cr.contact_type.value))
+
+        if rr is not None:
+            rr.log("contact/type", rr.Scalars(type_idx))
+            rr.log("contact/torque_peak", rr.Scalars(cr.torque_peak))
+            rr.log("contact/pressure_peak", rr.Scalars(cr.pressure_peak))
+
+        if self._tick % 3 == 0:
+            label = _CONTACT_TYPE_LABELS[cr.contact_type.value]
+            servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
+            torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
+            pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
+            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
+            print(f"[{label}]  blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
+
+        return commands
+
+
 ALL_PATTERNS: list[type[ControlScheme]] = [
     RippleControlScheme,
     PulseControlScheme,
@@ -1141,6 +1241,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     ExploreControlScheme,
     StrokeWatchScheme,
     HoldWatchScheme,
+    ContactWatchScheme,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]
