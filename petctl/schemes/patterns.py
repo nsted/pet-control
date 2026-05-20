@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 import random
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from petctl.protocols import ControlScheme
@@ -1192,13 +1193,18 @@ class ContactWatchScheme(ControlScheme):
     def on_start(self, controller: "Controller") -> None:
         self._verbose = controller.log_touch
 
+    @staticmethod
+    def _ts() -> str:
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
     def _log_transition(self, prev: str | None, curr: str | None, details: str) -> None:
         """Log a type transition. Only called when self._verbose is True."""
+        ts = self._ts()
         if prev is not None and curr != prev:
-            print(f"[{_CONTACT_TYPE_LABELS.get(prev, prev.upper()[:8])}] end")
+            print(f"{ts}  [{_CONTACT_TYPE_LABELS.get(prev, prev.upper()[:8])}] end")
         if curr is not None and curr != prev:
             label = _CONTACT_TYPE_LABELS.get(curr, curr.upper()[:8])
-            print(f"[{label}] start  {details}")
+            print(f"{ts}  [{label}] start  {details}")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         if self._start is None:
@@ -1241,7 +1247,7 @@ class ContactWatchScheme(ControlScheme):
             self._clf.reset()
             if self._verbose and self._prev_type is not None:
                 label = _CONTACT_TYPE_LABELS.get(self._prev_type, self._prev_type.upper()[:8])
-                print(f"[{label}] end")
+                print(f"{self._ts()}  [{label}] end")
             self._prev_type = None
             if rr is not None:
                 rr.log("contact/type", rr.Scalars(-1.0))
