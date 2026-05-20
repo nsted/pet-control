@@ -583,7 +583,8 @@ class RobotBackend(_BackendBase):
                 else:
                     await asyncio.sleep(0)  # yield to event loop even on overrun
                     print(
-                        f"[RobotBackend] Motor TX overrun: {elapsed*1000:.1f}ms "
+                        f"[RobotBackend] {time.strftime('%H:%M:%S')} "
+                        f"Motor TX overrun: {elapsed*1000:.1f}ms "
                         f"(budget {period*1000:.1f}ms)"
                     )
 

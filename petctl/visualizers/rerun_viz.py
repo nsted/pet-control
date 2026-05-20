@@ -284,6 +284,9 @@ class RerunVisualizer(Visualizer):
         self._hold_detector = HoldDetector()
         self._hold_active: bool = False
         self._hold_color_until: float = 0.0
+        self._last_viz_time: float = -1.0
+        self._prev_touch_colors: dict[int, tuple] = {}
+        self._prev_pressure_colors: dict[int, tuple] = {}
 
     # ------------------------------------------------------------------
     # Visualizer interface
@@ -297,7 +300,8 @@ class RerunVisualizer(Visualizer):
             print("[RerunVisualizer] rerun-sdk not installed. Run: pip install rerun-sdk")
             return
 
-        rr.init(self.app_name, spawn=True)
+        rr.init(self.app_name)
+        rr.spawn(memory_limit="256MiB")
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         self._setup_overlay_geometry(rr)
@@ -308,9 +312,15 @@ class RerunVisualizer(Visualizer):
         if self.show_3d:
             self._setup_3d_geometry()
 
+    _VIZ_PERIOD = 1.0 / 20.0
+
     def update(self, state: RobotState) -> None:
         if self._rr is None:
             return
+        if (self._last_viz_time >= 0
+                and state.timestamp - self._last_viz_time < self._VIZ_PERIOD):
+            return
+        self._last_viz_time = state.timestamp
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
         now = state.timestamp
@@ -629,34 +639,38 @@ class RerunVisualizer(Visualizer):
                 left_pads  = sensors.touch_left_pads
             all_pad_vals = (*right_pads, *left_pads, *sensors.touch_middle_pads)
 
-            pad_colors = [
+            touch_colors = tuple(
                 (*_TOUCH_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, v)) * (_MAX_ALPHA - _MIN_ALPHA)))
                 for v in all_pad_vals
-            ]
-            rr.log(f"{entity_base}/sensor_overlay/touch", rr.Ellipsoids3D(
-                centers=self._pad_centers_np,
-                half_sizes=self._pad_half_sizes_np,
-                quaternions=self._pad_quats,
-                colors=pad_colors,
-                fill_mode="solid",
-            ))
+            )
+            if self._prev_touch_colors.get(mod_id) != touch_colors:
+                self._prev_touch_colors[mod_id] = touch_colors
+                rr.log(f"{entity_base}/sensor_overlay/touch", rr.Ellipsoids3D(
+                    centers=self._pad_centers_np,
+                    half_sizes=self._pad_half_sizes_np,
+                    quaternions=self._pad_quats,
+                    colors=list(touch_colors),
+                    fill_mode="solid",
+                ))
 
             # FSR: one face-level disc per face (left/middle/right order)
             if swap_lr:
-                pressure_vals = [sensors.pressure_right, sensors.pressure_middle, sensors.pressure_left]
+                pressure_vals = (sensors.pressure_right, sensors.pressure_middle, sensors.pressure_left)
             else:
-                pressure_vals = [sensors.pressure_left, sensors.pressure_middle, sensors.pressure_right]
-            pressure_colors = [
+                pressure_vals = (sensors.pressure_left, sensors.pressure_middle, sensors.pressure_right)
+            pressure_colors = tuple(
                 (*_PRESSURE_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, p)) * (_MAX_ALPHA - _MIN_ALPHA)))
                 for p in pressure_vals
-            ]
-            rr.log(f"{entity_base}/sensor_overlay/pressure", rr.Ellipsoids3D(
-                centers=self._overlay_centers,
-                half_sizes=self._overlay_pressure_hs,
-                quaternions=self._overlay_quats,
-                colors=pressure_colors,
-                fill_mode="solid",
-            ))
+            )
+            if self._prev_pressure_colors.get(mod_id) != pressure_colors:
+                self._prev_pressure_colors[mod_id] = pressure_colors
+                rr.log(f"{entity_base}/sensor_overlay/pressure", rr.Ellipsoids3D(
+                    centers=self._overlay_centers,
+                    half_sizes=self._overlay_pressure_hs,
+                    quaternions=self._overlay_quats,
+                    colors=list(pressure_colors),
+                    fill_mode="solid",
+                ))
 
     # ------------------------------------------------------------------
     # 3D setup and pose logging
