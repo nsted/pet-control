@@ -1,9 +1,10 @@
 """
-Stroke detector — tracks a hand moving along the robot body.
+Stroke and hold detectors — classify moving vs. static contact along the robot body.
 
-Computes a weighted pad-level centroid along the body axis each tick and fits a
-linear velocity over a rolling window.  Working at pad resolution means even a
-stroke across two neighbouring pads on the same module is detectable.
+StrokeDetector: tracks a hand moving along the body (centroid velocity above threshold).
+HoldDetector:   detects sustained static contact on ≥2 modules or a wide single blob
+                (centroid velocity below threshold).  Mutually exclusive with stroke
+                by construction — both use the same VELOCITY_THRESHOLD.
 
 No FSR data is used; capacitive pad readings are sufficient.
 """
@@ -20,6 +21,30 @@ TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grou
 VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
+
+# ---------------------------------------------------------------------------
+# Pad adjacency tables
+# ---------------------------------------------------------------------------
+
+# Side faces (right / left): 4 pads — top_head(0), top_mid(1), top_rear(2), bottom_solo(3).
+# Pads 0-1-2 form a linear chain along the body axis; pad 3 is physically isolated.
+_SIDE_ADJACENCY: tuple[tuple[int, int], ...] = ((0, 1), (1, 2))
+
+# Middle face: 6 pads arranged as a 2-wide × 3-deep grid (head→tail).
+#   top pair: 0,1  (sub ≈ 0.23)
+#   mid pair: 2,3  (sub ≈ 0.62)
+#   bot pair: 4,5  (sub ≈ 1.00)
+_MIDDLE_ADJACENCY: tuple[tuple[int, int], ...] = (
+    (0, 1), (2, 3), (4, 5),   # within each side-by-side pair
+    (0, 2), (1, 3),            # left/right columns, top→mid
+    (2, 4), (3, 5),            # left/right columns, mid→bot
+)
+
+# Cross-module boundary pad indices (tail of module N ↔ head of module N+1).
+_CROSS_SIDE_TAIL: int = 2          # top_rear
+_CROSS_SIDE_HEAD: int = 0          # top_head
+_CROSS_MID_TAIL: tuple[int, int] = (4, 5)   # bot pair
+_CROSS_MID_HEAD: tuple[int, int] = (0, 1)   # top pair
 
 # Sub-position of each pad along the body axis within its module (0 = head-end, 1 = tail-end).
 # Derived from _PAD_CENTERS z-coordinates in rerun_viz.py:
@@ -54,6 +79,22 @@ class StrokeReading:
     confidence: float    # R² of the linear fit over the centroid window
     side: str            # which face(s) are active: "top", "left", "right", "top-left", etc.
     blobs: list[TouchBlob] = field(default_factory=list)
+
+
+@dataclass
+class HoldReading:
+    """Output of HoldDetector when a hold is detected.
+
+    A hold is either:
+      - one qualifying blob spanning ≥2 modules (cradling / wide grip), or
+      - ≥2 separate qualifying blobs (two hands at different locations).
+    In both cases the global centroid is stationary (not stroking).
+    """
+    q_blobs: list[TouchBlob]  # qualifying blobs (each module ≥2 contiguous active pads)
+    centroid: float            # global weighted pad centroid (body-axis units)
+    duration: float            # seconds since hold onset
+    intensity: float           # mean active-pad activation
+    side: str                  # which face(s) are active
 
 
 class StrokeDetector:
@@ -100,9 +141,133 @@ class StrokeDetector:
         )
 
 
+class HoldDetector:
+    """
+    Detects a hold gesture: substantial static contact on the robot body.
+
+    Fires when the global touch centroid is not moving (velocity < VELOCITY_THRESHOLD)
+    AND the contact meets one of:
+      - ≥1 qualifying blob spanning ≥2 modules  (cradling / wide single grip)
+      - ≥2 separate qualifying blobs            (two hands at distinct locations)
+
+    A "qualifying blob" is a contiguous run of modules where each module has
+    ≥2 adjacent active cap pads (intra-face or across the module boundary with
+    its neighbour).  This filters out single isolated pad taps.
+
+    Mutually exclusive with StrokeDetector by construction.
+    """
+
+    def __init__(self) -> None:
+        self._centroid_window: deque[tuple[float, float]] = deque(maxlen=WINDOW_FRAMES)
+        self._hold_start: float | None = None
+
+    def update(self, state: RobotState) -> HoldReading | None:
+        """Process one tick of RobotState. Returns HoldReading or None."""
+        centroid, intensity = _pad_centroid(state)
+
+        if centroid is None:
+            self._centroid_window.clear()
+            self._hold_start = None
+            return None
+
+        self._centroid_window.append((state.timestamp, centroid))
+
+        if len(self._centroid_window) >= MIN_WINDOW_FRAMES:
+            velocity, _ = _linear_fit(list(self._centroid_window))
+            if abs(velocity) >= VELOCITY_THRESHOLD:
+                self._hold_start = None
+                return None
+
+        q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
+        if not (any(b.width >= 2 for b in q_blobs) or len(q_blobs) >= 2):
+            self._hold_start = None
+            return None
+
+        now = state.timestamp
+        if self._hold_start is None:
+            self._hold_start = now
+
+        return HoldReading(
+            q_blobs=q_blobs,
+            centroid=centroid,
+            duration=now - self._hold_start,
+            intensity=intensity,
+            side=_active_side(state),
+        )
+
+
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _face_has_contiguous_pair(
+    pads: tuple[float, ...],
+    adjacency: tuple[tuple[int, int], ...],
+    threshold: float,
+) -> bool:
+    """True if any two physically adjacent pads in `pads` are both above threshold."""
+    return any(pads[a] >= threshold and pads[b] >= threshold for a, b in adjacency)
+
+
+def _find_qualifying_modules(state: RobotState, pad_threshold: float) -> set[int]:
+    """Return module IDs that have ≥2 contiguous active pads.
+
+    Checks intra-face adjacency on all three faces, then cross-module boundary
+    adjacency (tail pad of module N + head pad of module N+1 qualifies both).
+    """
+    qualified: set[int] = set()
+
+    for mod_id, sens in state.sensors.items():
+        if (
+            _face_has_contiguous_pair(sens.touch_right_pads, _SIDE_ADJACENCY, pad_threshold) or
+            _face_has_contiguous_pair(sens.touch_left_pads, _SIDE_ADJACENCY, pad_threshold) or
+            _face_has_contiguous_pair(sens.touch_middle_pads, _MIDDLE_ADJACENCY, pad_threshold)
+        ):
+            qualified.add(mod_id)
+
+    for mod_id, sens in state.sensors.items():
+        next_sens = state.sensors.get(mod_id + 1)
+        if next_sens is None:
+            continue
+        if (
+            (sens.touch_right_pads[_CROSS_SIDE_TAIL] >= pad_threshold and
+             next_sens.touch_right_pads[_CROSS_SIDE_HEAD] >= pad_threshold) or
+            (sens.touch_left_pads[_CROSS_SIDE_TAIL] >= pad_threshold and
+             next_sens.touch_left_pads[_CROSS_SIDE_HEAD] >= pad_threshold) or
+            (any(sens.touch_middle_pads[pi] >= pad_threshold for pi in _CROSS_MID_TAIL) and
+             any(next_sens.touch_middle_pads[pi] >= pad_threshold for pi in _CROSS_MID_HEAD))
+        ):
+            qualified.add(mod_id)
+            qualified.add(mod_id + 1)
+
+    return qualified
+
+
+def _find_qualifying_blobs(
+    state: RobotState,
+    pad_threshold: float,
+    touch_threshold: float,  # noqa: ARG001 — kept for API symmetry with _find_blobs callers
+) -> list[TouchBlob]:
+    """Return TouchBlobs built from qualifying modules only.
+
+    Only contiguous runs of qualifying modules (those with ≥2 contiguous active
+    pads) become blobs.  Non-qualifying modules break blob continuity even if
+    they have general touch activity.
+
+    Uses max-pad value as the per-module activation signal so that modules with
+    only 2 active pads (whose touch_total would be diluted across 14 pads) are
+    still represented faithfully.
+    """
+    q_mods = _find_qualifying_modules(state, pad_threshold)
+    activations: dict[int, float] = {}
+    for mid in q_mods:
+        sens = state.sensors.get(mid)
+        if sens is None:
+            continue
+        all_pads = (*sens.touch_right_pads, *sens.touch_left_pads, *sens.touch_middle_pads)
+        activations[mid] = max(all_pads)
+    return _find_blobs(activations)
+
 
 def _pad_centroid(state: RobotState) -> tuple[float | None, float]:
     """

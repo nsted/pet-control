@@ -1073,6 +1073,54 @@ class StrokeWatchScheme(ControlScheme):
         return []
 
 
+class HoldWatchScheme(ControlScheme):
+    """Observer scheme: detects holds and logs them to console + Rerun.
+
+    Emits no servo commands. Run with --observe to avoid moving the robot.
+    Rerun paths logged: hold/active, hold/centroid, hold/duration, hold/blob_count.
+    """
+
+    name = "hold-watch"
+
+    def __init__(self) -> None:
+        from petctl.perception.stroke import HoldDetector
+        self._detector = HoldDetector()
+        self._tick = 0
+        self._rr = None
+        try:
+            import rerun as rr
+            self._rr = rr
+        except ImportError:
+            pass
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        self._tick += 1
+
+        reading = self._detector.update(state)
+
+        rr = self._rr
+        if rr is not None:
+            rr.set_time("time", duration=state.timestamp)
+            rr.log("hold/active", rr.Scalars(1.0 if reading else 0.0))
+            rr.log("hold/centroid", rr.Scalars(reading.centroid if reading else 0.0))
+            rr.log("hold/duration", rr.Scalars(reading.duration if reading else 0.0))
+            rr.log("hold/blob_count", rr.Scalars(len(reading.q_blobs) if reading else 0))
+
+        if reading is not None and self._tick % 3 == 0:
+            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in reading.q_blobs)
+            print(
+                f"[HOLD]  blobs={blobs}"
+                f"  centroid={reading.centroid:.1f}"
+                f"  dur={reading.duration:.1f}s"
+                f"  intensity={reading.intensity:.2f}"
+                f"  side={reading.side}"
+            )
+        elif reading is None and self._tick % 30 == 0:
+            print("[HOLD]  --")
+
+        return []
+
+
 ALL_PATTERNS: list[type[ControlScheme]] = [
     RippleControlScheme,
     PulseControlScheme,
@@ -1092,6 +1140,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     DriftControlScheme,
     ExploreControlScheme,
     StrokeWatchScheme,
+    HoldWatchScheme,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]

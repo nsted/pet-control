@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from petctl.perception.stroke import StrokeDetector
+from petctl.perception.stroke import HoldDetector, StrokeDetector
 from petctl.protocols import Visualizer
 from petctl.types import RobotState
 
@@ -280,6 +280,8 @@ class RerunVisualizer(Visualizer):
         self._show_pad_labels: bool = False
         self._stroke_detector = StrokeDetector()
         self._stroke_active: bool = False
+        self._hold_detector = HoldDetector()
+        self._hold_active: bool = False
 
     # ------------------------------------------------------------------
     # Visualizer interface
@@ -310,6 +312,14 @@ class RerunVisualizer(Visualizer):
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
         self._stroke_active = self._stroke_detector.update(state) is not None
+        hold_reading = self._hold_detector.update(state)
+        hold_now = hold_reading is not None
+        if hold_now and not self._hold_active:
+            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold_reading.q_blobs)
+            print(f"[HOLD] start  blobs={blobs}  centroid={hold_reading.centroid:.1f}  side={hold_reading.side}")
+        elif not hold_now and self._hold_active:
+            print("[HOLD] end")
+        self._hold_active = hold_now
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
         if self.show_3d:
@@ -561,7 +571,12 @@ class RerunVisualizer(Visualizer):
             blobs.append(current)
         blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= 2]
 
-        color = [220, 30, 30, 220] if self._stroke_active else [0, 0, 0, 220]
+        if self._stroke_active:
+            color = [220, 30, 30, 220]       # red
+        elif self._hold_active:
+            color = [137, 207, 240, 220]     # baby blue
+        else:
+            color = [0, 0, 0, 220]           # black
         for i in range(_MAX_BLOBS):
             path = f"robot/touch_centroid/{i}"
             if i < len(blobs):
