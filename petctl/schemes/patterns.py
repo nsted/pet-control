@@ -773,6 +773,117 @@ class CurlControlScheme(ControlScheme):
         ]
 
 
+class StrokeCurlScheme(ControlScheme):
+    """
+    Stroking the body curls it toward whichever face the hand touches.
+
+    Touch on the right face → curl right; left face → curl left.
+    The curl emanates from the module where the stroke begins and grows
+    to include each successive module the hand passes through.  Once a
+    module is stroked it holds its curled position; the whole body slowly
+    returns to home after the hand lifts.
+    """
+
+    name = "stroke-curl"
+
+    TARGET_DEG: float = 45.0
+    HOLD_S: float = 2.0            # seconds to hold after touch lifts before decaying
+    DECAY_DEG_PER_S: float = 15.0  # return speed after hold
+    DIRECTION_THRESHOLD: float = 0.15  # min right-left imbalance to commit to a side
+
+    def __init__(self) -> None:
+        from petctl.perception.stroke import PAD_THRESHOLD, _pad_centroid
+        self._pad_centroid = _pad_centroid
+        self._PAD_THRESHOLD = PAD_THRESHOLD
+        self._curl_target: dict[int, float] = {}
+        self._touch_active: bool = False
+        self._lo: float | None = None
+        self._hi: float | None = None
+        self._curl_dir: float = 0.0
+        self._lift_time: float | None = None
+
+    def on_start(self, controller: "Controller") -> None:
+        self._curl_target = {}
+        self._touch_active = False
+        self._lo = self._hi = None
+        self._curl_dir = 0.0
+        self._lift_time = None
+        print(
+            "[StrokeCurl] Touch right → curl right; left → curl left. "
+            "Curl follows the stroke and holds after release. Ctrl-C to stop."
+        )
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = state.timestamp
+        dt = max(state.dt, 1e-4)
+
+        centroid, _ = self._pad_centroid(state)
+        touch_present = centroid is not None
+
+        if touch_present:
+            if not self._touch_active:
+                self._lo = centroid
+                self._hi = centroid
+                new_dir = self._sense_dir(state)
+                if new_dir != 0.0:
+                    self._curl_dir = new_dir
+                elif self._curl_dir == 0.0:
+                    self._curl_dir = 1.0
+                self._touch_active = True
+                self._lift_time = None
+                side = "right" if self._curl_dir > 0 else "left"
+                print(f"[StrokeCurl] stroke start  module={centroid:.1f}  curl={side}")
+            else:
+                self._lo = min(self._lo, centroid)
+                self._hi = max(self._hi, centroid)
+
+            for sid in state.active_servo_ids:
+                if self._lo - 0.6 <= sid <= self._hi + 0.6:
+                    sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
+                    self._curl_target[sid] = sign * self.TARGET_DEG
+
+        else:
+            if self._touch_active:
+                self._touch_active = False
+                self._lift_time = now
+                self._lo = self._hi = None
+
+            if self._lift_time is not None and (now - self._lift_time) > self.HOLD_S:
+                decay = self.DECAY_DEG_PER_S * dt
+                for sid in list(self._curl_target):
+                    cur = self._curl_target[sid]
+                    if abs(cur) <= decay:
+                        self._curl_target[sid] = 0.0
+                    else:
+                        self._curl_target[sid] = cur - math.copysign(decay, cur)
+
+        cmds = []
+        for sid in sorted(state.active_servo_ids):
+            angle = self._curl_target.get(sid, 0.0)
+            cmds.append(ServoCommand.from_angle(servo_id=sid, angle_deg=angle))
+        return cmds
+
+    def _sense_dir(self, state: RobotState) -> float:
+        """Return +1.0 (right), -1.0 (left), or 0.0 (ambiguous) from face balance."""
+        total_right = total_left = 0.0
+        for sens in state.sensors.values():
+            for v in sens.touch_right_pads:
+                if v >= self._PAD_THRESHOLD:
+                    total_right += v
+            for v in sens.touch_left_pads:
+                if v >= self._PAD_THRESHOLD:
+                    total_left += v
+        total = total_right + total_left
+        if total < 1e-6:
+            return 0.0
+        balance = (total_right - total_left) / total
+        if balance > self.DIRECTION_THRESHOLD:
+            return 1.0
+        if balance < -self.DIRECTION_THRESHOLD:
+            return -1.0
+        return 0.0
+
+
 class StrokeWatchScheme(ControlScheme):
     """Observer scheme: detects strokes along the body and logs them to console + Rerun.
 
@@ -834,6 +945,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     CurlControlScheme,
     Spin7ControlScheme,
     StrokeReactControlScheme,
+    StrokeCurlScheme,
     WanderControlScheme,
     DriftControlScheme,
     ExploreControlScheme,
