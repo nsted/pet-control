@@ -1334,31 +1334,37 @@ class YieldStiffScheme(ControlScheme):
 class PoseScheme(ControlScheme):
     """Track actual position while a hand is present and moving; lock on release.
 
-    A joint follows only when BOTH conditions hold each tick:
+    A joint enters following only when BOTH conditions hold:
       1. Any hand contact is detected anywhere on the robot.
-      2. The joint velocity exceeds VELOCITY_THRESHOLD_RAD_S.
+      2. The joint is displaced > FOLLOW_DISP_ON_RAD from its held position.
 
-    Gravity-induced rotation is ignored because it has no hand contact.
-    When either condition drops (hand leaves OR joint stops), the commanded
-    position freezes and the motor holds that pose.
+    Displacement (not velocity) is the entry gate: PD settling keeps the joint
+    near the commanded setpoint, so velocity spikes during settling never trigger
+    following.  Manual manipulation overcomes motor resistance and moves the joint
+    clearly away from commanded.
 
-    Pass --log-touch to log follow/lock transitions. Ctrl-C to stop.
+    A joint locks when velocity drops below VELOCITY_OFF_THRESHOLD_RAD_S or the
+    hand leaves.  Pass --log-touch to log transitions.  Ctrl-C to stop.
     """
 
     name = "pose"
 
-    # Velocity hysteresis: enter following above ON, stay following above OFF.
-    VELOCITY_ON_THRESHOLD_RAD_S: float = 0.40
+    # Entry gate: joint must be this far from its held position to start following.
+    FOLLOW_DISP_ON_RAD: float = 0.15   # ~8.6°
+    # Exit gate: lock when velocity drops below this while following.
     VELOCITY_OFF_THRESHOLD_RAD_S: float = 0.20
     # Touch hysteresis: enter hand-present above ON, exit below OFF.
     # EMA smooths the raw touch signal before thresholding.
     TOUCH_ON_THRESHOLD: float = 0.12
     TOUCH_OFF_THRESHOLD: float = 0.07
     TOUCH_EMA_ALPHA: float = 0.05   # per controller tick (~70 ms time constant at 280 Hz)
+    # After locking, ignore re-entry for this long while the motor settles.
+    LOCK_SETTLE_S: float = 0.18
 
     def __init__(self) -> None:
         self._commanded: dict[int, float] = {}
         self._following: set[int] = set()
+        self._locked_at: dict[int, float] = {}
         self._verbose = False
         self._touch_ema: float = 0.0
         self._hand_state: bool = False
@@ -1366,6 +1372,7 @@ class PoseScheme(ControlScheme):
     def on_start(self, controller: "Controller") -> None:
         self._commanded = {}
         self._following = set()
+        self._locked_at = {}
         self._verbose = controller.log_touch
         self._touch_ema = 0.0
         self._hand_state = False
@@ -1390,6 +1397,7 @@ class PoseScheme(ControlScheme):
         return self._hand_state
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
         commands = []
         following_now: set[int] = set()
         prev_hand = self._hand_state
@@ -1409,21 +1417,25 @@ class PoseScheme(ControlScheme):
             velocity = abs(state.motor_velocities.get(sid, 0.0))
             if hand:
                 was_following = sid in self._following
+                settled = (now - self._locked_at.get(sid, 0.0)) >= self.LOCK_SETTLE_S
                 if was_following:
                     if velocity >= self.VELOCITY_OFF_THRESHOLD_RAD_S:
                         following_now.add(sid)
                         self._commanded[sid] = actual
-                else:
-                    if velocity > self.VELOCITY_ON_THRESHOLD_RAD_S:
-                        following_now.add(sid)
-                        self._commanded[sid] = actual
+                elif settled and abs(actual - self._commanded[sid]) > self.FOLLOW_DISP_ON_RAD:
+                    following_now.add(sid)
+                    self._commanded[sid] = actual
 
             commands.append(ServoCommand(servo_id=sid, position=self._commanded[sid]))
+
+        newly_locked = self._following - following_now
+        for sid in newly_locked:
+            self._locked_at[sid] = now
 
         if self._verbose:
             for sid in following_now - self._following:
                 print(f"{self._ts()}  [Pose] s{sid} following  vel={abs(state.motor_velocities.get(sid, 0.0)):.3f} rad/s")
-            for sid in self._following - following_now:
+            for sid in newly_locked:
                 print(f"{self._ts()}  [Pose] s{sid} locked  pos={self._commanded.get(sid, 0.0):.3f} rad")
         self._following = following_now
 
