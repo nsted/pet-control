@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import itertools
 import os
 import socket
@@ -102,6 +103,9 @@ class RobotBackend(_BackendBase):
         # Latest sensor data populated by _sensor_loop — decouples sensor latency
         # from the control loop so get_state() never blocks on a network round-trip.
         self._latest_sensors: Optional[dict] = None
+        # Per-module, per-face sliding windows for cap moving average.
+        # Keyed by module_id → {"left": [deque,...], "right": [...], "middle": [...]}.
+        self._cap_filter: dict[int, dict[str, list[collections.deque]]] = {}
         self._latest_battery_current_raw: int = 0
         self._latest_battery_voltage_raw: int = 0
 
@@ -588,6 +592,32 @@ class RobotBackend(_BackendBase):
                 print(f"[RobotBackend] Motor TX loop error: {e}")
                 await asyncio.sleep(0.01)
 
+    def _apply_cap_filter(self, sensors: dict[int, ModuleSensors]) -> dict[int, ModuleSensors]:
+        """Apply per-pad sliding-window average to capacitive readings."""
+        window = SENSOR_LIMITS.cap_filter_window
+        result: dict[int, ModuleSensors] = {}
+        for mod_id, ms in sensors.items():
+            if mod_id not in self._cap_filter:
+                self._cap_filter[mod_id] = {
+                    "left":   [collections.deque(maxlen=window) for _ in ms.touch_left_pads],
+                    "right":  [collections.deque(maxlen=window) for _ in ms.touch_right_pads],
+                    "middle": [collections.deque(maxlen=window) for _ in ms.touch_middle_pads],
+                }
+            f = self._cap_filter[mod_id]
+            for dq, v in zip(f["left"],   ms.touch_left_pads):   dq.append(v)
+            for dq, v in zip(f["right"],  ms.touch_right_pads):  dq.append(v)
+            for dq, v in zip(f["middle"], ms.touch_middle_pads): dq.append(v)
+            result[mod_id] = ModuleSensors(
+                module_id=mod_id,
+                touch_left_pads=tuple(sum(dq) / len(dq) for dq in f["left"]),
+                touch_right_pads=tuple(sum(dq) / len(dq) for dq in f["right"]),
+                touch_middle_pads=tuple(sum(dq) / len(dq) for dq in f["middle"]),
+                pressure_left=ms.pressure_left,
+                pressure_right=ms.pressure_right,
+                pressure_middle=ms.pressure_middle,
+            )
+        return result
+
     async def _sensor_loop(self) -> None:
         """Sensor polling loop at self._sensor_poll_hz (runtime configurable).
 
@@ -612,7 +642,7 @@ class RobotBackend(_BackendBase):
                 data = await self._send_text("snsr 0 108", timeout=1.0)
                 sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
                 if sensors is not None:
-                    self._latest_sensors = sensors
+                    self._latest_sensors = self._apply_cap_filter(sensors)
                     self._latest_battery_current_raw = batt_cur
                     self._latest_battery_voltage_raw = batt_vol
                     sensor_failures = 0

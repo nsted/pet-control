@@ -112,6 +112,10 @@ class SensorLimits:
     # Normalize as: min(raw_nibble_value / cap_full_scale, 1.0)
     cap_full_scale: float = 11 / 15
 
+    # Sliding-window size for the per-pad cap moving average (number of sensor frames).
+    # At 10 Hz default poll rate: 5 frames = 500 ms of smoothing.
+    cap_filter_window: int = 5
+
 
 @dataclass(frozen=True)
 class BatteryConfig:
