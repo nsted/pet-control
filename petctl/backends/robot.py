@@ -226,7 +226,12 @@ class RobotBackend(_BackendBase):
             p_target = cmd.position + self._angle_offsets.get(sid, 0.0)
             last_p = self._last_mit_abs_pos.get(sid)
             last_t = self._last_mit_wall_s.get(sid)
-            if last_p is not None and last_t is not None:
+            if last_p is None:
+                # Seed from current physical position so the first command ramps
+                # from where the motor actually is rather than snapping to p_target.
+                phys = self._motor_state.get(sid)
+                last_p = phys["pos"] if phys is not None else p_target
+            if last_t is not None:
                 dt = max(now - last_t, 1.0 / 120.0)
                 max_step = LOOP_LIMITS.max_speed_rad_s * dt
                 delta = p_target - last_p
@@ -234,7 +239,7 @@ class RobotBackend(_BackendBase):
                 vel = (pos_rad - last_p) / dt
                 vel = max(MOTOR_LIMITS.vel_min, min(MOTOR_LIMITS.vel_max, vel))
             else:
-                pos_rad = p_target
+                pos_rad = last_p
                 vel = 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
