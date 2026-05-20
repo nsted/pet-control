@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Rate stress test: incrementally increase motor_update_hz until WebSocket dropout.
+Rate stress test: step motor_update_hz and sensor_poll_hz together until WebSocket dropout.
 
 Connects to the real robot backend (no sine control, motors held at zero
-torque) and steps through increasing TX rates. Reports the max stable rate
-and the rate at which dropout first occurs.
+torque) and steps through increasing TX rates. Both motor TX and sensor poll
+run at the same rate each step. Reports the max stable rate and the rate at
+which dropout first occurs.
 
 Usage:
     python scripts/rate_test.py
     python scripts/rate_test.py --step 5 --dwell 10 --start 10 --stop 120
-    python scripts/rate_test.py --sensor-hz 10
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ DEFAULT_START_HZ     = 10
 DEFAULT_STOP_HZ      = 120
 DEFAULT_STEP_HZ      = 5
 DEFAULT_DWELL_S      = 12      # seconds to hold each rate before declaring it stable
-DEFAULT_SENSOR_HZ    = LOOP_LIMITS.sensor_poll_hz  # override with --sensor-hz
 
 
 # ── Per-step result ────────────────────────────────────────────────────────────
@@ -55,7 +54,7 @@ class StepResult:
         else:
             status = f"OK  ({self.elapsed:.1f}s)"
         sensor_str = f"snsr ok={self.sensor_ok} fail={self.sensor_fail}"
-        return f"  {self.hz:>5.0f} Hz  {status}  {sensor_str}"
+        return f"  {self.hz:>5.0f} Hz (motor+sensor)  {status}  {sensor_str}"
 
 
 # ── Instrumented loops ────────────────────────────────────────────────────────
@@ -159,7 +158,7 @@ async def _instrumented_sensor_loop(
 
 # ── Single rate step ───────────────────────────────────────────────────────────
 
-async def run_step(backend: RobotBackend, hz: float, sensor_poll_hz: float, dwell: float) -> StepResult:
+async def run_step(backend: RobotBackend, hz: float, dwell: float) -> StepResult:
     result = StepResult(hz, dwell)
 
     # Cancel any existing tasks from a previous step.
@@ -172,7 +171,7 @@ async def run_step(backend: RobotBackend, hz: float, sensor_poll_hz: float, dwel
                 pass
 
     backend._latest_sensors = None
-    backend.sensor_poll_hz = sensor_poll_hz
+    backend.sensor_poll_hz = hz
 
     stop_event = asyncio.Event()
     motor_task = asyncio.create_task(_instrumented_motor_loop(backend, hz, result, stop_event))
@@ -203,7 +202,7 @@ async def run_step(backend: RobotBackend, hz: float, sensor_poll_hz: float, dwel
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def main(start: float, stop: float, step: float, dwell: float, sensor_hz: float) -> None:
+async def main(start: float, stop: float, step: float, dwell: float) -> None:
     backend = RobotBackend(auto_reconnect=False)
     print("[rate_test] Connecting to robot...")
     ok = await backend.connect()
@@ -213,7 +212,8 @@ async def main(start: float, stop: float, step: float, dwell: float, sensor_hz: 
 
     motors = backend.discovered_servos
     print(f"[rate_test] Connected. Motors: {motors}")
-    print(f"[rate_test] Sweep: {start}–{stop} Hz, step {step} Hz, {dwell}s per rate, sensor_poll {sensor_hz} Hz\n")
+    print(f"[rate_test] Sweep: {start}–{stop} Hz, step {step} Hz, {dwell}s per rate")
+    print(f"[rate_test] motor_update_hz and sensor_poll_hz locked together each step\n")
 
     rates = []
     r = start
@@ -230,8 +230,8 @@ async def main(start: float, stop: float, step: float, dwell: float, sensor_hz: 
             print(f"[rate_test] Backend disconnected before {hz} Hz step — stopping.")
             break
 
-        print(f"[rate_test] Testing {hz:.0f} Hz ...", end="", flush=True)
-        result = await run_step(backend, hz, sensor_hz, dwell)
+        print(f"[rate_test] Testing {hz:.0f} Hz (motor + sensor) ...", end="", flush=True)
+        result = await run_step(backend, hz, dwell)
         results.append(result)
 
         if result.ok:
@@ -272,12 +272,11 @@ async def main(start: float, stop: float, step: float, dwell: float, sensor_hz: 
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="WebSocket rate stress test")
+    parser = argparse.ArgumentParser(description="WebSocket rate stress test — motor and sensor stepped together")
     parser.add_argument("--start", type=float, default=DEFAULT_START_HZ, help="Start rate Hz")
     parser.add_argument("--stop",  type=float, default=DEFAULT_STOP_HZ,  help="Stop rate Hz")
     parser.add_argument("--step",  type=float, default=DEFAULT_STEP_HZ,  help="Step size Hz")
-    parser.add_argument("--dwell",      type=float, default=DEFAULT_DWELL_S,   help="Seconds per step")
-    parser.add_argument("--sensor-hz",  type=float, default=DEFAULT_SENSOR_HZ, help="Sensor poll rate Hz (default: config value)")
+    parser.add_argument("--dwell", type=float, default=DEFAULT_DWELL_S,  help="Seconds per step")
     args = parser.parse_args()
 
-    asyncio.run(main(args.start, args.stop, args.step, args.dwell, args.sensor_hz))
+    asyncio.run(main(args.start, args.stop, args.step, args.dwell))
