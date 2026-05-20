@@ -863,6 +863,168 @@ class StrokeCurlScheme(ControlScheme):
         return 0.0
 
 
+class StrokeRippleScheme(ControlScheme):
+    """
+    Like stroke-curl, but after 10s of continuous stroking transitions to
+    ripple for 8s, then commands all joints home.
+
+    States:
+      curl   — per-module touch tracking (same as stroke-curl)
+      ripple — full-body ripple wave for RIPPLE_DURATION_S
+      home   — all joints commanded to 0° and held there
+    """
+
+    name = "stroke-ripple"
+
+    # Curl phase
+    TARGET_DEG: float = 45.0
+    HOLD_S: float = 2.0
+    DECAY_DEG_PER_S: float = 15.0
+    DIRECTION_THRESHOLD: float = 0.15
+    MODULE_TOUCH_THRESHOLD: float = 0.06
+
+    # Curl → ripple trigger
+    STROKE_TRIGGER_S: float = 10.0
+    TOUCH_GAP_GRACE_S: float = 1.0   # gap before resetting the stroke timer
+
+    # Ripple phase
+    RIPPLE_AMPLITUDE_DEG: float = 40.0
+    RIPPLE_HZ: float = 0.4
+    RIPPLE_DURATION_S: float = 8.0
+
+    _CURL = "curl"
+    _RIPPLE = "ripple"
+    _HOME = "home"
+
+    def __init__(self) -> None:
+        from petctl.perception.stroke import PAD_THRESHOLD
+        self._PAD_THRESHOLD = PAD_THRESHOLD
+        self._curl_target: dict[int, float] = {}
+        self._release_time: dict[int, float] = {}
+        self._curl_dir: float = 0.0
+        self._state: str = self._CURL
+        self._stroke_start: float | None = None
+        self._last_touch: float | None = None
+        self._ripple_start: float = 0.0
+
+    def on_start(self, controller: "Controller") -> None:
+        self._curl_target = {}
+        self._release_time = {}
+        self._curl_dir = 0.0
+        self._state = self._CURL
+        self._stroke_start = None
+        self._last_touch = None
+        self._ripple_start = 0.0
+        print(
+            "[StrokeRipple] Touch right/left to curl. "
+            f"Stroke for {self.STROKE_TRIGGER_S:.0f}s → ripple {self.RIPPLE_DURATION_S:.0f}s → home."
+        )
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        if self._state == self._RIPPLE:
+            return self._do_ripple(state)
+        if self._state == self._HOME:
+            return self._do_home(state)
+        return self._do_curl(state)
+
+    # ------------------------------------------------------------------
+
+    def _do_curl(self, state: RobotState) -> list[ServoCommand]:
+        now = state.timestamp
+        dt = max(state.dt, 1e-4)
+
+        new_dir = self._sense_dir(state)
+        if new_dir != 0.0:
+            self._curl_dir = new_dir
+        elif self._curl_dir == 0.0:
+            self._curl_dir = 1.0
+
+        any_touched = False
+        cmds: list[ServoCommand] = []
+
+        for sid in sorted(state.active_servo_ids):
+            sens = state.sensors.get(sid)
+            touched = sens is not None and sens.touch_total >= self.MODULE_TOUCH_THRESHOLD
+            if touched:
+                any_touched = True
+                sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
+                self._curl_target[sid] = sign * self.TARGET_DEG
+                self._release_time.pop(sid, None)
+            else:
+                cur = self._curl_target.get(sid, 0.0)
+                if cur != 0.0:
+                    if sid not in self._release_time:
+                        self._release_time[sid] = now
+                    elif now - self._release_time[sid] > self.HOLD_S:
+                        decay = self.DECAY_DEG_PER_S * dt
+                        if abs(cur) <= decay:
+                            self._curl_target[sid] = 0.0
+                            self._release_time.pop(sid, None)
+                        else:
+                            self._curl_target[sid] = cur - math.copysign(decay, cur)
+            cmds.append(ServoCommand.from_angle(sid, self._curl_target.get(sid, 0.0)))
+
+        if any_touched:
+            if self._stroke_start is None:
+                self._stroke_start = now
+            self._last_touch = now
+        elif self._last_touch is not None and (now - self._last_touch) > self.TOUCH_GAP_GRACE_S:
+            self._stroke_start = None
+            self._last_touch = None
+
+        if self._stroke_start is not None and (now - self._stroke_start) >= self.STROKE_TRIGGER_S:
+            print(f"[StrokeRipple] {self.STROKE_TRIGGER_S:.0f}s stroke → ripple")
+            self._state = self._RIPPLE
+            self._ripple_start = now
+
+        return cmds
+
+    def _do_ripple(self, state: RobotState) -> list[ServoCommand]:
+        t = state.timestamp - self._ripple_start
+        if t >= self.RIPPLE_DURATION_S:
+            print("[StrokeRipple] ripple done → home")
+            self._state = self._HOME
+            return self._do_home(state)
+        ids = sorted(state.active_servo_ids)
+        n = len(ids)
+        if n == 0:
+            return []
+        return [
+            ServoCommand.from_angle(
+                servo_id=sid,
+                angle_deg=self.RIPPLE_AMPLITUDE_DEG * math.sin(
+                    2 * math.pi * self.RIPPLE_HZ * t + (i / n) * 4 * math.pi
+                ),
+            )
+            for i, sid in enumerate(ids)
+        ]
+
+    def _do_home(self, state: RobotState) -> list[ServoCommand]:
+        return [
+            ServoCommand.from_angle(servo_id=sid, angle_deg=0.0)
+            for sid in sorted(state.active_servo_ids)
+        ]
+
+    def _sense_dir(self, state: RobotState) -> float:
+        total_right = total_left = 0.0
+        for sens in state.sensors.values():
+            for v in sens.touch_right_pads:
+                if v >= self._PAD_THRESHOLD:
+                    total_right += v
+            for v in sens.touch_left_pads:
+                if v >= self._PAD_THRESHOLD:
+                    total_left += v
+        total = total_right + total_left
+        if total < 1e-6:
+            return 0.0
+        balance = (total_right - total_left) / total
+        if balance > self.DIRECTION_THRESHOLD:
+            return 1.0
+        if balance < -self.DIRECTION_THRESHOLD:
+            return -1.0
+        return 0.0
+
+
 class StrokeWatchScheme(ControlScheme):
     """Observer scheme: detects strokes along the body and logs them to console + Rerun.
 
@@ -925,6 +1087,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     Spin7ControlScheme,
     StrokeReactControlScheme,
     StrokeCurlScheme,
+    StrokeRippleScheme,
     WanderControlScheme,
     DriftControlScheme,
     ExploreControlScheme,
