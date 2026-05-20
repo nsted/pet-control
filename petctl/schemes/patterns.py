@@ -1265,6 +1265,72 @@ class ContactWatchScheme(ControlScheme):
         return commands
 
 
+class YieldStiffScheme(ControlScheme):
+    """Yield by drifting the commanded position toward displacement while torque is high.
+
+    Each tick: if |motor_torque| > TORQUE_BASELINE_NM on a servo, the commanded
+    position for that servo drifts toward the actual (displaced) position at
+    YIELD_RATE_RAD_S.  Drifting stops when torque returns to baseline; the servo
+    holds wherever it ended up — no automatic return to home.
+
+    No touch detection required: compliance is triggered purely by motor load.
+
+    Pass --log-touch to log yield start/stop per servo. Ctrl-C to stop.
+    """
+
+    name = "yield-stiff"
+
+    YIELD_RATE_RAD_S: float = 3.0    # how fast the setpoint chases actual (rad/s)
+    TORQUE_BASELINE_NM: float = 0.15  # stop drifting when torque drops below this
+
+    def __init__(self) -> None:
+        self._commanded: dict[int, float] = {}
+        self._yielding: set[int] = set()
+        self._verbose = False
+
+    def on_start(self, controller: "Controller") -> None:
+        self._verbose = controller.log_touch
+        print(
+            "[YieldStiff] Holding joints at current position.\n"
+            "  Push a joint — setpoint drifts to comply as torque drops.\n"
+            "  Setpoint holds at new position once torque reaches baseline.\n"
+            "Pass --log-touch to log yield events. Ctrl-C to stop."
+        )
+
+    @staticmethod
+    def _ts() -> str:
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        dt = max(state.dt, 1.0 / 60.0)
+        commands = []
+        yielding_now: set[int] = set()
+
+        for sid in sorted(state.active_servo_ids):
+            cmd = self._commanded.get(sid, 0.0)
+            actual = state.servo_positions.get(sid, 0.0)
+            torque = abs(state.motor_torques.get(sid, 0.0))
+
+            if torque > self.TORQUE_BASELINE_NM:
+                yielding_now.add(sid)
+                error = actual - cmd
+                if abs(error) > 1e-6:
+                    step = min(abs(error), self.YIELD_RATE_RAD_S * dt)
+                    cmd += step if error > 0 else -step
+
+            self._commanded[sid] = cmd
+            commands.append(ServoCommand(servo_id=sid, position=cmd))
+
+        if self._verbose:
+            for sid in yielding_now - self._yielding:
+                print(f"{self._ts()}  [YieldStiff] s{sid} yielding  torque={abs(state.motor_torques.get(sid, 0.0)):.2f}Nm")
+            for sid in self._yielding - yielding_now:
+                print(f"{self._ts()}  [YieldStiff] s{sid} at baseline  pos={self._commanded.get(sid, 0.0):.3f}rad")
+        self._yielding = yielding_now
+
+        return commands
+
+
 ALL_PATTERNS: list[type[ControlScheme]] = [
     RippleControlScheme,
     PulseControlScheme,
@@ -1286,6 +1352,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     StrokeWatchScheme,
     HoldWatchScheme,
     ContactWatchScheme,
+    YieldStiffScheme,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]
