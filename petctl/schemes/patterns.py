@@ -775,92 +775,71 @@ class CurlControlScheme(ControlScheme):
 
 class StrokeCurlScheme(ControlScheme):
     """
-    Stroking the body curls it toward whichever face the hand touches.
+    Each module curls toward the touched face while the hand is on it.
 
     Touch on the right face → curl right; left face → curl left.
-    The curl emanates from the module where the stroke begins and grows
-    to include each successive module the hand passes through.  Once a
-    module is stroked it holds its curled position; the whole body slowly
-    returns to home after the hand lifts.
+    Each module tracks touch independently: it curls while touched, holds
+    its position for HOLD_S after the hand moves away, then returns home.
     """
 
     name = "stroke-curl"
 
     TARGET_DEG: float = 45.0
-    HOLD_S: float = 2.0            # seconds to hold after touch lifts before decaying
-    DECAY_DEG_PER_S: float = 15.0  # return speed after hold
+    HOLD_S: float = 2.0            # seconds to hold after hand leaves a module
+    DECAY_DEG_PER_S: float = 15.0  # return-to-home speed after hold expires
     DIRECTION_THRESHOLD: float = 0.15  # min right-left imbalance to commit to a side
+    MODULE_TOUCH_THRESHOLD: float = 0.06  # touch_total to count as "hand present"
 
     def __init__(self) -> None:
-        from petctl.perception.stroke import PAD_THRESHOLD, _pad_centroid
-        self._pad_centroid = _pad_centroid
+        from petctl.perception.stroke import PAD_THRESHOLD
         self._PAD_THRESHOLD = PAD_THRESHOLD
         self._curl_target: dict[int, float] = {}
-        self._touch_active: bool = False
-        self._lo: float | None = None
-        self._hi: float | None = None
+        self._release_time: dict[int, float] = {}  # sid → monotonic time of last release
         self._curl_dir: float = 0.0
-        self._lift_time: float | None = None
 
     def on_start(self, controller: "Controller") -> None:
         self._curl_target = {}
-        self._touch_active = False
-        self._lo = self._hi = None
+        self._release_time = {}
         self._curl_dir = 0.0
-        self._lift_time = None
         print(
             "[StrokeCurl] Touch right → curl right; left → curl left. "
-            "Curl follows the stroke and holds after release. Ctrl-C to stop."
+            "Each module curls while touched and holds after release. Ctrl-C to stop."
         )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = state.timestamp
         dt = max(state.dt, 1e-4)
 
-        centroid, _ = self._pad_centroid(state)
-        touch_present = centroid is not None
-
-        if touch_present:
-            if not self._touch_active:
-                self._lo = centroid
-                self._hi = centroid
-                new_dir = self._sense_dir(state)
-                if new_dir != 0.0:
-                    self._curl_dir = new_dir
-                elif self._curl_dir == 0.0:
-                    self._curl_dir = 1.0
-                self._touch_active = True
-                self._lift_time = None
-                side = "right" if self._curl_dir > 0 else "left"
-                print(f"[StrokeCurl] stroke start  module={centroid:.1f}  curl={side}")
-            else:
-                self._lo = min(self._lo, centroid)
-                self._hi = max(self._hi, centroid)
-
-            for sid in state.active_servo_ids:
-                if self._lo - 0.6 <= sid <= self._hi + 0.6:
-                    sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
-                    self._curl_target[sid] = sign * self.TARGET_DEG
-
-        else:
-            if self._touch_active:
-                self._touch_active = False
-                self._lift_time = now
-                self._lo = self._hi = None
-
-            if self._lift_time is not None and (now - self._lift_time) > self.HOLD_S:
-                decay = self.DECAY_DEG_PER_S * dt
-                for sid in list(self._curl_target):
-                    cur = self._curl_target[sid]
-                    if abs(cur) <= decay:
-                        self._curl_target[sid] = 0.0
-                    else:
-                        self._curl_target[sid] = cur - math.copysign(decay, cur)
+        new_dir = self._sense_dir(state)
+        if new_dir != 0.0:
+            self._curl_dir = new_dir
+        elif self._curl_dir == 0.0:
+            self._curl_dir = 1.0
 
         cmds = []
         for sid in sorted(state.active_servo_ids):
-            angle = self._curl_target.get(sid, 0.0)
-            cmds.append(ServoCommand.from_angle(servo_id=sid, angle_deg=angle))
+            sens = state.sensors.get(sid)
+            touched = sens is not None and sens.touch_total >= self.MODULE_TOUCH_THRESHOLD
+
+            if touched:
+                sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
+                self._curl_target[sid] = sign * self.TARGET_DEG
+                self._release_time.pop(sid, None)
+            else:
+                cur = self._curl_target.get(sid, 0.0)
+                if cur != 0.0:
+                    if sid not in self._release_time:
+                        self._release_time[sid] = now
+                    elif now - self._release_time[sid] > self.HOLD_S:
+                        decay = self.DECAY_DEG_PER_S * dt
+                        if abs(cur) <= decay:
+                            self._curl_target[sid] = 0.0
+                            self._release_time.pop(sid, None)
+                        else:
+                            self._curl_target[sid] = cur - math.copysign(decay, cur)
+
+            cmds.append(ServoCommand.from_angle(sid, self._curl_target.get(sid, 0.0)))
+
         return cmds
 
     def _sense_dir(self, state: RobotState) -> float:
