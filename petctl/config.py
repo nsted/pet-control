@@ -58,13 +58,13 @@ class ControlLoopLimits:
     idle_motor_poll_hz: float = 5.0
 
     # Background sensor poll rate (touch + FSR).
-    sensor_poll_hz: float = 25.0
+    sensor_poll_hz: float = 20.0
     sensor_poll_hz_min: float = 0.5
     sensor_poll_hz_max: float = 30.0
 
     # Master rate for the motor TX task (independent of sensor polling).
     # One ws.send() per motor per tick; lower values reduce Arduino WS server load directly.
-    motor_update_hz: float = 70.0
+    motor_update_hz: float = 50.0
 
 
 
