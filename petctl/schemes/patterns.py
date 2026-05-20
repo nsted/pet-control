@@ -1086,12 +1086,16 @@ class HoldWatchScheme(ControlScheme):
         from petctl.perception.stroke import HoldDetector
         self._detector = HoldDetector()
         self._tick = 0
+        self._verbose = False
         self._rr = None
         try:
             import rerun as rr
             self._rr = rr
         except ImportError:
             pass
+
+    def on_start(self, controller: "Controller") -> None:
+        self._verbose = controller.verbose
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         self._tick += 1
@@ -1105,6 +1109,9 @@ class HoldWatchScheme(ControlScheme):
             rr.log("hold/centroid", rr.Scalars(reading.centroid if reading else 0.0))
             rr.log("hold/duration", rr.Scalars(reading.duration if reading else 0.0))
             rr.log("hold/blob_count", rr.Scalars(len(reading.q_blobs) if reading else 0))
+
+        if not self._verbose:
+            return []
 
         if reading is not None and self._tick % 3 == 0:
             blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in reading.q_blobs)
@@ -1159,6 +1166,7 @@ class ContactWatchScheme(ControlScheme):
         self._hold = HoldDetector()
         self._clf = ContactClassifier()
         self._tick = 0
+        self._verbose = False
         self._start: float | None = None
         self._rr = None
         try:
@@ -1172,8 +1180,11 @@ class ContactWatchScheme(ControlScheme):
             "  SQUEEZE  — grip and compress (FSR)\n"
             "  RESTRICT — prevent motion while robot pushes\n"
             "  WRENCH   — push a joint against the motor\n"
-            "Ctrl-C to stop."
+            "Pass --verbose to log contact type to console. Ctrl-C to stop."
         )
+
+    def on_start(self, controller: "Controller") -> None:
+        self._verbose = controller.verbose
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         self._tick += 1
@@ -1194,7 +1205,7 @@ class ContactWatchScheme(ControlScheme):
             rr.log("hold/centroid", rr.Scalars(hold.centroid if hold else 0.0))
 
         if hold is None:
-            if self._tick % 30 == 0:
+            if self._verbose and self._tick % 30 == 0:
                 print("[ContactWatch]  --")
             if rr is not None:
                 rr.log("contact/type", rr.Scalars(-1.0))
@@ -1210,7 +1221,7 @@ class ContactWatchScheme(ControlScheme):
             rr.log("contact/torque_peak", rr.Scalars(cr.torque_peak))
             rr.log("contact/pressure_peak", rr.Scalars(cr.pressure_peak))
 
-        if self._tick % 3 == 0:
+        if self._verbose and self._tick % 3 == 0:
             label = _CONTACT_TYPE_LABELS[cr.contact_type.value]
             servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
             torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
