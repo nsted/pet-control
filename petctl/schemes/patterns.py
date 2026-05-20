@@ -884,13 +884,13 @@ class StrokeRippleScheme(ControlScheme):
     MODULE_TOUCH_THRESHOLD: float = 0.06
 
     # Curl → ripple trigger
-    STROKE_TRIGGER_S: float = 10.0
+    STROKE_TRIGGER_S: float = 15.0
     TOUCH_GAP_GRACE_S: float = 1.0   # gap before resetting the stroke timer
 
     # Ripple phase
     RIPPLE_AMPLITUDE_DEG: float = 40.0
     RIPPLE_HZ: float = 0.4
-    RIPPLE_DURATION_S: float = 8.0
+    RIPPLE_DURATION_S: float = 15.0
 
     _CURL = "curl"
     _RIPPLE = "ripple"
