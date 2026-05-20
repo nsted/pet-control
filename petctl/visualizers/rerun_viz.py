@@ -314,11 +314,6 @@ class RerunVisualizer(Visualizer):
         self._stroke_active = self._stroke_detector.update(state) is not None
         hold_reading = self._hold_detector.update(state)
         hold_now = hold_reading is not None
-        if hold_now and not self._hold_active:
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold_reading.q_blobs)
-            print(f"[HOLD] start  blobs={blobs}  centroid={hold_reading.centroid:.1f}  side={hold_reading.side}")
-        elif not hold_now and self._hold_active:
-            print("[HOLD] end")
         self._hold_active = hold_now
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)

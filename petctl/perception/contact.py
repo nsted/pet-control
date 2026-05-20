@@ -3,17 +3,29 @@ Contact sub-classifier — enriches a HoldReading with motor-state context.
 
 Three sub-types extend plain HOLD:
   RESTRICT  — motors are pushing but the joint is not moving (stalled under load).
-  WRENCH    — the user is actively driving a joint against the motor's torque direction.
+  WRENCH    — a joint is displaced from its commanded position and the motor is resisting.
   SQUEEZE   — hold with meaningful FSR pressure across the held modules.
 
-Priority when multiple conditions fire: WRENCH > RESTRICT > SQUEEZE > HOLD.
-All thresholds are initial guesses and should be tuned on real hardware.
+Both WRENCH and RESTRICT use per-servo hysteresis so they stay latched once
+triggered and don't flicker at threshold boundaries.
+
+WRENCH semantics:
+  Begins when displacement from commanded position (home = 0) exceeds
+  WRENCH_POS_ON_RAD while motor torque is above WRENCH_TORQUE_NM.
+  Persists until the joint returns within WRENCH_POS_OFF_RAD — even if the
+  motor never fully reaches home.  Call reset() when contact ends.
+
+RESTRICT semantics:
+  Begins when |torque| > RESTRICT_TORQUE_NM and |velocity| < RESTRICT_VEL_ON.
+  Persists until torque drops below RESTRICT_TORQUE_OFF or velocity exceeds
+  RESTRICT_VEL_OFF.
+
+Priority: WRENCH > RESTRICT > SQUEEZE > HOLD.
+All thresholds are initial guesses — tune on real hardware.
 """
 
 from __future__ import annotations
 
-import math
-from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -43,64 +55,52 @@ class ContactClassifier:
     Classify a HoldReading into a ContactType using motor feedback and FSR data.
 
     Call classify() each tick while HoldDetector returns a non-None reading.
-    Call reset() when contact ends so position history doesn't bleed into the
-    next hold.
+    Call reset() when contact ends to clear hysteresis state.
     """
 
-    RESTRICT_TORQUE_NM: float = 0.5
-    RESTRICT_VEL_THRESHOLD: float = 0.15
+    # WRENCH: joint displaced from home (commanded = 0.0) while motor resists.
+    WRENCH_TORQUE_NM: float = 0.4
+    WRENCH_POS_ON_RAD: float = 0.15   # ~8.6° — displacement to enter wrench
+    WRENCH_POS_OFF_RAD: float = 0.05  # ~2.9° — displacement to exit wrench
 
-    # WRENCH: joint must move >= WRENCH_POS_DELTA_RAD opposite to torque direction
-    # over the last WRENCH_WINDOW_FRAMES frames while torque is above threshold.
-    # Requiring real position movement (not just instantaneous velocity) filters
-    # out the sign-flip noise that occurs when the sine wave command reverses direction.
-    WRENCH_TORQUE_NM: float = 0.5
-    WRENCH_POS_DELTA_RAD: float = 0.06   # ~3.4° — tunable on real hardware
-    WRENCH_WINDOW_FRAMES: int = 10        # ~0.33 s at 30 Hz
+    # RESTRICT: motor stalled under load.
+    RESTRICT_TORQUE_ON: float = 0.5   # enter when torque exceeds this
+    RESTRICT_TORQUE_OFF: float = 0.25  # exit when torque drops below this
+    RESTRICT_VEL_ON: float = 0.12     # enter when |velocity| is below this
+    RESTRICT_VEL_OFF: float = 0.22    # exit when |velocity| rises above this
 
     SQUEEZE_PRESSURE: float = 0.15
 
     def __init__(self) -> None:
-        self._pos_history: dict[int, deque[float]] = {}
+        self._wrench_active: set[int] = set()
+        self._restrict_active: set[int] = set()
 
     def reset(self) -> None:
-        """Clear position history. Call when contact ends."""
-        self._pos_history.clear()
+        """Clear hysteresis state. Call when contact ends."""
+        self._wrench_active.clear()
+        self._restrict_active.clear()
 
     def classify(self, hold: HoldReading, state: RobotState) -> ContactReading:
         """Return a ContactReading for the given hold and robot state."""
         servo_ids = sorted({m for blob in hold.q_blobs for m in blob.modules if m >= 1})
 
-        # Update rolling position history for held servos.
+        # --- WRENCH hysteresis ---
+        # Enter: joint clearly displaced from home AND motor resisting.
+        # Exit: joint returns near home (motor succeeded or released).
         for sid in servo_ids:
-            pos = state.servo_positions.get(sid)
-            if pos is None:
-                continue
-            if sid not in self._pos_history:
-                self._pos_history[sid] = deque(maxlen=self.WRENCH_WINDOW_FRAMES)
-            self._pos_history[sid].append(pos)
+            displacement = abs(state.servo_positions.get(sid, 0.0))
+            torque = abs(state.motor_torques.get(sid, 0.0))
+            if sid in self._wrench_active:
+                if displacement < self.WRENCH_POS_OFF_RAD:
+                    self._wrench_active.discard(sid)
+            else:
+                if displacement > self.WRENCH_POS_ON_RAD and torque > self.WRENCH_TORQUE_NM:
+                    self._wrench_active.add(sid)
+        self._wrench_active &= set(servo_ids)
 
-        # Check WRENCH first (highest priority).
-        # A wrench requires: (a) high torque AND (b) position has actually moved
-        # opposite to torque direction over the history window — not just a momentary
-        # velocity blip from the motor reversing its sine command.
-        wrench_servos: list[int] = []
-        torque_peak = 0.0
-        for sid in servo_ids:
-            t = state.motor_torques.get(sid, 0.0)
-            if abs(t) < self.WRENCH_TORQUE_NM:
-                continue
-            history = self._pos_history.get(sid)
-            if not history or len(history) < 3:
-                continue
-            pos_delta = history[-1] - history[0]
-            if (
-                abs(pos_delta) > self.WRENCH_POS_DELTA_RAD
-                and math.copysign(1.0, pos_delta) != math.copysign(1.0, t)
-            ):
-                wrench_servos.append(sid)
-                torque_peak = max(torque_peak, abs(t))
+        wrench_servos = sorted(self._wrench_active)
         if wrench_servos:
+            torque_peak = max(abs(state.motor_torques.get(s, 0.0)) for s in wrench_servos)
             return ContactReading(
                 hold=hold,
                 contact_type=ContactType.WRENCH,
@@ -108,16 +108,23 @@ class ContactClassifier:
                 torque_peak=torque_peak,
             )
 
-        # Check RESTRICT.
-        restrict_servos: list[int] = []
-        torque_peak = 0.0
+        # --- RESTRICT hysteresis ---
+        # Enter: high torque, near-zero velocity (motor stalled under load).
+        # Exit: torque drops OR velocity rises (load removed or joint moves).
         for sid in servo_ids:
-            t = state.motor_torques.get(sid, 0.0)
-            v = state.motor_velocities.get(sid, 0.0)
-            if abs(t) > self.RESTRICT_TORQUE_NM and abs(v) < self.RESTRICT_VEL_THRESHOLD:
-                restrict_servos.append(sid)
-                torque_peak = max(torque_peak, abs(t))
+            t = abs(state.motor_torques.get(sid, 0.0))
+            v = abs(state.motor_velocities.get(sid, 0.0))
+            if sid in self._restrict_active:
+                if t < self.RESTRICT_TORQUE_OFF or v > self.RESTRICT_VEL_OFF:
+                    self._restrict_active.discard(sid)
+            else:
+                if t > self.RESTRICT_TORQUE_ON and v < self.RESTRICT_VEL_ON:
+                    self._restrict_active.add(sid)
+        self._restrict_active &= set(servo_ids)
+
+        restrict_servos = sorted(self._restrict_active)
         if restrict_servos:
+            torque_peak = max(abs(state.motor_torques.get(s, 0.0)) for s in restrict_servos)
             return ContactReading(
                 hold=hold,
                 contact_type=ContactType.RESTRICT,
@@ -125,7 +132,7 @@ class ContactClassifier:
                 torque_peak=torque_peak,
             )
 
-        # Check SQUEEZE.
+        # --- SQUEEZE ---
         held_modules = {m for blob in hold.q_blobs for m in blob.modules}
         pressure_total = sum(
             state.sensors[m].pressure_total for m in held_modules if m in state.sensors
