@@ -74,14 +74,16 @@ class Controller:
         visualizers: Optional[list[Visualizer]] = None,
         dry_run: bool = False,
         limp: bool = False,
-        verbose: bool = False,
+        log_mit: bool = False,
+        log_touch: bool = False,
     ) -> None:
         self.backend = backend
         self.scheme = scheme
         self.visualizers: list[Visualizer] = visualizers or []
         self.dry_run = dry_run or limp  # limp implies no commands
         self.limp = limp
-        self.verbose = verbose
+        self.log_mit = log_mit
+        self.log_touch = log_touch
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -288,8 +290,8 @@ class Controller:
             if now - self._last_stats_print >= self._STATS_INTERVAL:
                 self._print_stats(now)
 
-            # 6. Periodically print MIT state (only when --verbose)
-            if self.verbose and now - self._last_pos_print >= 2.0:
+            # 6. Periodically print MIT state (only when --log-mit)
+            if self.log_mit and now - self._last_pos_print >= 2.0:
                 sids = sorted(self._state.servo_positions)
                 if sids:
                     header = f"{'id':>3}  {'pos°':>8}  {'vel r/s':>8}  {'torq Nm':>8}  {'temp°C':>7}  {'err':>4}"

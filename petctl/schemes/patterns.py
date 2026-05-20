@@ -1095,7 +1095,7 @@ class HoldWatchScheme(ControlScheme):
             pass
 
     def on_start(self, controller: "Controller") -> None:
-        self._verbose = controller.verbose
+        self._verbose = controller.log_touch
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         self._tick += 1
@@ -1184,7 +1184,7 @@ class ContactWatchScheme(ControlScheme):
         )
 
     def on_start(self, controller: "Controller") -> None:
-        self._verbose = controller.verbose
+        self._verbose = controller.log_touch
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         self._tick += 1

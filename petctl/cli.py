@@ -107,10 +107,15 @@ def run(
         4.0,
         help="Degrees per keypress for keyboard control",
     ),
-    verbose: bool = typer.Option(
+    log_mit: bool = typer.Option(
         False,
-        "--verbose",
-        help="Print MIT motor feedback table and touch/contact type logs to console",
+        "--log-mit",
+        help="Print MIT motor feedback table (pos/vel/torque) every 2s",
+    ),
+    log_touch: bool = typer.Option(
+        False,
+        "--log-touch",
+        help="Print touch/contact type logs to console (hold-watch, contact-watch)",
     ),
 ) -> None:
     """Run the petctl controller."""
@@ -172,7 +177,8 @@ def run(
             visualizers=_visualizers,
             dry_run=dry_run,
             limp=limp,
-            verbose=verbose,
+            log_mit=log_mit,
+            log_touch=log_touch,
         )
         await ctrl.run()
 
