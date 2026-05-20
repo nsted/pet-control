@@ -144,11 +144,24 @@ _BLOB_SPHERE_OFFSET: float = 1.5          # cm beyond face surface
 _BLOB_ACTIVATION_THRESHOLD: float = 0.35  # minimum per-pad value to contribute
 _BLOB_RADIUS_CM: float = 0.8              # sphere radius in cm
 
-_BLOB_FACE_POINTS: dict[str, np.ndarray] = {
-    "left":   np.array(_SENSOR_FACES["left"]["center"],   dtype=np.float32) + _NORMAL_LEFT   * _BLOB_SPHERE_OFFSET,
-    "right":  np.array(_SENSOR_FACES["right"]["center"],  dtype=np.float32) + _NORMAL_RIGHT  * _BLOB_SPHERE_OFFSET,
-    "middle": np.array(_SENSOR_FACES["middle"]["center"], dtype=np.float32) + _NORMAL_MIDDLE * _BLOB_SPHERE_OFFSET,
-}
+# Per-pad positions and unit normals in _PAD_CENTERS order: right[0-3], left[4-7], middle[8-13]
+_PAD_CENTERS_NP: np.ndarray = np.array(_PAD_CENTERS, dtype=np.float64)
+_PAD_NORMALS_UNIT: np.ndarray = np.array(
+    [_NORMAL_RIGHT]  * 4
+    + [_NORMAL_LEFT]   * 4
+    + [_NORMAL_MIDDLE] * 6,
+    dtype=np.float64,
+)
+# Prism face planes (outward_normal_f64, signed_distance) used to project the pad
+# centroid onto the prism surface before offsetting the sphere outward.
+_PRISM_FACE_PLANES: tuple[tuple[np.ndarray, float], ...] = (
+    (_NORMAL_RIGHT.astype(np.float64),
+     float(np.dot(_NORMAL_RIGHT,  np.array(_SENSOR_FACES["right"]["center"])))),
+    (_NORMAL_LEFT.astype(np.float64),
+     float(np.dot(_NORMAL_LEFT,   np.array(_SENSOR_FACES["left"]["center"])))),
+    (_NORMAL_MIDDLE.astype(np.float64),
+     float(np.dot(_NORMAL_MIDDLE, np.array(_SENSOR_FACES["middle"]["center"])))),
+)
 
 # Per-pad surface-offset vectors in the same order as _PAD_CENTERS
 _PAD_NORMAL_OFFSETS: np.ndarray = np.array(
@@ -497,29 +510,44 @@ class RerunVisualizer(Visualizer):
             right_pads = sens.touch_left_pads  if swap else sens.touch_right_pads
             middle_pads = sens.touch_middle_pads
 
-            n_active = sum(
-                1 for v in (*left_pads, *right_pads, *middle_pads)
-                if v >= _BLOB_ACTIVATION_THRESHOLD
+            # Pad weights in _PAD_CENTERS order: right[0-3], left[4-7], middle[8-13]
+            w_pads = np.array(
+                [v if v >= _BLOB_ACTIVATION_THRESHOLD else 0.0
+                 for v in (*right_pads, *left_pads, *middle_pads)],
+                dtype=np.float64,
             )
+            n_active = int((w_pads > 0).sum())
             if n_active == 0:
                 continue
             module_pad_count[mod_id] = n_active
 
-            # Weight each face by its active pad sum for centroid positioning
-            wl = sum(v for v in left_pads   if v >= _BLOB_ACTIVATION_THRESHOLD)
-            wr = sum(v for v in right_pads  if v >= _BLOB_ACTIVATION_THRESHOLD)
-            wm = sum(v for v in middle_pads if v >= _BLOB_ACTIVATION_THRESHOLD)
-            w_face = wl + wr + wm  # > 0 since n_active > 0
+            w_total = float(w_pads.sum())
+            # Weighted centroid of active pad positions — may be inside the prism
+            # when pads from multiple faces contribute.
+            p_local = (_PAD_CENTERS_NP * w_pads[:, None]).sum(axis=0) / w_total
+            # Blended outward normal direction
+            n_blend = (_PAD_NORMALS_UNIT * w_pads[:, None]).sum(axis=0) / w_total
+            n_norm = float(np.linalg.norm(n_blend))
+            if n_norm < 1e-9:
+                continue
+            n_hat = n_blend / n_norm
 
-            local_pt = (
-                wl * _BLOB_FACE_POINTS["left"]
-                + wr * _BLOB_FACE_POINTS["right"]
-                + wm * _BLOB_FACE_POINTS["middle"]
-            ) / w_face
+            # Find how far p_local is below the prism surface in direction n_hat,
+            # then offset by that amount plus _BLOB_SPHERE_OFFSET so the sphere
+            # always sits outside the prism regardless of which faces are active.
+            t_exit = 0.0
+            for n_face, d_face in _PRISM_FACE_PLANES:
+                denom = float(n_face @ n_hat)
+                if denom > 1e-6:
+                    t = (d_face - float(n_face @ p_local)) / denom
+                    if t > t_exit:
+                        t_exit = t
+
+            local_pt = p_local + (t_exit + _BLOB_SPHERE_OFFSET) * n_hat
 
             pos_m, R_m = self._fk_to_module(mod_id, state)
-            p3d = pos_m + R_m @ local_pt.astype(np.float64)
-            module_data[mod_id] = (w_face, p3d)
+            p3d = pos_m + R_m @ local_pt
+            module_data[mod_id] = (w_total, p3d)
 
         # Group active modules into contiguous blobs; require >= 2 total active pads
         blobs: list[list[int]] = []
