@@ -8,8 +8,8 @@ Runs an async loop as fast as possible:
   2. cmds   = scheme.update(state)
   2b. smooth = LPF toward scheme targets + per-tick delta cap (LOOP_LIMITS.*)
   3. if not dry_run: await backend.send_commands(cmds)
-  4. visualizers.update(state)  ← background thread (one in-flight job; coalesces
-     to latest state when the previous job has finished)
+  4. visualizers.update(state)  ← daemon thread with bounded queue; frames are
+     dropped (never blocking) if Rerun can't keep up
   5. asyncio.sleep(0) to yield to motor TX, sensor, and receive tasks
 
 The loop itself has no rate limit. Motor TX fires at motor_update_hz (its own task);
@@ -39,10 +39,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+import queue
 import signal
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 from petctl.config import LOOP_LIMITS
@@ -99,12 +99,14 @@ class Controller:
         self._loop_times: list[float] = []   # seconds per iteration
         self._last_stats_print: float = 0.0
 
-        # Dedicated single-worker thread for visualizer updates so Rerun
-        # serialization never blocks the hardware I/O loop.
-        self._viz_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="viz")
-        self._viz_future: Optional[Future[None]] = None
-        self._viz_lock = threading.Lock()
-        self._viz_pending_state: Optional[RobotState] = None
+        # Daemon thread for visualizer updates. Bounded queue with maxsize=1 so
+        # the control loop never blocks: put_nowait drops frames when Rerun can't
+        # keep up. None is the shutdown sentinel.
+        self._viz_queue: queue.Queue[Optional[RobotState]] = queue.Queue(maxsize=1)
+        self._viz_thread = threading.Thread(
+            target=self._viz_worker, name="viz", daemon=True
+        )
+        self._viz_thread.start()
 
         # Last commanded position (rad) after slew — used to cap per-tick jumps.
         self._slew_last_sent_rad: dict[int, float] = {}
@@ -276,16 +278,13 @@ class Controller:
                 except Exception as e:
                     print(f"[Controller] write_home_offsets error: {e}")
 
-            # 4. Update visualizers in a background thread (at most one job queued).
-            # Stash the latest state every tick; only *start* a new job when the
-            # previous one finished. Do not chain from the worker callback — that
-            # re-logged the same RobotState many times between control ticks and
-            # overloaded Rerun gRPC (jaggy motion / transport errors).
+            # 4. Hand latest state to the viz thread; drop if the previous frame
+            # hasn't been consumed yet (Rerun backed up → never stall the loop).
             if self.visualizers:
-                with self._viz_lock:
-                    self._viz_pending_state = self._state
-                    if self._viz_future is None or self._viz_future.done():
-                        self._start_visualizer_job_unlocked()
+                try:
+                    self._viz_queue.put_nowait(self._state)
+                except queue.Full:
+                    pass
 
             # 5. Timing / debug prints (before pacing sleep)
             now = time.monotonic()
@@ -313,28 +312,17 @@ class Controller:
             await asyncio.sleep(1.0 / (LOOP_LIMITS.motor_update_hz * 4))
             self._loop_times.append(time.monotonic() - t0)
 
-    def _start_visualizer_job_unlocked(self) -> None:
-        """Begin a viz worker using `_viz_pending_state`. Caller must hold `_viz_lock`."""
-        pending = self._viz_pending_state
-        if pending is None:
-            return
-        fut = self._viz_executor.submit(self._run_visualizers, pending)
-        self._viz_future = fut
-        fut.add_done_callback(self._log_visualizer_failure)
-
-    def _log_visualizer_failure(self, fut: Future[None]) -> None:
-        try:
-            fut.result()
-        except Exception as e:
-            print(f"[Controller] Visualizer worker error: {e}")
-
-    def _run_visualizers(self, state: RobotState) -> None:
-        """Called from the viz thread — must not touch asyncio or backend state."""
-        for viz in self.visualizers:
-            try:
-                viz.update(state)
-            except Exception as e:
-                print(f"[Controller] Visualizer {viz.name} error: {e}")
+    def _viz_worker(self) -> None:
+        """Daemon thread: pull states from the queue and drive all visualizers."""
+        while True:
+            state = self._viz_queue.get()
+            if state is None:
+                break
+            for viz in self.visualizers:
+                try:
+                    viz.update(state)
+                except Exception as e:
+                    print(f"[Controller] Visualizer {viz.name} error: {e}")
 
     def _print_stats(self, now: float) -> None:
         """Print loop timing stats and reset the accumulator.
@@ -358,8 +346,11 @@ class Controller:
         self._running = False
         print("\n[Controller] Shutting down...")
         self.scheme.on_stop()
-        # Wait for any in-flight viz frame to finish before calling on_stop().
-        self._viz_executor.shutdown(wait=True)
+        # Signal the viz worker and wait briefly. If Rerun's channel is backed
+        # up the thread may still be blocked in rr.log(); the daemon flag ensures
+        # it won't prevent process exit even if join times out.
+        self._viz_queue.put(None)
+        self._viz_thread.join(timeout=2.0)
         for viz in self.visualizers:
             viz.on_stop()
         await self.backend.disable_torques()
