@@ -76,6 +76,7 @@ class Controller:
         limp: bool = False,
         log_mit: bool = False,
         log_touch: bool = False,
+        log_loop: bool = False,
     ) -> None:
         self.backend = backend
         self.scheme = scheme
@@ -84,6 +85,7 @@ class Controller:
         self.limp = limp
         self.log_mit = log_mit
         self.log_touch = log_touch
+        self.log_loop = log_loop
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -287,7 +289,7 @@ class Controller:
             # 5. Timing / debug prints (before pacing sleep)
             now = time.monotonic()
 
-            if now - self._last_stats_print >= self._STATS_INTERVAL:
+            if self.log_loop and now - self._last_stats_print >= self._STATS_INTERVAL:
                 self._print_stats(now)
 
             # 6. Periodically print MIT state (only when --log-mit)

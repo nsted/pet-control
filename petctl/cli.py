@@ -117,6 +117,11 @@ def run(
         "--log-touch",
         help="Print touch/contact type logs to console (hold-watch, contact-watch)",
     ),
+    log_loop: bool = typer.Option(
+        False,
+        "--log-loop",
+        help="Print control loop timing stats (Hz, min/mean/max ms) every 5s",
+    ),
 ) -> None:
     """Run the petctl controller."""
 
@@ -179,6 +184,7 @@ def run(
             limp=limp,
             log_mit=log_mit,
             log_touch=log_touch,
+            log_loop=log_loop,
         )
         await ctrl.run()
 
