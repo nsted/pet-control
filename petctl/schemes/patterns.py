@@ -1331,6 +1331,76 @@ class YieldStiffScheme(ControlScheme):
         return commands
 
 
+class PoseScheme(ControlScheme):
+    """Track actual position while a hand is present and moving; lock on release.
+
+    A joint follows only when BOTH conditions hold each tick:
+      1. Any hand contact is detected anywhere on the robot.
+      2. The joint velocity exceeds VELOCITY_THRESHOLD_RAD_S.
+
+    Gravity-induced rotation is ignored because it has no hand contact.
+    When either condition drops (hand leaves OR joint stops), the commanded
+    position freezes and the motor holds that pose.
+
+    Pass --log-touch to log follow/lock transitions. Ctrl-C to stop.
+    """
+
+    name = "pose"
+
+    VELOCITY_THRESHOLD_RAD_S: float = 0.15
+    TOUCH_THRESHOLD: float = 0.06
+
+    def __init__(self) -> None:
+        self._commanded: dict[int, float] = {}
+        self._following: set[int] = set()
+        self._verbose = False
+
+    def on_start(self, controller: "Controller") -> None:
+        self._commanded = {}
+        self._following = set()
+        self._verbose = controller.log_touch
+        print(
+            "[Pose] Rotate a joint by hand — it holds that position on release.\n"
+            "Pass --log-touch to log follow/lock transitions. Ctrl-C to stop."
+        )
+
+    @staticmethod
+    def _ts() -> str:
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+    def _hand_present(self, state: RobotState) -> bool:
+        return any(
+            sens.touch_total >= self.TOUCH_THRESHOLD
+            for sens in state.sensors.values()
+        )
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        commands = []
+        following_now: set[int] = set()
+        hand = self._hand_present(state)
+
+        for sid in sorted(state.active_servo_ids):
+            actual = state.servo_positions.get(sid, 0.0)
+            if sid not in self._commanded:
+                self._commanded[sid] = actual
+
+            velocity = abs(state.motor_velocities.get(sid, 0.0))
+            if velocity > self.VELOCITY_THRESHOLD_RAD_S and hand:
+                following_now.add(sid)
+                self._commanded[sid] = actual
+
+            commands.append(ServoCommand(servo_id=sid, position=self._commanded[sid]))
+
+        if self._verbose:
+            for sid in following_now - self._following:
+                print(f"{self._ts()}  [Pose] s{sid} following  vel={abs(state.motor_velocities.get(sid, 0.0)):.3f} rad/s")
+            for sid in self._following - following_now:
+                print(f"{self._ts()}  [Pose] s{sid} locked  pos={self._commanded.get(sid, 0.0):.3f} rad")
+        self._following = following_now
+
+        return commands
+
+
 ALL_PATTERNS: list[type[ControlScheme]] = [
     RippleControlScheme,
     PulseControlScheme,
@@ -1353,6 +1423,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     HoldWatchScheme,
     ContactWatchScheme,
     YieldStiffScheme,
+    PoseScheme,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]
