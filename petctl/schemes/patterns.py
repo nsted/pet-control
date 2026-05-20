@@ -1140,29 +1140,25 @@ _CONTACT_TYPE_LABELS: dict[str, str] = {
 class ContactWatchScheme(ControlScheme):
     """Contact type observer: classifies STROKE / HOLD / SQUEEZE / RESTRICT / WRENCH.
 
-    Drives a slow sine wave on all joints so that RESTRICT and WRENCH are
-    detectable (motors must be pushing against something for those types to fire).
-    The sine is gentle (±20°, 0.15 Hz) — safe to run while handling the robot.
+    Holds all joints at home (0°). Motors resist displacement, so RESTRICT and
+    WRENCH are detectable whenever the user pushes against or holds away from home.
 
     StrokeDetector and HoldDetector are mutually exclusive by construction
     (same VELOCITY_THRESHOLD), so exactly one fires per tick when contact is active.
 
-    Console output throttled to every 3 ticks (~10 Hz at 30 Hz loop).
     Rerun paths: stroke/velocity, contact/type (enum index 0-3),
                  contact/torque_peak, contact/pressure_peak, hold/active, hold/centroid.
 
     To test:
       STROKE   — move a hand along the body
-      HOLD     — grip the body without resisting motion and without squeezing hard
+      HOLD     — grip the body without pushing or squeezing hard
       SQUEEZE  — grip and compress firmly (FSR pressure above threshold)
-      RESTRICT — grip and prevent the robot from moving while it tries to
-      WRENCH   — physically push a joint away from where it is trying to go
+      RESTRICT — hold a joint away from home while motors try to return
+      WRENCH   — actively push a joint further away from home
     """
 
     name = "contact-watch"
 
-    AMP_DEG: float = 20.0
-    FREQ_HZ: float = 0.15
     _TYPE_ORDER = ("hold", "squeeze", "restrict", "wrench")
 
     def __init__(self) -> None:
@@ -1173,7 +1169,6 @@ class ContactWatchScheme(ControlScheme):
         self._clf = ContactClassifier()
         self._verbose = False
         self._prev_type: str | None = None
-        self._start: float | None = None
         self._rr = None
         try:
             import rerun as rr
@@ -1181,12 +1176,12 @@ class ContactWatchScheme(ControlScheme):
         except ImportError:
             pass
         print(
-            "[ContactWatch] Running ±20° sine on all joints at 0.15 Hz.\n"
+            "[ContactWatch] Holding all joints at home (0°).\n"
             "  STROKE   — move hand along body\n"
-            "  HOLD     — grip without resisting\n"
+            "  HOLD     — grip without pushing or squeezing hard\n"
             "  SQUEEZE  — grip and compress (FSR)\n"
-            "  RESTRICT — prevent motion while robot pushes\n"
-            "  WRENCH   — push a joint against the motor\n"
+            "  RESTRICT — hold a joint away from home\n"
+            "  WRENCH   — push a joint further away from home\n"
             "Pass --log-touch to log contact type to console. Ctrl-C to stop."
         )
 
@@ -1207,13 +1202,7 @@ class ContactWatchScheme(ControlScheme):
             print(f"{ts}  [{label}] start  {details}")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        if self._start is None:
-            self._start = state.timestamp
-
-        t = state.timestamp - self._start
-        amp_rad = math.radians(self.AMP_DEG)
-        angle = amp_rad * math.sin(2 * math.pi * self.FREQ_HZ * t)
-        commands = [ServoCommand(servo_id=sid, position=angle) for sid in state.active_servo_ids]
+        commands = [ServoCommand(servo_id=sid, position=0.0) for sid in state.active_servo_ids]
 
         stroke = self._stroke.update(state)
         hold = self._hold.update(state)
