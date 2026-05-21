@@ -168,6 +168,11 @@ class HoldDetector:
         self._centroid_window: deque[tuple[float, float]] = deque(maxlen=WINDOW_FRAMES)
         self._hold_start: float | None = None
 
+    def reset(self) -> None:
+        """Clear velocity history — call after a stroke ends so stale fast frames don't delay hold detection."""
+        self._centroid_window.clear()
+        self._hold_start = None
+
     def update(self, state: RobotState) -> HoldReading | None:
         """Process one tick of RobotState. Returns HoldReading or None."""
         centroid, intensity = _pad_centroid(state)

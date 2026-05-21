@@ -143,7 +143,7 @@ _NORMAL_MIDDLE = np.array([ 0.0,  _INV_SQRT2, -_INV_SQRT2], dtype=np.float32)
 # Each entry is the face centre offset outward by _BLOB_SPHERE_OFFSET cm,
 # in module-local coordinates.  The sphere lives here so it sits outside
 # the body surface.
-_BLOB_SPHERE_OFFSET: float = 1.5          # cm beyond face surface
+_BLOB_SPHERE_OFFSET: float = 2.0          # cm beyond face surface
 _BLOB_ACTIVATION_THRESHOLD: float = 0.35  # minimum per-pad value to contribute
 _BLOB_RADIUS_CM: float = 0.8              # sphere radius in cm
 
@@ -581,18 +581,22 @@ class RerunVisualizer(Visualizer):
                 continue
             n_hat = n_blend / n_norm
 
-            # Find how far p_local is below the prism surface in direction n_hat,
-            # then offset by that amount plus _BLOB_SPHERE_OFFSET so the sphere
-            # always sits outside the prism regardless of which faces are active.
-            t_exit = 0.0
+            # Cast from the module centerline (x=0, y=0) at p_local's axial Z to find
+            # the exit face of the prism in direction n_hat.  Use the MINIMUM positive t
+            # (first exit face) so the sphere sits exactly _BLOB_SPHERE_OFFSET cm beyond
+            # the surface regardless of which faces are active.
+            p_axis = np.array([0.0, 0.0, p_local[2]])
+            t_surface = float("inf")
             for n_face, d_face in _PRISM_FACE_PLANES:
                 denom = float(n_face @ n_hat)
                 if denom > 1e-6:
-                    t = (d_face - float(n_face @ p_local)) / denom
-                    if t > t_exit:
-                        t_exit = t
+                    t = (d_face - float(n_face @ p_axis)) / denom
+                    if t < t_surface:
+                        t_surface = t
+            if not math.isfinite(t_surface):
+                t_surface = 0.0
 
-            local_pt = p_local + (t_exit + _BLOB_SPHERE_OFFSET) * n_hat
+            local_pt = p_axis + (t_surface + _BLOB_SPHERE_OFFSET) * n_hat
 
             pos_m, R_m = self._fk_to_module(mod_id, state)
             p3d = pos_m + R_m @ local_pt
@@ -608,7 +612,8 @@ class RerunVisualizer(Visualizer):
             current.append(mod_id)
         if current:
             blobs.append(current)
-        blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= 2]
+        min_pads = 1 if self._stroke_active else 2
+        blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= min_pads]
 
         if self._stroke_active:
             color = [220, 30, 30, 220]       # red

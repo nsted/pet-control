@@ -97,6 +97,7 @@ class _TouchLogger:
             self._stroke_last_centroid = stroke.centroid
             self._stroke_last_speed = stroke.speed
             self._clf.reset()
+            self._hold.reset()  # flush stroke frames so hold fires promptly after stroke ends
             return
 
         # Grace period: a brief hold/squeeze or no-touch gap doesn't end a stroke.

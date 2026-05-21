@@ -46,7 +46,7 @@ def run(
     control: str = typer.Option(
         "keyboard",
         help=(
-            "Control scheme: keyboard, passthrough, sine, "
+            "Control scheme: keyboard, passthrough, sine, command, "
             "ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, stroke, stroke-curl, stroke-watch"
         ),
     ),
@@ -156,13 +156,16 @@ def run(
     elif control == "sine":
         from petctl.schemes.sine import SineControlScheme
         _scheme = SineControlScheme(servo_id=servo_id)
+    elif control == "command":
+        from petctl.schemes.command import CommandScheme
+        _scheme = CommandScheme()
     elif control in ("ripple", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "stroke-ripple", "wander", "drift", "explore", "stroke-watch", "hold-watch", "contact-watch", "yield-stiff", "pose"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
     else:
         typer.echo(
             f"Unknown control scheme '{control}'. "
-            "Choose: keyboard, passthrough, sine, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, stroke-curl, wander, drift, explore, stroke-watch, hold-watch, contact-watch, yield-stiff, pose",
+            "Choose: keyboard, passthrough, sine, command, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, stroke-curl, wander, drift, explore, stroke-watch, hold-watch, contact-watch, yield-stiff, pose",
             err=True,
         )
         raise typer.Exit(1)
