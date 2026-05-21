@@ -7,7 +7,7 @@ Controls:
   ↓ / ↓      Decrease angle by step_deg
   r          Reset all servos to 0°
   Cmd+Shift+H  Save current positions as EEPROM home
-  q / Esc    Request controller shutdown
+  Ctrl-C     Quit (SIGINT only — q/Esc do not quit)
 
 Uses pynput for cross-platform keyboard capture in a background thread,
 so it works from any terminal without requiring a GUI window.
@@ -17,12 +17,15 @@ Install: pip install pynput
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
@@ -77,9 +80,9 @@ class KeyboardControlScheme(ControlScheme):
     def on_start(self, controller: "Controller") -> None:
         self._controller = controller
         self._start_listener()
-        print(
+        logger.info(
             "[Keyboard] Ready.\n"
-            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+Shift+H: save home  |  Shift+K: toggle sensor labels  |  q/Esc: quit"
+            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+Shift+H: save home  |  Shift+K: toggle sensor labels  |  Ctrl-C: quit"
         )
 
     # Seconds to keep re-issuing position commands after the last key press.
@@ -106,7 +109,7 @@ class KeyboardControlScheme(ControlScheme):
                 commands.append(ServoCommand.from_angle(servo_id, 0.0))
                 zeroed.append(servo_id)
             self._last_key_time = time.monotonic()
-            print(f"[Keyboard] reset: servos {zeroed} → 0°")
+            logger.info("[Keyboard] reset: servos %s → 0°", zeroed)
             return commands
 
         for mod, delta in pending.items():
@@ -141,7 +144,7 @@ class KeyboardControlScheme(ControlScheme):
             try:
                 self._listener.stop()
             except Exception as e:
-                print(f"[Keyboard] Warning: listener teardown error: {e}")
+                logger.warning("[Keyboard] listener teardown error: %s", e)
         self._listener = None
 
     # ------------------------------------------------------------------
@@ -191,20 +194,19 @@ class KeyboardControlScheme(ControlScheme):
         try:
             from pynput import keyboard
         except ImportError:
-            print("[Keyboard] pynput not installed. Run: pip install pynput")
+            logger.error("[Keyboard] pynput not installed. Run: pip install pynput")
             return
 
         cmd_keys = frozenset({keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r})
 
         def on_press(key):
-            stop_requested = False
             toggle_labels = False
             with self._lock:
                 if key in cmd_keys:
                     self._cmd_held = True
                     return
 
-                # Character keys — select module, reset, or quit
+                # Character keys — select module, reset, or toggle
                 try:
                     char = key.char
                     if char and char.isdigit():
@@ -218,32 +220,24 @@ class KeyboardControlScheme(ControlScheme):
                         return
                     if char == "K":   # Shift+K
                         toggle_labels = True
-                    if char in ("q", "Q"):
-                        stop_requested = True
-                        # No return — fall through so stop() is called after lock
                 except AttributeError:
                     pass
 
-                # Special keys (skip if already stopping)
-                if not stop_requested:
-                    if key == keyboard.Key.up:
-                        self._pending[self._selected] = (
-                            self._pending.get(self._selected, 0.0) + self.step_deg
-                        )
-                        self._last_key_time = time.monotonic()
-                    elif key == keyboard.Key.down:
-                        self._pending[self._selected] = (
-                            self._pending.get(self._selected, 0.0) - self.step_deg
-                        )
-                        self._last_key_time = time.monotonic()
-                    elif key == keyboard.Key.esc:
-                        stop_requested = True
+                # Special keys
+                if key == keyboard.Key.up:
+                    self._pending[self._selected] = (
+                        self._pending.get(self._selected, 0.0) + self.step_deg
+                    )
+                    self._last_key_time = time.monotonic()
+                elif key == keyboard.Key.down:
+                    self._pending[self._selected] = (
+                        self._pending.get(self._selected, 0.0) - self.step_deg
+                    )
+                    self._last_key_time = time.monotonic()
 
             # Dispatch actions outside the lock
             if toggle_labels:
                 self._dispatch_toggle_labels()
-            if stop_requested and self._controller:
-                self._controller.stop()
 
         def on_release(key):
             if key in cmd_keys:
