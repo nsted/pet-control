@@ -25,7 +25,7 @@ def _make_backend() -> RobotBackend:
     b = RobotBackend()
     b._connected = True
     b._discovered_motors = [MOTOR_ID]
-    b._motor_state[MOTOR_ID] = {"pos": 0.0, "vel": 0.0, "torque": 0.0, "temp": 0, "error": 0}
+    b._motor_state[MOTOR_ID] = {"pos": 0.0, "vel": 0.0, "torque": 0.0, "drive_temp": 0, "motor_temp": 0, "err_code": 0}
     return b
 
 
@@ -41,11 +41,14 @@ def _seed_ramp(b: RobotBackend, pos: float, dt_ago: float = 1.0 / 30.0) -> None:
 
 class TestRampFilterBasics:
     @pytest.mark.asyncio
-    async def test_first_command_passes_through(self):
-        """No prior state → target jumps straight through."""
+    async def test_first_command_seeds_from_physical_position(self):
+        """No prior ramp state → first sent position is current physical pos (no snap)."""
         b = _make_backend()
+        # Physical position is 0.0; command is 3.0 rad.
+        # Backend seeds ramp from physical position so the first frame holds 0.0
+        # rather than snapping to the target.
         await b.send_commands([_cmd(3.0)])
-        assert abs(_decode_pos(b._pending_frames[MOTOR_ID]) - 3.0) < 0.01
+        assert abs(_decode_pos(b._pending_frames[MOTOR_ID]) - 0.0) < 0.01
 
     @pytest.mark.asyncio
     async def test_large_jump_is_clamped(self):

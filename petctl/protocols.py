@@ -85,6 +85,13 @@ class RobotBackend(ABC):
         `RobotBackend` sends MIT-mode torque-off frames per motor (limp / calibration).
         """
 
+    async def disable_motor(self, motor_id: int) -> None:
+        """
+        Send exit-motor-mode to a single motor.
+
+        Default is a no-op. `RobotBackend` implements this for per-motor thermal disable.
+        """
+
     async def write_home_offsets(self) -> None:
         """
         Record the current physical pose as the new software home (e.g. store

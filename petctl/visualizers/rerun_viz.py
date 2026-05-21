@@ -337,6 +337,7 @@ class RerunVisualizer(Visualizer):
         self._hold_active = (hold_now or now < self._hold_color_until) and not self._stroke_active
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
+        self._log_power_telemetry(rr, state)
         if self.show_3d:
             self._log_3d_pose(rr, state)
             self._log_sensor_overlays(rr, state)
@@ -386,6 +387,26 @@ class RerunVisualizer(Visualizer):
             rr.log(f"motors/torque/motor_{sid}", rr.Scalars(float(val)))
         for sid, val in state.motor_temperatures.items():
             rr.log(f"motors/temperature/motor_{sid}", rr.Scalars(float(val)))
+        for sid, val in state.motor_winding_temperatures.items():
+            rr.log(f"motors/winding_temperature/motor_{sid}", rr.Scalars(float(val)))
+
+    def _log_power_telemetry(self, rr, state: RobotState) -> None:
+        pt = state.power_telemetry
+        if pt is None:
+            return
+        rr.log("power/voltage/raw", rr.Scalars(pt.voltage_raw_v))
+        if pt.voltage_filtered_v is not None:
+            rr.log("power/voltage/filtered", rr.Scalars(pt.voltage_filtered_v))
+        rr.log("power/voltage/spike_count", rr.Scalars(float(pt.voltage_spike_count)))
+        rr.log("power/voltage/spike_rate_per_min", rr.Scalars(float(pt.voltage_spike_rate_per_min)))
+        rr.log("power/voltage/state", rr.TextLog(pt.voltage_state))
+        rr.log("power/global_state", rr.TextLog(pt.system_state))
+        for mid, state_str in pt.motor_states.items():
+            rr.log(f"power/motors/{mid}/state", rr.TextLog(state_str))
+            scale = pt.motor_compliance_scales.get(mid, 1.0)
+            rr.log(f"power/motors/{mid}/compliance_scale", rr.Scalars(scale))
+        for event in pt.events:
+            rr.log("power/events", rr.TextLog(event))
 
     def _setup_battery_series(self) -> None:
         """Declare SeriesLines for head battery telemetry."""

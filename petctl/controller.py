@@ -43,11 +43,79 @@ import queue
 import signal
 import threading
 import time
+from datetime import datetime
 from typing import Optional
 
 from petctl.config import LOOP_LIMITS
+from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState, ServoCommand
+
+
+_CONTACT_LABELS: dict[str, str] = {
+    "stroke":   "STROKE  ",
+    "hold":     "HOLD    ",
+    "squeeze":  "SQUEEZE ",
+    "restrict": "RESTRICT",
+    "wrench":   "WRENCH  ",
+}
+
+
+class _TouchLogger:
+    """Runs stroke/hold/contact detection every tick and prints transitions."""
+
+    def __init__(self) -> None:
+        from petctl.perception.contact import ContactClassifier
+        from petctl.perception.stroke import HoldDetector, StrokeDetector
+        self._stroke = StrokeDetector()
+        self._hold = HoldDetector()
+        self._clf = ContactClassifier()
+        self._prev: str | None = None
+
+    @staticmethod
+    def _ts() -> str:
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+    def update(self, state: RobotState) -> None:
+        stroke = self._stroke.update(state)
+        hold = self._hold.update(state)
+
+        if stroke is not None:
+            curr = "stroke"
+            if curr != self._prev:
+                arrow = "→" if stroke.direction == "head_to_tail" else "←"
+                self._transition(self._prev, curr,
+                    f"{arrow}  speed={stroke.speed:.1f} mod/s"
+                    f"  centroid={stroke.centroid:.1f}"
+                    f"  side={stroke.side}"
+                    f"  conf={stroke.confidence:.2f}")
+            self._prev = curr
+            self._clf.reset()
+            return
+
+        if hold is None:
+            if self._prev is not None:
+                print(f"{self._ts()}  [{_CONTACT_LABELS.get(self._prev, self._prev.upper()[:8])}] end")
+            self._prev = None
+            self._clf.reset()
+            return
+
+        cr = self._clf.classify(hold, state)
+        curr = cr.contact_type.value
+        if curr != self._prev:
+            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
+            servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
+            torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
+            pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
+            self._transition(self._prev, curr,
+                f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
+        self._prev = curr
+
+    def _transition(self, prev: str | None, curr: str, details: str) -> None:
+        ts = self._ts()
+        if prev is not None:
+            print(f"{ts}  [{_CONTACT_LABELS.get(prev, prev.upper()[:8])}] end")
+        print(f"{ts}  [{_CONTACT_LABELS.get(curr, curr.upper()[:8])}] start  {details}")
 
 
 class Controller:
@@ -87,6 +155,10 @@ class Controller:
         self.log_mit = log_mit
         self.log_touch = log_touch
         self.log_loop = log_loop
+        self._touch_logger: Optional[_TouchLogger] = _TouchLogger() if log_touch else None
+
+        self.power_manager = PowerManager()
+        self._power_reset_requested: bool = False
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -141,6 +213,14 @@ class Controller:
         """
         if self._stop_event is not None and self._event_loop is not None:
             self._event_loop.call_soon_threadsafe(self._stop_event.set)
+
+    def request_power_reset(self) -> None:
+        """Ask the control loop to attempt a power-manager emergency reset.
+
+        Thread-safe: may be called from the keyboard listener thread.
+        Actual reset executes on the next control tick; conditions are validated then.
+        """
+        self._power_reset_requested = True
 
     async def run(self) -> None:
         """
@@ -242,12 +322,40 @@ class Controller:
             # 1. Get state from backend
             self._state = await self.backend.get_state()
 
+            # 1b. Power management — evaluate protection conditions
+            pm = self.power_manager
+            pm.update(self._state, t0)
+            disable_ids, is_global_emergency = pm.drain_disable_events()
+            if is_global_emergency:
+                try:
+                    await self.backend.disable_torques()
+                except Exception as e:
+                    print(f"[Controller] Emergency disable_torques error: {e}")
+            elif disable_ids:
+                for _mid in disable_ids:
+                    try:
+                        await self.backend.disable_motor(_mid)
+                    except Exception as e:
+                        print(f"[Controller] disable_motor({_mid}) error: {e}")
+            self._state.power_telemetry = pm.get_telemetry(self._state.battery_voltage_v)
+
+            # Handle operator power-reset request
+            if self._power_reset_requested:
+                self._power_reset_requested = False
+                if pm.operator_reset():
+                    print("[Controller] Power manager reset: system re-enabled.")
+                else:
+                    print("[Controller] Power manager reset denied: conditions not safe.")
+
             # 2. Run control scheme
             try:
                 commands = self.scheme.update(self._state)
             except Exception as e:
                 print(f"[Controller] Scheme '{self.scheme.name}' error: {e}")
                 commands = []
+
+            if self._touch_logger is not None:
+                self._touch_logger.update(self._state)
 
             # Let schemes reset the slew state for specific servos before this
             # tick's filter runs — needed when a stall reversal must take effect
@@ -259,12 +367,23 @@ class Controller:
 
             self._apply_slew_to_commands(commands)
 
-            # 3. Send commands (unless dry run)
+            # 3. Send commands (unless dry run), filtered and scaled by PowerManager
             if not self.dry_run and commands:
-                try:
-                    await self.backend.send_commands(commands)
-                except Exception as e:
-                    print(f"[Controller] Backend send_commands error: {e}")
+                safe_commands = []
+                for cmd in commands:
+                    if not pm.is_motor_enabled(cmd.servo_id):
+                        continue
+                    scale = pm.get_compliance_scale(cmd.servo_id)
+                    if scale != 1.0:
+                        cmd.kp *= scale
+                        cmd.kd *= scale
+                        cmd.torque_ff *= scale
+                    safe_commands.append(cmd)
+                if safe_commands:
+                    try:
+                        await self.backend.send_commands(safe_commands)
+                    except Exception as e:
+                        print(f"[Controller] Backend send_commands error: {e}")
 
             # 3b. Save-home: write EEPROM offsets so current position reports as 0
             take_save_home = getattr(self.scheme, "take_save_home", None)
@@ -303,7 +422,7 @@ class Controller:
                         v = self._state.motor_velocities.get(sid, 0.0)
                         t = self._state.motor_torques.get(sid, 0.0)
                         tmp = self._state.motor_temperatures.get(sid, 0)
-                        err = self._state.motor_errors.get(sid, 0)
+                        err = self._state.motor_err_codes.get(sid, 0)
                         print(f"  {sid:>3}  {p:>8.2f}  {v:>8.3f}  {t:>8.3f}  {tmp:>7}  {err:>4}")
                 self._last_pos_print = now
 

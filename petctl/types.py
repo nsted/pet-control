@@ -11,8 +11,28 @@ from __future__ import annotations
 import time
 import math
 from dataclasses import asdict, dataclass, field
+from typing import Optional
 
 from petctl.config import BATTERY_CONFIG, MOTOR_LIMITS
+
+
+@dataclass
+class PowerTelemetry:
+    """Snapshot of power management state for a single control tick."""
+
+    voltage_raw_v: float = 0.0
+    voltage_filtered_v: Optional[float] = None
+    voltage_state: str = "NORMAL"
+    voltage_spike_count: int = 0
+    voltage_spike_rate_per_min: int = 0
+    voltage_last_spike_peak_v: float = 0.0
+    system_state: str = "RUNNING"
+    # Per-motor state (keyed by servo_id)
+    motor_states: dict[int, str] = field(default_factory=dict)
+    motor_disable_reasons: dict[int, str] = field(default_factory=dict)
+    motor_compliance_scales: dict[int, float] = field(default_factory=dict)
+    # State transition events since last tick
+    events: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -84,10 +104,13 @@ class RobotState:
     # Keyed by servo_id (int). Position in radians; home = 0.0.
     servo_positions: dict[int, float] = field(default_factory=dict)
     # Per-motor feedback from hardware (all keyed by servo_id).
-    motor_velocities: dict[int, float] = field(default_factory=dict)     # rad/s
-    motor_torques: dict[int, float] = field(default_factory=dict)        # Nm
-    motor_temperatures: dict[int, int] = field(default_factory=dict)     # °C (byte 6 of MIT response)
-    motor_errors: dict[int, int] = field(default_factory=dict)           # error code (byte 7)
+    motor_velocities: dict[int, float] = field(default_factory=dict)              # rad/s
+    motor_torques: dict[int, float] = field(default_factory=dict)                 # Nm
+    motor_temperatures: dict[int, int] = field(default_factory=dict)              # drive temp °C (byte 6, signed)
+    motor_winding_temperatures: dict[int, int] = field(default_factory=dict)      # motor winding temp °C (byte 7, signed)
+    motor_err_codes: dict[int, int] = field(default_factory=dict)                 # ERR nibble (upper 4 bits of byte 0)
+    # Power management telemetry — set by Controller after PowerManager.update().
+    power_telemetry: Optional[PowerTelemetry] = field(default=None)
     # Head-only battery telemetry raw ADC values.
     battery_current_raw: int = 0
     battery_voltage_raw: int = 0

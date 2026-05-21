@@ -187,8 +187,9 @@ class RobotBackend(_BackendBase):
                 },
                 motor_velocities={mid: data["vel"] for mid, data in self._motor_state.items()},
                 motor_torques={mid: data["torque"] for mid, data in self._motor_state.items()},
-                motor_temperatures={mid: data.get("temp", 0) for mid, data in self._motor_state.items()},
-                motor_errors={mid: data.get("error", 0) for mid, data in self._motor_state.items()},
+                motor_temperatures={mid: data.get("drive_temp", 0) for mid, data in self._motor_state.items()},
+                motor_winding_temperatures={mid: data.get("motor_temp", 0) for mid, data in self._motor_state.items()},
+                motor_err_codes={mid: data.get("err_code", 0) for mid, data in self._motor_state.items()},
                 battery_current_raw=battery_current_raw,
                 battery_voltage_raw=battery_voltage_raw,
                 active_modules=self._discovered_modules,
@@ -732,6 +733,16 @@ class RobotBackend(_BackendBase):
         except Exception:
             pass
 
+    async def disable_motor(self, motor_id: int) -> None:
+        """Send exit-motor-mode to a single motor (per-motor thermal disable)."""
+        if self._ws is None:
+            return
+        try:
+            async with self._ws_send_lock:
+                await self._ws.send(_encode_mit_disable(motor_id))
+        except Exception:
+            pass
+
     async def write_home_offsets(self) -> None:
         # Solicit a fresh frame so _motor_state is current, then write hardware zero.
         await self.poll_positions()
@@ -889,15 +900,24 @@ class RobotBackend(_BackendBase):
         if can_id != 0x000 or len(payload) < 6:
             return
         motor_id = payload[0] & 0xF
+        err_code = (payload[0] >> 4) & 0xF
         p_raw = (payload[1] << 8) | payload[2]
         v_raw = (payload[3] << 4) | (payload[4] >> 4)
         t_raw = ((payload[4] & 0xF) << 8) | payload[5]
         pos = _uint_to_float(p_raw, 16, MOTOR_LIMITS.pos_min, MOTOR_LIMITS.pos_max)
         vel = _uint_to_float(v_raw, 12, MOTOR_LIMITS.vel_min, MOTOR_LIMITS.vel_max)
         torque = _uint_to_float(t_raw, 12, MOTOR_LIMITS.torque_min, MOTOR_LIMITS.torque_max)
-        temp = payload[6] if len(payload) >= 7 else 0
-        error = payload[7] if len(payload) >= 8 else 0
-        self._motor_state[motor_id] = {"pos": pos, "vel": vel, "torque": torque, "temp": temp, "error": error}
+        drive_temp = _byte_to_int8(payload[6]) if len(payload) >= 7 else 0
+        motor_temp = _byte_to_int8(payload[7]) if len(payload) >= 8 else 0
+        self._motor_state[motor_id] = {
+            "pos": pos, "vel": vel, "torque": torque,
+            "drive_temp": drive_temp, "motor_temp": motor_temp, "err_code": err_code,
+        }
+
+
+def _byte_to_int8(b: int) -> int:
+    """Reinterpret an unsigned byte as a signed int8 (two's complement)."""
+    return b if b < 128 else b - 256
 
 
 def _normalize_pressure(value: int) -> float:
