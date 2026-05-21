@@ -25,6 +25,7 @@ There are no threading conflicts with asyncio.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from typing import TYPE_CHECKING, Optional
@@ -34,6 +35,8 @@ import numpy as np
 from petctl.perception.stroke import HoldDetector, StrokeDetector
 from petctl.protocols import Visualizer
 from petctl.types import RobotState
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
@@ -297,11 +300,11 @@ class RerunVisualizer(Visualizer):
             import rerun as rr
             self._rr = rr
         except ImportError:
-            print("[RerunVisualizer] rerun-sdk not installed. Run: pip install rerun-sdk")
+            logger.error("[RerunVisualizer] rerun-sdk not installed. Run: pip install rerun-sdk")
             return
 
         rr.init(self.app_name)
-        rr.spawn(memory_limit="256MiB")
+        rr.spawn(memory_limit="2GiB")
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         self._setup_overlay_geometry(rr)
@@ -699,7 +702,7 @@ class RerunVisualizer(Visualizer):
 
     def _load_assembly(self) -> None:
         if not os.path.isfile(self.assembly_file):
-            print(f"[RerunVisualizer] Assembly file not found: {self.assembly_file}")
+            logger.warning("[RerunVisualizer] Assembly file not found: %s", self.assembly_file)
             return
         with open(self.assembly_file) as f:
             data = json.load(f)
@@ -736,7 +739,7 @@ class RerunVisualizer(Visualizer):
             for mod in self._module_meta
         }
 
-        print(f"[RerunVisualizer] Loaded assembly with {len(self._module_meta)} modules")
+        logger.info("[RerunVisualizer] Loaded assembly with %d modules", len(self._module_meta))
 
     def _fk_to_module(self, mod_id: int, state: RobotState) -> tuple[np.ndarray, np.ndarray]:
         """Cumulative FK position and rotation of mod_id in robot-local space."""
@@ -753,7 +756,7 @@ class RerunVisualizer(Visualizer):
         """Log static OBJ mesh for each module (once, time-independent)."""
         rr = self._rr
         if not self._module_meta:
-            print("[RerunVisualizer] No assembly data — skipping 3D geometry")
+            logger.warning("[RerunVisualizer] No assembly data — skipping 3D geometry")
             return
 
         for mod in self._module_meta:
@@ -763,7 +766,7 @@ class RerunVisualizer(Visualizer):
             model_filename = mod.get("model", "")
             obj_path = os.path.join(self.models_dir, model_filename)
             if not os.path.isfile(obj_path):
-                print(f"[RerunVisualizer] Model not found: {obj_path}")
+                logger.warning("[RerunVisualizer] Model not found: %s", obj_path)
                 rr.log(mesh_path, rr.Boxes3D(
                     half_sizes=[[3.5, 3.5, 3.59]],
                     colors=[[250, 245, 217, 220]],
