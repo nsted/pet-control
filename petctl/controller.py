@@ -62,6 +62,8 @@ _CONTACT_LABELS: dict[str, str] = {
     "wrench":   "WRENCH  ",
 }
 
+_STROKE_END_GRACE_S: float = 0.45  # don't fire end until stroke absent this long
+
 
 class _TouchLogger:
     """Runs stroke/hold/contact detection every tick and prints transitions."""
@@ -74,6 +76,10 @@ class _TouchLogger:
         self._clf = ContactClassifier()
         self._prev: str | None = None
         self._prev_direction: str | None = None
+        self._stroke_last_t: float | None = None
+        self._stroke_start_centroid: float | None = None
+        self._stroke_last_centroid: float | None = None
+        self._stroke_last_speed: float = 0.0
 
     def update(self, state: RobotState) -> None:
         stroke = self._stroke.update(state)
@@ -81,37 +87,60 @@ class _TouchLogger:
 
         if stroke is not None:
             curr = "stroke"
-            arrow = "→" if stroke.direction == "head_to_tail" else "←"
             if curr != self._prev:
+                self._stroke_start_centroid = stroke.centroid
                 self._transition(self._prev, curr,
-                    f"{arrow}  speed={stroke.speed:.1f} mod/s"
-                    f"  centroid={stroke.centroid:.1f}"
-                    f"  side={stroke.side}"
-                    f"  conf={stroke.confidence:.2f}")
-            elif stroke.direction != self._prev_direction:
-                logger.info("[STROKE  ] dir %s  centroid=%.1f  side=%s",
-                    arrow, stroke.centroid, stroke.side)
+                    f"centroid={stroke.centroid:.1f}  side={stroke.side}")
             self._prev = curr
             self._prev_direction = stroke.direction
+            self._stroke_last_t = state.timestamp
+            self._stroke_last_centroid = stroke.centroid
+            self._stroke_last_speed = stroke.speed
             self._clf.reset()
             return
 
+        # Grace period: a brief hold/squeeze or no-touch gap doesn't end a stroke.
+        if self._prev == "stroke" and self._stroke_last_t is not None:
+            if state.timestamp - self._stroke_last_t < _STROKE_END_GRACE_S:
+                return
+
         if hold is None:
             if self._prev is not None:
-                logger.info("[%s] end", _CONTACT_LABELS.get(self._prev, self._prev.upper()[:8]))
+                if self._prev == "stroke" and self._stroke_start_centroid is not None:
+                    s, e = self._stroke_start_centroid, self._stroke_last_centroid
+                    arrow = "→" if e > s else "←"
+                    logger.info("[STROKE  ] end  %s from=%.1f to=%.1f  speed=%.1f mod/s",
+                        arrow, s, e, self._stroke_last_speed)
+                else:
+                    logger.info("[%s] end", _CONTACT_LABELS.get(self._prev, self._prev.upper()[:8]))
             self._prev = None
             self._prev_direction = None
+            self._stroke_last_t = None
+            self._stroke_start_centroid = None
+            self._stroke_last_centroid = None
+            self._stroke_last_speed = 0.0
             self._clf.reset()
             return
 
         cr = self._clf.classify(hold, state)
         curr = cr.contact_type.value
         if curr != self._prev:
+            prev_for_transition = self._prev
+            if self._prev == "stroke" and self._stroke_start_centroid is not None:
+                s, e = self._stroke_start_centroid, self._stroke_last_centroid
+                arrow = "→" if e > s else "←"
+                logger.info("[STROKE  ] end  %s from=%.1f to=%.1f  speed=%.1f mod/s",
+                    arrow, s, e, self._stroke_last_speed)
+                prev_for_transition = None
+            self._stroke_start_centroid = None
+            self._stroke_last_centroid = None
+            self._stroke_last_speed = 0.0
+            self._stroke_last_t = None
             blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
             servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
             torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
             pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-            self._transition(self._prev, curr,
+            self._transition(prev_for_transition, curr,
                 f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
         self._prev = curr
 

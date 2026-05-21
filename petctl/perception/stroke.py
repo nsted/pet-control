@@ -21,6 +21,7 @@ TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grou
 VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
+TOUCH_GAP_GRACE_S: float = 0.25  # don't clear velocity window during brief inter-module gaps
 
 # ---------------------------------------------------------------------------
 # Pad adjacency tables
@@ -107,15 +108,21 @@ class StrokeDetector:
 
     def __init__(self) -> None:
         self._window: deque[tuple[float, float]] = deque(maxlen=WINDOW_FRAMES)
+        self._last_touch_t: float | None = None
 
     def update(self, state: RobotState) -> StrokeReading | None:
         """Process one tick of RobotState. Returns StrokeReading or None."""
         centroid, intensity = _pad_centroid(state)
 
         if centroid is None:
-            self._window.clear()
+            if (self._last_touch_t is None or
+                    state.timestamp - self._last_touch_t >= TOUCH_GAP_GRACE_S):
+                self._window.clear()
+                self._last_touch_t = None
+            # else: brief inter-module gap — keep window so velocity fit survives
             return None
 
+        self._last_touch_t = state.timestamp
         self._window.append((state.timestamp, centroid))
 
         if len(self._window) < MIN_WINDOW_FRAMES:
