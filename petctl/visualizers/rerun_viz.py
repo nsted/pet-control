@@ -304,7 +304,7 @@ class RerunVisualizer(Visualizer):
             return
 
         rr.init(self.app_name)
-        rr.spawn(memory_limit="2GiB")
+        rr.spawn(memory_limit="512MiB")
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         self._setup_overlay_geometry(rr)
