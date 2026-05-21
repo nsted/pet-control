@@ -61,18 +61,25 @@ class PowerThresholds:
     temp_hysteresis_recovery_c: float = 50.0
     temp_hysteresis_cooldown_s: float = 30.0
 
-    # --- Voltage ---
-    voltage_low_warning_v: float = 12.0
-    voltage_critical_low_v: float = 10.5
+    # --- Voltage (tuned for 3S LiPo: full=12.6 V, nominal=11.1 V) ---
+    voltage_low_warning_v: float = 10.8    # 3.6 V/cell
+    voltage_critical_low_v: float = 10.2   # 3.4 V/cell
     voltage_spike_threshold_v: float = 16.0
     voltage_spike_rate_window_s: float = 60.0
     voltage_spike_rate_emergency_count: int = 5
     voltage_absolute_emergency_v: float = 30.0
 
     # --- ADC sanity (applied before median filter and spike detection) ---
-    voltage_sanity_min_v: float = 0.0
+    # 5 V floor rejects pre-sensor startup garbage (e.g. 2.15 V before the
+    # head board ADC initialises) that would otherwise fill the median window.
+    voltage_sanity_min_v: float = 5.0
     voltage_sanity_max_v: float = 40.0
     voltage_median_window: int = 5
+
+    # --- Low-voltage confirmation: require this many consecutive filtered
+    #     readings below threshold before transitioning to WARNING or triggering
+    #     CRITICAL_LOW emergency.  Suppresses single-sample noise.
+    voltage_low_consec_required: int = 3
 
 
 @dataclass
@@ -107,6 +114,9 @@ class PowerManager:
         )
         self._voltage_filtered: Optional[float] = None
         self._voltage_state: VoltageState = VoltageState.NORMAL
+
+        # Consecutive below-threshold counter (reset when voltage recovers)
+        self._voltage_low_consec: int = 0
 
         # Spike tracking
         self._spike_times: collections.deque[float] = collections.deque()
@@ -182,20 +192,24 @@ class PowerManager:
 
         v = self._voltage_filtered
 
-        if v < t.voltage_critical_low_v:
-            self._trigger_global_emergency(
-                f"voltage_critical_low: {v:.2f}V < {t.voltage_critical_low_v}V"
-            )
-        elif v < t.voltage_low_warning_v:
-            if self._voltage_state not in (VoltageState.LOW_WARNING,):
-                self._log_event(
-                    f"voltage_low_warning: {v:.2f}V < {t.voltage_low_warning_v}V"
-                )
-            self._voltage_state = VoltageState.LOW_WARNING
+        if v < t.voltage_low_warning_v:
+            self._voltage_low_consec += 1
         else:
+            self._voltage_low_consec = 0
             if self._voltage_state == VoltageState.LOW_WARNING:
                 self._log_event(f"voltage_normal: {v:.2f}V")
             self._voltage_state = VoltageState.NORMAL
+
+        if self._voltage_low_consec >= t.voltage_low_consec_required:
+            if v < t.voltage_critical_low_v:
+                self._trigger_global_emergency(
+                    f"voltage_critical_low: {v:.2f}V < {t.voltage_critical_low_v}V"
+                )
+            elif self._voltage_state != VoltageState.LOW_WARNING:
+                self._log_event(
+                    f"voltage_low_warning: {v:.2f}V < {t.voltage_low_warning_v}V"
+                )
+                self._voltage_state = VoltageState.LOW_WARNING
 
     # ------------------------------------------------------------------
     # Thermal protection
@@ -408,6 +422,7 @@ class PowerManager:
         else:
             self._voltage_state = VoltageState.NORMAL
         self._spike_times.clear()
+        self._voltage_low_consec = 0
         self._log_event("operator_reset: system re-enabled")
         logger.info("[PowerManager] Operator reset: system running")
         return True

@@ -6,7 +6,7 @@ Controls:
   ↑ / ↑      Increase angle by step_deg
   ↓ / ↓      Decrease angle by step_deg
   r          Reset all servos to 0°
-  Cmd+`      Save current positions as EEPROM home
+  Cmd+Shift+H  Save current positions as EEPROM home
   q / Esc    Request controller shutdown
 
 Uses pynput for cross-platform keyboard capture in a background thread,
@@ -79,7 +79,7 @@ class KeyboardControlScheme(ControlScheme):
         self._start_listener()
         print(
             "[Keyboard] Ready.\n"
-            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+`: save home  |  Shift+K: toggle sensor labels  |  q/Esc: quit"
+            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+Shift+H: save home  |  Shift+K: toggle sensor labels  |  q/Esc: quit"
         )
 
     # Seconds to keep re-issuing position commands after the last key press.
@@ -159,7 +159,7 @@ class KeyboardControlScheme(ControlScheme):
             return dict(self._angles)
 
     def take_save_home(self) -> bool:
-        """Consume and return the save-home request flag (set by Cmd+` key).
+        """Consume and return the save-home request flag (set by Cmd+Shift+H key).
 
         Returns True exactly once per key event; subsequent calls return False.
         Also resets internal angle targets to 0 so the scheme commands the new
@@ -213,7 +213,7 @@ class KeyboardControlScheme(ControlScheme):
                     if char in ("r", "R"):
                         self._reset_requested = True
                         return
-                    if char == "`" and self._cmd_held:
+                    if char == "H" and self._cmd_held:
                         self._save_home_requested = True
                         return
                     if char == "K":   # Shift+K
