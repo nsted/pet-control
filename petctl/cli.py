@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import sys
 from typing import Optional
 
@@ -232,6 +233,11 @@ def info(
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s.%(msecs)03d  %(message)s",
+        datefmt="%H:%M:%S",
+    )
     app()
 
 

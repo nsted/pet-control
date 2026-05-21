@@ -38,18 +38,20 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import queue
 import signal
 import threading
 import time
-from datetime import datetime
 from typing import Optional
 
 from petctl.config import LOOP_LIMITS
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState, ServoCommand
+
+logger = logging.getLogger(__name__)
 
 
 _CONTACT_LABELS: dict[str, str] = {
@@ -71,10 +73,7 @@ class _TouchLogger:
         self._hold = HoldDetector()
         self._clf = ContactClassifier()
         self._prev: str | None = None
-
-    @staticmethod
-    def _ts() -> str:
-        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self._prev_direction: str | None = None
 
     def update(self, state: RobotState) -> None:
         stroke = self._stroke.update(state)
@@ -82,21 +81,26 @@ class _TouchLogger:
 
         if stroke is not None:
             curr = "stroke"
+            arrow = "→" if stroke.direction == "head_to_tail" else "←"
             if curr != self._prev:
-                arrow = "→" if stroke.direction == "head_to_tail" else "←"
                 self._transition(self._prev, curr,
                     f"{arrow}  speed={stroke.speed:.1f} mod/s"
                     f"  centroid={stroke.centroid:.1f}"
                     f"  side={stroke.side}"
                     f"  conf={stroke.confidence:.2f}")
+            elif stroke.direction != self._prev_direction:
+                logger.info("[STROKE  ] dir %s  centroid=%.1f  side=%s",
+                    arrow, stroke.centroid, stroke.side)
             self._prev = curr
+            self._prev_direction = stroke.direction
             self._clf.reset()
             return
 
         if hold is None:
             if self._prev is not None:
-                print(f"{self._ts()}  [{_CONTACT_LABELS.get(self._prev, self._prev.upper()[:8])}] end")
+                logger.info("[%s] end", _CONTACT_LABELS.get(self._prev, self._prev.upper()[:8]))
             self._prev = None
+            self._prev_direction = None
             self._clf.reset()
             return
 
@@ -112,10 +116,9 @@ class _TouchLogger:
         self._prev = curr
 
     def _transition(self, prev: str | None, curr: str, details: str) -> None:
-        ts = self._ts()
         if prev is not None:
-            print(f"{ts}  [{_CONTACT_LABELS.get(prev, prev.upper()[:8])}] end")
-        print(f"{ts}  [{_CONTACT_LABELS.get(curr, curr.upper()[:8])}] start  {details}")
+            logger.info("[%s] end", _CONTACT_LABELS.get(prev, prev.upper()[:8]))
+        logger.info("[%s] start  %s", _CONTACT_LABELS.get(curr, curr.upper()[:8]), details)
 
 
 class Controller:
@@ -228,14 +231,14 @@ class Controller:
 
         Runs until stop() is called or a KeyboardInterrupt is received.
         """
-        print(f"[Controller] Connecting via {self.backend.__class__.__name__}...")
+        logger.info("[Controller] Connecting via %s...", self.backend.__class__.__name__)
         ok = await self.backend.connect()
         if not ok:
-            print("[Controller] Backend failed to connect. Exiting.")
+            logger.error("[Controller] Backend failed to connect. Exiting.")
             return
 
         if self.limp:
-            print("[Controller] Limp mode: disabling torques — move joints freely by hand.")
+            logger.info("[Controller] Limp mode: disabling torques — move joints freely by hand.")
             await self.backend.disable_torques()
 
         self._running = True
@@ -247,7 +250,7 @@ class Controller:
         for viz in self.visualizers:
             viz.on_start(self)
 
-        print("[Controller] Running. Press Ctrl-C to stop.")
+        logger.info("[Controller] Running. Press Ctrl-C to stop.")
 
         # Install signal handlers so Ctrl-C triggers graceful shutdown
         loop = asyncio.get_running_loop()
@@ -330,28 +333,28 @@ class Controller:
                 try:
                     await self.backend.disable_torques()
                 except Exception as e:
-                    print(f"[Controller] Emergency disable_torques error: {e}")
+                    logger.error("[Controller] Emergency disable_torques error: %s", e)
             elif disable_ids:
                 for _mid in disable_ids:
                     try:
                         await self.backend.disable_motor(_mid)
                     except Exception as e:
-                        print(f"[Controller] disable_motor({_mid}) error: {e}")
+                        logger.error("[Controller] disable_motor(%d) error: %s", _mid, e)
             self._state.power_telemetry = pm.get_telemetry(self._state.battery_voltage_v)
 
             # Handle operator power-reset request
             if self._power_reset_requested:
                 self._power_reset_requested = False
                 if pm.operator_reset():
-                    print("[Controller] Power manager reset: system re-enabled.")
+                    logger.info("[Controller] Power manager reset: system re-enabled.")
                 else:
-                    print("[Controller] Power manager reset denied: conditions not safe.")
+                    logger.warning("[Controller] Power manager reset denied: conditions not safe.")
 
             # 2. Run control scheme
             try:
                 commands = self.scheme.update(self._state)
             except Exception as e:
-                print(f"[Controller] Scheme '{self.scheme.name}' error: {e}")
+                logger.error("[Controller] Scheme '%s' error: %s", self.scheme.name, e)
                 commands = []
 
             if self._touch_logger is not None:
@@ -383,19 +386,19 @@ class Controller:
                     try:
                         await self.backend.send_commands(safe_commands)
                     except Exception as e:
-                        print(f"[Controller] Backend send_commands error: {e}")
+                        logger.error("[Controller] Backend send_commands error: %s", e)
 
             # 3b. Save-home: write EEPROM offsets so current position reports as 0
             take_save_home = getattr(self.scheme, "take_save_home", None)
             if take_save_home is not None and take_save_home():
-                print("[Controller] Saving home offsets...")
+                logger.info("[Controller] Saving home offsets...")
                 try:
                     await self.backend.write_home_offsets()
                     # Clear slew state so the filter doesn't hold pre-home positions.
                     self._slew_last_sent_rad.clear()
-                    print("[Controller] Home saved — positions reset to 0.")
+                    logger.info("[Controller] Home saved — positions reset to 0.")
                 except Exception as e:
-                    print(f"[Controller] write_home_offsets error: {e}")
+                    logger.error("[Controller] write_home_offsets error: %s", e)
 
             # 4. Hand latest state to the viz thread; drop if the previous frame
             # hasn't been consumed yet (Rerun backed up → never stall the loop).
@@ -416,14 +419,14 @@ class Controller:
                 sids = sorted(self._state.servo_positions)
                 if sids:
                     header = f"{'id':>3}  {'pos°':>8}  {'vel r/s':>8}  {'torq Nm':>8}  {'temp°C':>7}  {'err':>4}"
-                    print(f"[MIT]\n{header}")
+                    logger.info("[MIT]\n%s", header)
                     for sid in sids:
                         p = math.degrees(self._state.servo_positions.get(sid, 0.0))
                         v = self._state.motor_velocities.get(sid, 0.0)
                         t = self._state.motor_torques.get(sid, 0.0)
                         tmp = self._state.motor_temperatures.get(sid, 0)
                         err = self._state.motor_err_codes.get(sid, 0)
-                        print(f"  {sid:>3}  {p:>8.2f}  {v:>8.3f}  {t:>8.3f}  {tmp:>7}  {err:>4}")
+                        logger.info("  %3d  %8.2f  %8.3f  %8.3f  %7s  %4s", sid, p, v, t, tmp, err)
                 self._last_pos_print = now
 
             # 7. Yield to motor TX, sensor, and receive tasks.
@@ -441,7 +444,7 @@ class Controller:
                 try:
                     viz.update(state)
                 except Exception as e:
-                    print(f"[Controller] Visualizer {viz.name} error: {e}")
+                    logger.error("[Controller] Visualizer %s error: %s", viz.name, e)
 
     def _print_stats(self, now: float) -> None:
         """Print loop timing stats and reset the accumulator.
@@ -457,13 +460,13 @@ class Controller:
         min_ms  = min(times) * 1000
         max_ms  = max(times) * 1000
         hz      = 1000.0 / mean_ms if mean_ms > 0 else 0.0
-        print(f"[loop] {hz:.1f} Hz  (min {min_ms:.0f} ms  mean {mean_ms:.0f} ms  max {max_ms:.0f} ms)  n={n}")
+        logger.info("[loop] %.1f Hz  (min %.0f ms  mean %.0f ms  max %.0f ms)  n=%d", hz, min_ms, mean_ms, max_ms, n)
         self._loop_times = []
         self._last_stats_print = now
 
     async def _shutdown(self) -> None:
         self._running = False
-        print("\n[Controller] Shutting down...")
+        logger.info("[Controller] Shutting down...")
         self.scheme.on_stop()
         # Signal the viz worker and wait briefly. If Rerun's channel is backed
         # up the thread may still be blocked in rr.log(); the daemon flag ensures
@@ -474,4 +477,4 @@ class Controller:
             viz.on_stop()
         await self.backend.disable_torques()
         await self.backend.disconnect()
-        print("[Controller] Done.")
+        logger.info("[Controller] Done.")

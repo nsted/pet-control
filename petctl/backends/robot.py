@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import itertools
+import logging
 import os
 import socket
 import time
@@ -15,6 +16,8 @@ import websockets
 from petctl.config import LOOP_LIMITS, MOTOR_LIMITS, SENSOR_LIMITS
 from petctl.protocols import RobotBackend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
+
+logger = logging.getLogger(__name__)
 
 # Default connection parameters (also imported by cli.py to keep a single source of truth)
 ROBOT_DEFAULT_HOST = "pet-robot.local"
@@ -108,6 +111,7 @@ class RobotBackend(_BackendBase):
         self._cap_filter: dict[int, dict[str, list[collections.deque]]] = {}
         self._latest_battery_current_raw: int = 0
         self._latest_battery_voltage_raw: int = 0
+        self._disabled_motor_ids: set[int] = set()
 
         # Monotonic timestamp of the last WS message received from the robot.
         # Used by _motor_tx_loop to detect silent TCP drops (no WS close frame).
@@ -122,7 +126,7 @@ class RobotBackend(_BackendBase):
     async def connect(self) -> bool:
         ip = await self._resolve_host()
         if not ip:
-            print(f"[RobotBackend] Could not resolve {self.host}")
+            logger.error("[RobotBackend] Could not resolve %s", self.host)
             return False
         self._resolved_ip = ip
         return await self._connect_with_ip(ip)
@@ -201,7 +205,7 @@ class RobotBackend(_BackendBase):
             return state
 
         except Exception as e:
-            print(f"[RobotBackend] get_state error: {e}")
+            logger.error("[RobotBackend] get_state error: %s", e)
             return RobotState(
                 timestamp=time.monotonic(),
                 sensors=self._last_state.sensors,
@@ -287,7 +291,7 @@ class RobotBackend(_BackendBase):
         if self._resolved_ip:
             return self._resolved_ip
 
-        print(f"[RobotBackend] Resolving {self.host}...")
+        logger.info("[RobotBackend] Resolving %s...", self.host)
         loop = asyncio.get_running_loop()
         try:
             infos = await asyncio.wait_for(
@@ -299,25 +303,25 @@ class RobotBackend(_BackendBase):
             )
             if infos:
                 ip = infos[0][4][0]
-                print(f"[RobotBackend] Resolved to {ip}")
+                logger.info("[RobotBackend] Resolved to %s", ip)
                 return ip
         except (asyncio.TimeoutError, OSError) as e:
-            print(f"[RobotBackend] Resolution failed: {e}")
+            logger.warning("[RobotBackend] Resolution failed: %s", e)
         return None
 
     async def _connect_with_ip(self, ip: str, *, _is_reconnect: bool = False) -> bool:
         uri = f"ws://{ip}:{self.port}"
-        print(f"[RobotBackend] Connecting to {uri}...")
+        logger.info("[RobotBackend] Connecting to %s...", uri)
         try:
             self._ws = await asyncio.wait_for(
                 websockets.connect(uri, ping_interval=None),
                 timeout=10.0,
             )
         except asyncio.TimeoutError:
-            print("[RobotBackend] Connection timed out")
+            logger.warning("[RobotBackend] Connection timed out")
             return False
         except Exception as e:
-            print(f"[RobotBackend] Connect failed: {e}")
+            logger.warning("[RobotBackend] Connect failed: %s", e)
             return False
 
         self._receive_task = asyncio.create_task(self._receive_loop())
@@ -331,17 +335,17 @@ class RobotBackend(_BackendBase):
         slcan_preopened = False
         ok = await _numbered_ping_ok()
         if not ok:
-            print("[RobotBackend] Numbered ping failed; opening SLCAN (S8/O) then retrying...")
+            logger.info("[RobotBackend] Numbered ping failed; opening SLCAN (S8/O) then retrying...")
             await self._ws.send("S8")
             await self._ws.send("O")
             await asyncio.sleep(0.05)
             slcan_preopened = True
             ok = await _numbered_ping_ok()
         if not ok:
-            print("[RobotBackend] Retrying with bare text \"ping\" (expect line \"pong\")...")
+            logger.info("[RobotBackend] Retrying with bare text \"ping\" (expect line \"pong\")...")
             ok = await self._try_bare_ping(timeout=2.5)
         if not ok:
-            print(
+            logger.error(
                 "[RobotBackend] Text handshake failed — no reply to numbered ping. "
                 "grapple-arduino normally sends \"<id>:\" (empty body). "
                 "Optional: bare \"pong\" after \"ping\". "
@@ -355,12 +359,14 @@ class RobotBackend(_BackendBase):
             await self._ws.send("O")
             await asyncio.sleep(0.05)
 
+        self._disabled_motor_ids.clear()
+
         if _is_reconnect and self._discovered_modules and self._discovered_motors:
             # Reuse previously discovered topology — skip the 1-second motor scan and
             # re-calibration so home offsets stay valid across a transient drop.
-            print(
-                f"[RobotBackend] Reconnect: reusing modules={self._discovered_modules} "
-                f"motors={self._discovered_motors}"
+            logger.info(
+                "[RobotBackend] Reconnect: reusing modules=%s motors=%s",
+                self._discovered_modules, self._discovered_motors,
             )
             for mid in self._discovered_motors:
                 await self._ws.send(_encode_mit_enable(mid))
@@ -370,7 +376,7 @@ class RobotBackend(_BackendBase):
 
             if self._configured_motor_ids is not None:
                 self._discovered_motors = list(self._configured_motor_ids)
-                print(f"[RobotBackend] Using fixed motor IDs (--motors): {self._discovered_motors}")
+                logger.info("[RobotBackend] Using fixed motor IDs (--motors): %s", self._discovered_motors)
                 for mid in self._discovered_motors:
                     await self._ws.send(_encode_mit_enable(mid))
                 await asyncio.sleep(0.5)
@@ -388,7 +394,7 @@ class RobotBackend(_BackendBase):
         self._motor_tx_task = asyncio.create_task(self._motor_tx_loop())
         self._sensor_task = asyncio.create_task(self._sensor_loop())
 
-        print("[RobotBackend] Connected (text channel + SLCAN OK)")
+        logger.info("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
 
     # ------------------------------------------------------------------
@@ -452,12 +458,12 @@ class RobotBackend(_BackendBase):
         after = set(self._motor_state.keys())
         discovered = sorted(after - before)
         if not discovered:
-            print(
+            logger.warning(
                 "[RobotBackend] No motor CAN feedback during discovery; defaulting to IDs 1–7. "
                 "For a partial bench (e.g. only motor 1), pass --motors 1."
             )
             return list(range(1, 8))
-        print(f"[RobotBackend] Discovered motors: {discovered}")
+        logger.info("[RobotBackend] Discovered motors: %s", discovered)
         return discovered
 
     # ------------------------------------------------------------------
@@ -552,9 +558,9 @@ class RobotBackend(_BackendBase):
 
                 # RX watchdog — detect silent TCP drops.
                 if self._last_rx_time > 0 and t0 - self._last_rx_time > _RX_SILENCE_TIMEOUT:
-                    print(
-                        f"[RobotBackend] No message received in "
-                        f"{t0 - self._last_rx_time:.1f}s — connection silent, reconnecting."
+                    logger.warning(
+                        "[RobotBackend] No message received in %.1fs — connection silent, reconnecting.",
+                        t0 - self._last_rx_time,
                     )
                     self._connected = False
                     if self.auto_reconnect and not self._reconnecting:
@@ -568,14 +574,17 @@ class RobotBackend(_BackendBase):
                 if self._ws is not None:
                     frames = []
                     for mid in ids:
+                        if mid in self._disabled_motor_ids:
+                            continue
                         frame = (
                             self._pending_frames.pop(mid, None)
                             or self._last_sent_frames.get(mid, _encode_mit_zero(mid))
                         )
                         self._last_sent_frames[mid] = frame
                         frames.append(frame)
-                    async with self._ws_send_lock:
-                        await self._ws.send("\n".join(frames))
+                    if frames:
+                        async with self._ws_send_lock:
+                            await self._ws.send("\n".join(frames))
 
                 elapsed = time.monotonic() - t0
                 remaining = period - elapsed
@@ -583,10 +592,9 @@ class RobotBackend(_BackendBase):
                     await asyncio.sleep(remaining)
                 else:
                     await asyncio.sleep(0)  # yield to event loop even on overrun
-                    print(
-                        f"[RobotBackend] {time.strftime('%H:%M:%S')} "
-                        f"Motor TX overrun: {elapsed*1000:.1f}ms "
-                        f"(budget {period*1000:.1f}ms)"
+                    logger.warning(
+                        "[RobotBackend] Motor TX overrun: %.1fms (budget %.1fms)",
+                        elapsed * 1000, period * 1000,
                     )
 
             except asyncio.CancelledError:
@@ -596,7 +604,7 @@ class RobotBackend(_BackendBase):
             except Exception as e:
                 if not self._connected:
                     break
-                print(f"[RobotBackend] Motor TX loop error: {e}")
+                logger.error("[RobotBackend] Motor TX loop error: %s", e)
                 await asyncio.sleep(0.01)
 
     def _apply_cap_filter(self, sensors: dict[int, ModuleSensors]) -> dict[int, ModuleSensors]:
@@ -638,9 +646,10 @@ class RobotBackend(_BackendBase):
         while self._connected:
             try:
                 if sensor_failures >= _FAIL_THRESHOLD:
-                    print(
-                        f"[RobotBackend] Sensor read failed {sensor_failures}× — backing off "
-                        "and retrying (motor TX + RX watchdog will catch a dead connection)."
+                    logger.warning(
+                        "[RobotBackend] Sensor read failed %d× — backing off and retrying "
+                        "(motor TX + RX watchdog will catch a dead connection).",
+                        sensor_failures,
                     )
                     sensor_failures = 0
                     await asyncio.sleep(2.0)
@@ -670,7 +679,7 @@ class RobotBackend(_BackendBase):
             except Exception as e:
                 if not self._connected:
                     break
-                print(f"[RobotBackend] Sensor loop error: {e}")
+                logger.error("[RobotBackend] Sensor loop error: %s", e)
                 await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
@@ -693,7 +702,7 @@ class RobotBackend(_BackendBase):
         if self._ws is None:
             return
         ids = self._discovered_motors or list(range(1, 8))
-        print(f"[RobotBackend] Writing hardware zero to motor(s) {ids}...")
+        logger.info("[RobotBackend] Writing hardware zero to motor(s) %s...", ids)
         for mid in ids:
             async with self._ws_send_lock:
                 await self._ws.send(_encode_mit_set_zero(mid))
@@ -705,7 +714,7 @@ class RobotBackend(_BackendBase):
         now = time.monotonic()
         self._last_mit_abs_pos = {mid: 0.0 for mid in ids}
         self._last_mit_wall_s = {mid: now for mid in ids}
-        print(f"[RobotBackend] Hardware zero written — {len(ids)} motor(s) zeroed.")
+        logger.info("[RobotBackend] Hardware zero written — %d motor(s) zeroed.", len(ids))
 
     async def poll_positions(self) -> None:
         """Solicit a state reply from every motor.
@@ -730,6 +739,7 @@ class RobotBackend(_BackendBase):
             for mid in ids:
                 async with self._ws_send_lock:
                     await self._ws.send(_encode_mit_disable(mid))
+                self._disabled_motor_ids.add(mid)
         except Exception:
             pass
 
@@ -740,8 +750,13 @@ class RobotBackend(_BackendBase):
         try:
             async with self._ws_send_lock:
                 await self._ws.send(_encode_mit_disable(motor_id))
+            self._disabled_motor_ids.add(motor_id)
         except Exception:
             pass
+
+    async def enable_motor(self, motor_id: int) -> None:
+        """Remove a motor from the disabled set so the TX loop resumes sending to it."""
+        self._disabled_motor_ids.discard(motor_id)
 
     async def write_home_offsets(self) -> None:
         # Solicit a fresh frame so _motor_state is current, then write hardware zero.
@@ -784,14 +799,14 @@ class RobotBackend(_BackendBase):
             attempt = 0
             while not self._connected:
                 attempt += 1
-                print(f"[RobotBackend] Reconnect attempt {attempt}...")
+                logger.info("[RobotBackend] Reconnect attempt %d...", attempt)
                 try:
                     ip = self._resolved_ip or await self._resolve_host()
                     if ip and await self._connect_with_ip(ip, _is_reconnect=True):
-                        print("[RobotBackend] Reconnected.")
+                        logger.info("[RobotBackend] Reconnected.")
                         break
                 except Exception as e:
-                    print(f"[RobotBackend] Reconnect error: {e}")
+                    logger.error("[RobotBackend] Reconnect error: %s", e)
                 await asyncio.sleep(self.reconnect_delay)
         finally:
             self._reconnecting = False
@@ -803,11 +818,11 @@ class RobotBackend(_BackendBase):
             captured.append(mid)
         missing = sorted(set(self._discovered_motors) - set(captured))
         if missing:
-            print(f"[RobotBackend] set_home: no data yet for motor(s) {missing} — offsets unchanged")
+            logger.warning("[RobotBackend] set_home: no data yet for motor(s) %s — offsets unchanged", missing)
         if captured:
-            print(
-                "[RobotBackend] set_home: captured "
-                + "  ".join(f"{mid}:{self._angle_offsets[mid]:.4f}" for mid in sorted(captured))
+            logger.info(
+                "[RobotBackend] set_home: captured %s",
+                "  ".join(f"{mid}:{self._angle_offsets[mid]:.4f}" for mid in sorted(captured)),
             )
         # Seed ramp state from current physical positions so the first post-home command
         # doesn't snap. Motors with no data are dropped (old absolute coords are invalid).
@@ -841,9 +856,10 @@ class RobotBackend(_BackendBase):
                     if self._rx_binary_logged < 4:
                         self._rx_binary_logged += 1
                         preview = msg[:48].hex()
-                        print(
-                            f"[RobotBackend] Ignoring binary WS frame ({len(msg)} B), "
-                            f"hex[:48]={preview}… — firmware should use text for API."
+                        logger.warning(
+                            "[RobotBackend] Ignoring binary WS frame (%d B), "
+                            "hex[:48]=%s… — firmware should use text for API.",
+                            len(msg), preview,
                         )
                     continue
                 # One WS text frame may contain multiple lines (\n or \r\n).
@@ -852,7 +868,7 @@ class RobotBackend(_BackendBase):
                     if not line:
                         continue
                     if os.environ.get("PETCTL_ROBOT_TRACE"):
-                        print(f"[RobotBackend] << {line[:240]!r}")
+                        logger.info("[RobotBackend] << %r", line[:240])
                     if line.startswith(("t", "T")):
                         self._handle_slcan_frame(line)
                     elif line[0].isdigit():
@@ -866,11 +882,11 @@ class RobotBackend(_BackendBase):
                         continue
                     elif self._rx_unhandled_logged < 12:
                         self._rx_unhandled_logged += 1
-                        print(f"[RobotBackend] Unhandled text (sample): {line[:160]!r}")
+                        logger.warning("[RobotBackend] Unhandled text (sample): %r", line[:160])
         except asyncio.CancelledError:
             return
         except Exception as e:
-            print(f"[RobotBackend] WebSocket receive loop ended: {e!r}")
+            logger.error("[RobotBackend] WebSocket receive loop ended: %r", e)
         else:
             try:
                 code = self._ws.close_code if self._ws else None
@@ -878,7 +894,7 @@ class RobotBackend(_BackendBase):
                 detail = f" code={code} reason={reason!r}" if code is not None else ""
             except Exception:
                 detail = ""
-            print(f"[RobotBackend] WebSocket closed cleanly by server{detail}")
+            logger.info("[RobotBackend] WebSocket closed cleanly by server%s", detail)
         # Reach here on clean close OR exception (not CancelledError) — trigger reconnect.
         if self._connected:
             self._connected = False

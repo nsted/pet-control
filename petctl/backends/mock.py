@@ -42,6 +42,7 @@ JSON state file format (all fields optional):
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import random
@@ -50,6 +51,8 @@ from typing import Literal, Optional
 
 from petctl.protocols import RobotBackend
 from petctl.types import ModuleSensors, RobotState, ServoCommand
+
+logger = logging.getLogger(__name__)
 
 _PRESSURE_FIELDS = ("pressure_middle", "pressure_left", "pressure_right")
 
@@ -223,7 +226,7 @@ class MockBackend(RobotBackend):
                 self._file_data = json.load(f)
             self._file_mtime = os.path.getmtime(self.state_file)
         except (OSError, json.JSONDecodeError) as e:
-            print(f"[MockBackend] Could not load {self.state_file}: {e}")
+            logger.warning("[MockBackend] Could not load %s: %s", self.state_file, e)
 
     def _reload_file_if_changed(self) -> None:
         if not self.state_file or not os.path.isfile(self.state_file):

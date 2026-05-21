@@ -61,10 +61,10 @@ class PowerThresholds:
     temp_hysteresis_recovery_c: float = 50.0
     temp_hysteresis_cooldown_s: float = 30.0
 
-    # --- Voltage (tuned for 3S LiPo: full=12.6 V, nominal=11.1 V) ---
+    # --- Voltage (3S LiPo: full=12.6 V, nominal=11.1 V; or 15 V adapter) ---
     voltage_low_warning_v: float = 10.8    # 3.6 V/cell
     voltage_critical_low_v: float = 10.2   # 3.4 V/cell
-    voltage_spike_threshold_v: float = 16.0
+    voltage_spike_threshold_v: float = 18.0
     voltage_spike_rate_window_s: float = 60.0
     voltage_spike_rate_emergency_count: int = 5
     voltage_absolute_emergency_v: float = 30.0

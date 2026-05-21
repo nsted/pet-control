@@ -17,6 +17,7 @@ Press Ctrl-C to stop.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from typing import TYPE_CHECKING, Optional
@@ -26,6 +27,8 @@ from petctl.types import RobotState, ServoCommand
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
+
+logger = logging.getLogger(__name__)
 
 
 def compute_sine_positions(
@@ -76,7 +79,7 @@ class SineControlScheme(ControlScheme):
     def on_start(self, controller: "Controller") -> None:
         self._start_time = time.monotonic()
         target = f"servo {self.servo_id}" if self.servo_id is not None else "all servos"
-        print(f"[Sine] ±{self.amplitude_deg}° at {self.hz} Hz on {target}. Ctrl-C to stop.")
+        logger.info("[Sine] ±%.0f° at %.1f Hz on %s. Ctrl-C to stop.", self.amplitude_deg, self.hz, target)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         elapsed = time.monotonic() - self._start_time
