@@ -82,7 +82,7 @@ class KeyboardControlScheme(ControlScheme):
         self._start_listener()
         logger.info(
             "[Keyboard] Ready.\n"
-            "  0-8: select module  |  ↑/↓: adjust angle  |  r: reset  |  Cmd+Shift+H: save home  |  Shift+K: toggle sensor labels  |  Ctrl-C: quit"
+            "  0-8: select module  |  ↑/↓: adjust angle  |  Cmd+Shift+R: reset  |  Cmd+Shift+H: save home  |  Shift+K: toggle sensor labels  |  Ctrl-C: quit"
         )
 
     # Seconds to keep re-issuing position commands after the last key press.
@@ -212,7 +212,7 @@ class KeyboardControlScheme(ControlScheme):
                     if char and char.isdigit():
                         self._selected = int(char)
                         return
-                    if char in ("r", "R"):
+                    if char == "R" and self._cmd_held:
                         self._reset_requested = True
                         return
                     if char == "H" and self._cmd_held:
