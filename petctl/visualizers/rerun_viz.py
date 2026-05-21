@@ -513,7 +513,7 @@ class RerunVisualizer(Visualizer):
             )
 
     def toggle_pad_labels(self) -> None:
-        """Toggle visibility of the pad-ID label overlays (bound to Shift+K)."""
+        """Toggle visibility of the pad-ID label overlays (bound to Ctrl+Shift+L)."""
         rr = self._rr
         if rr is None or self._pad_centers_np is None:
             return

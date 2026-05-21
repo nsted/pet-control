@@ -2,12 +2,14 @@
 KeyboardControlScheme — control servos with the keyboard.
 
 Controls:
-  1-7        Select servo to control (key N → servo N)
-  ↑ / ↑      Increase angle by step_deg
-  ↓ / ↓      Decrease angle by step_deg
-  r          Reset all servos to 0°
-  Cmd+Shift+H  Save current positions as EEPROM home
-  Ctrl-C     Quit (SIGINT only — q/Esc do not quit)
+  Ctrl+Shift+K   Enable/disable module angle adjustment (disabled by default)
+  0-8            Select module (when adjustment enabled)
+  ↑ / ↓          Adjust selected module angle by step_deg (when adjustment enabled)
+  Ctrl+Shift+R   Reset all servos to 0°
+  Ctrl+Shift+H   Save current positions as EEPROM home
+  Ctrl+Shift+D   Deactivate all motors (exit MIT mode)
+  Ctrl+Shift+L   Toggle sensor pad labels in visualizer
+  Ctrl-C         Quit (SIGINT only — q/Esc do not quit)
 
 Uses pynput for cross-platform keyboard capture in a background thread,
 so it works from any terminal without requiring a GUI window.
@@ -62,6 +64,8 @@ class KeyboardControlScheme(ControlScheme):
         self._pending: dict[int, float] = {}
         self._reset_requested: bool = False
         self._save_home_requested: bool = False
+        self._deactivate_requested: bool = False
+        self._adjustment_enabled: bool = False
         self._lock = threading.Lock()
         # Timestamp of last key event that changed a motor target.
         # Position commands are re-issued for _SLEW_SETTLE_S after each key
@@ -71,7 +75,7 @@ class KeyboardControlScheme(ControlScheme):
 
         self._controller: Optional["Controller"] = None
         self._listener = None
-        self._cmd_held: bool = False
+        self._ctrl_held: bool = False
 
     # ------------------------------------------------------------------
     # ControlScheme interface
@@ -81,8 +85,8 @@ class KeyboardControlScheme(ControlScheme):
         self._controller = controller
         self._start_listener()
         logger.info(
-            "[Keyboard] Ready.\n"
-            "  0-8: select module  |  ↑/↓: adjust angle  |  Cmd+Shift+R: reset  |  Cmd+Shift+H: save home  |  Shift+K: toggle sensor labels  |  Ctrl-C: quit"
+            "[Keyboard] Ready (adjustment disabled).\n"
+            "  Ctrl+Shift+K: enable/disable adjustment  |  Ctrl+Shift+R: reset  |  Ctrl+Shift+H: save home  |  Ctrl+Shift+D: deactivate motors  |  Ctrl+Shift+L: toggle sensor labels  |  Ctrl-C: quit"
         )
 
     # Seconds to keep re-issuing position commands after the last key press.
@@ -163,7 +167,7 @@ class KeyboardControlScheme(ControlScheme):
             return dict(self._angles)
 
     def take_save_home(self) -> bool:
-        """Consume and return the save-home request flag (set by Cmd+Shift+H key).
+        """Consume and return the save-home request flag (set by Ctrl+Shift+H key).
 
         Returns True exactly once per key event; subsequent calls return False.
         Also resets internal angle targets to 0 so the scheme commands the new
@@ -177,6 +181,16 @@ class KeyboardControlScheme(ControlScheme):
                 # Do NOT set _reset_requested — that would emit position commands
                 # and activate motor torque.
                 self._angles.clear()
+        return val
+
+    def take_deactivate(self) -> bool:
+        """Consume and return the deactivate-motors request flag (set by Ctrl+Shift+D).
+
+        Returns True exactly once per key event; subsequent calls return False.
+        """
+        with self._lock:
+            val = self._deactivate_requested
+            self._deactivate_requested = False
         return val
 
     # ------------------------------------------------------------------
@@ -198,52 +212,72 @@ class KeyboardControlScheme(ControlScheme):
             logger.error("[Keyboard] pynput not installed. Run: pip install pynput")
             return
 
-        cmd_keys = frozenset({keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r})
+        ctrl_keys = frozenset({keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r})
 
         def on_press(key):
             toggle_labels = False
+            msg = None
             with self._lock:
-                if key in cmd_keys:
-                    self._cmd_held = True
+                if key in ctrl_keys:
+                    self._ctrl_held = True
                     return
 
                 # Character keys — select module, reset, or toggle
                 try:
                     char = key.char
                     if char and char.isdigit():
-                        self._selected = int(char)
+                        if self._adjustment_enabled:
+                            self._selected = int(char)
+                            msg = "module %s selected" % char
                         return
-                    if char == "R" and self._cmd_held:
+                    if char in ("K", "k") and self._ctrl_held:
+                        self._adjustment_enabled = not self._adjustment_enabled
+                        msg = "adjustment %s" % ("enabled" if self._adjustment_enabled else "disabled")
+                        return
+                    if char in ("R", "r") and self._ctrl_held:
                         self._reset_requested = True
+                        msg = "reset requested"
                         return
-                    if char == "H" and self._cmd_held:
+                    if char in ("H", "h") and self._ctrl_held:
                         self._save_home_requested = True
+                        msg = "save home requested"
                         return
-                    if char == "K":   # Shift+K
+                    if char in ("D", "d") and self._ctrl_held:
+                        self._deactivate_requested = True
+                        msg = "deactivate motors requested"
+                        return
+                    if char in ("L", "l") and self._ctrl_held:
                         toggle_labels = True
+                        msg = "toggle sensor labels"
                 except AttributeError:
                     pass
 
-                # Special keys
+                # Arrow keys — only active when adjustment is enabled
+                if not self._adjustment_enabled:
+                    return
                 if key == keyboard.Key.up:
                     self._pending[self._selected] = (
                         self._pending.get(self._selected, 0.0) + self.step_deg
                     )
                     self._last_key_time = time.monotonic()
+                    msg = "↑ module %d (+%.1f°)" % (self._selected, self.step_deg)
                 elif key == keyboard.Key.down:
                     self._pending[self._selected] = (
                         self._pending.get(self._selected, 0.0) - self.step_deg
                     )
                     self._last_key_time = time.monotonic()
+                    msg = "↓ module %d (-%.1f°)" % (self._selected, self.step_deg)
 
             # Dispatch actions outside the lock
+            if msg:
+                logger.info("[Keyboard] %s", msg)
             if toggle_labels:
                 self._dispatch_toggle_labels()
 
         def on_release(key):
-            if key in cmd_keys:
+            if key in ctrl_keys:
                 with self._lock:
-                    self._cmd_held = False
+                    self._ctrl_held = False
 
         self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         self._listener.daemon = True

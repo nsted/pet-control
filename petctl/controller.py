@@ -400,6 +400,16 @@ class Controller:
                 except Exception as e:
                     logger.error("[Controller] write_home_offsets error: %s", e)
 
+            # 3c. Deactivate: exit MIT mode on all motors
+            take_deactivate = getattr(self.scheme, "take_deactivate", None)
+            if take_deactivate is not None and take_deactivate():
+                logger.info("[Controller] Deactivating all motors...")
+                try:
+                    await self.backend.disable_torques()
+                    logger.info("[Controller] All motors deactivated.")
+                except Exception as e:
+                    logger.error("[Controller] disable_torques error: %s", e)
+
             # 4. Hand latest state to the viz thread; drop if the previous frame
             # hasn't been consumed yet (Rerun backed up → never stall the loop).
             if self.visualizers:
