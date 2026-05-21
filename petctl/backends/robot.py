@@ -90,6 +90,9 @@ class RobotBackend(_BackendBase):
         # TX task double-buffer: pending (latest from control loop) and last sent (for poll).
         self._pending_frames: dict[int, str] = {}
         self._last_sent_frames: dict[int, str] = {}
+        # Monotonic time of the last real position command for each motor.
+        # Used to revert to zero-torque after LOOP_LIMITS.idle_hold_s of inactivity.
+        self._last_command_time: dict[int, float] = {}
         # Two independent tasks: motor TX at motor_update_hz, sensor at _sensor_poll_hz.
         self._motor_tx_task: Optional[asyncio.Task] = None
         self._sensor_task: Optional[asyncio.Task] = None
@@ -576,10 +579,16 @@ class RobotBackend(_BackendBase):
                     for mid in ids:
                         if mid in self._disabled_motor_ids:
                             continue
-                        frame = (
-                            self._pending_frames.pop(mid, None)
-                            or self._last_sent_frames.get(mid, _encode_mit_zero(mid))
-                        )
+                        pending = self._pending_frames.pop(mid, None)
+                        if pending is not None:
+                            frame = pending
+                            self._last_command_time[mid] = t0
+                        else:
+                            idle_s = t0 - self._last_command_time.get(mid, 0.0)
+                            if idle_s <= LOOP_LIMITS.idle_hold_s:
+                                frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+                            else:
+                                frame = _encode_mit_zero(mid)
                         self._last_sent_frames[mid] = frame
                         frames.append(frame)
                     if frames:

@@ -126,6 +126,7 @@ class KeyboardControlScheme(ControlScheme):
             current = self._angles[mod]
             new_angle = current + delta
             self._angles[mod] = new_angle
+            logger.info("[Keyboard] servo %d: %.1f° → %.1f°", servo_id, current, new_angle)
 
         # Re-issue targets only while the slew filter is still settling.
         # Once quiet, the controller sends MIT enable frames and the motor holds

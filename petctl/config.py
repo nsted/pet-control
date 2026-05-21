@@ -57,6 +57,12 @@ class ControlLoopLimits:
     # so this only applies when the control scheme produces no output.
     idle_motor_poll_hz: float = 5.0
 
+    # Seconds after the last position command before the TX loop reverts a motor
+    # to zero-torque (idle) mode.  Prevents motors from holding position indefinitely
+    # after a scheme goes quiet.  Should be long enough for the slew filter to settle
+    # (command_smoothing_tau_s × ~5) plus a small margin.
+    idle_hold_s: float = 60.0
+
     # Background sensor poll rate (touch + FSR).
     sensor_poll_hz: float = 20.0
     sensor_poll_hz_min: float = 0.5
