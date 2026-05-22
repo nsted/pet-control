@@ -231,6 +231,8 @@ class RobotBackend(_BackendBase):
             if cmd.position is None:
                 continue
             sid = cmd.servo_id
+            if sid in self._disabled_motor_ids:
+                continue  # don't drift tracking state while motor is off
             p_target = cmd.position + self._angle_offsets.get(sid, 0.0)
             last_p = self._last_mit_abs_pos.get(sid)
             last_t = self._last_mit_wall_s.get(sid)
@@ -773,6 +775,11 @@ class RobotBackend(_BackendBase):
                     await self._ws.send(_encode_mit_enable(motor_id))
             except Exception:
                 pass
+        # Clear tracking so send_commands re-seeds from physical position on next call,
+        # preventing a snap if the motor drifted while torque was off.
+        self._last_mit_abs_pos.pop(motor_id, None)
+        self._last_mit_wall_s.pop(motor_id, None)
+        self._pending_frames.pop(motor_id, None)
         self._disabled_motor_ids.discard(motor_id)
 
     async def write_home_offsets(self) -> None:
