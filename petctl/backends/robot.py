@@ -766,7 +766,13 @@ class RobotBackend(_BackendBase):
             pass
 
     async def enable_motor(self, motor_id: int) -> None:
-        """Remove a motor from the disabled set so the TX loop resumes sending to it."""
+        """Send MIT enter-motor-mode and resume TX loop for a previously disabled motor."""
+        if self._ws is not None:
+            try:
+                async with self._ws_send_lock:
+                    await self._ws.send(_encode_mit_enable(motor_id))
+            except Exception:
+                pass
         self._disabled_motor_ids.discard(motor_id)
 
     async def write_home_offsets(self) -> None:
