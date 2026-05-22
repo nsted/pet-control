@@ -36,7 +36,6 @@ class PowerTelemetry:
     # Bus safety modulation (BusSafetyMonitor)
     bus_modulation_factor: float = 1.0
     bus_current_filtered_a: Optional[float] = None
-    bus_source_inference: str = "BATTERY"
 
 
 @dataclass

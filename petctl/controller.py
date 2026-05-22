@@ -47,7 +47,7 @@ import time
 from typing import Optional
 
 from petctl.bus_safety import BusSafetyMonitor
-from petctl.config import BUS_SAFETY, LOOP_LIMITS
+from petctl.config import LOOP_LIMITS
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState, ServoCommand
@@ -217,9 +217,6 @@ class Controller:
 
         # Last commanded position (rad) after slew — used to cap per-tick jumps.
         self._slew_last_sent_rad: dict[int, float] = {}
-        # Last commanded position (rad) after bus modulation — separate from slew
-        # so the slew filter always tracks the scheme target faithfully.
-        self._bus_mod_last_rad: dict[int, float] = {}
 
 
     # ------------------------------------------------------------------
@@ -241,10 +238,8 @@ class Controller:
         if self._running:
             self.scheme.on_stop()
         self.scheme = scheme
-        # Re-seed slew and bus-modulation filters from physical position on the
-        # first tick of the new scheme to avoid carrying over stale state.
+        # Re-seed slew filter from physical position on the first tick of the new scheme.
         self._slew_last_sent_rad.clear()
-        self._bus_mod_last_rad.clear()
         if self._running:
             scheme.on_start(self)
 
@@ -279,6 +274,10 @@ class Controller:
         if self.limp:
             logger.info("[Controller] Limp mode: disabling torques — move joints freely by hand.")
             await self.backend.disable_torques()
+
+        # Boot-time LVC check — quiescent voltage reading before motors spin up.
+        boot_state = await self.backend.get_state()
+        self.bus_safety_monitor.check_boot_voltage(boot_state.battery_voltage_v)
 
         self._running = True
         self._event_loop = asyncio.get_running_loop()
@@ -356,37 +355,6 @@ class Controller:
             cmd.position = prev + delta
             self._slew_last_sent_rad[sid] = cmd.position
 
-    def _apply_bus_modulation(
-        self,
-        commands: list[ServoCommand],
-        modulation_factor: float,
-        dt: float,
-    ) -> None:
-        """Cap per-tick velocity based on the current bus-safety modulation factor.
-
-        Runs after the slew filter so the slew filter always tracks the scheme's
-        true target. When modulation releases, the slew filter holds the correct
-        target and ramps smoothly toward it without relearning from a stale position.
-        """
-        lim = BUS_SAFETY
-        effective_vel_cap = (
-            lim.velocity_cap_floor_rad_s
-            + modulation_factor * (lim.velocity_cap_normal_rad_s - lim.velocity_cap_floor_rad_s)
-        )
-        max_delta = effective_vel_cap * dt
-        for cmd in commands:
-            if cmd.position is None:
-                continue
-            sid = cmd.servo_id
-            prev = self._bus_mod_last_rad.get(sid)
-            if prev is None:
-                prev = self._slew_last_sent_rad.get(sid, cmd.position)
-            delta = cmd.position - prev
-            if max_delta > 0.0:
-                delta = max(-max_delta, min(max_delta, delta))
-            cmd.position = prev + delta
-            self._bus_mod_last_rad[sid] = cmd.position
-
     async def _loop(self) -> None:
         assert self._stop_event is not None
         while not self._stop_event.is_set():
@@ -401,6 +369,9 @@ class Controller:
             pm.update(self._state, t0)
             try:
                 bsm.update(self._state, t0)
+                bsm.update_idle_voltage_check(
+                    self._state.battery_voltage_v, self._state.battery_current_amps, t0
+                )
             except Exception as e:
                 logger.error("[Controller] BusSafetyMonitor.update error: %s", e)
             disable_ids, is_global_emergency = pm.drain_disable_events()
@@ -446,10 +417,6 @@ class Controller:
 
             self._apply_slew_to_commands(commands)
 
-            # Apply bus-safety velocity cap (after slew so slew always tracks true target)
-            dt_bus = max(self._state.dt, 1e-3)
-            self._apply_bus_modulation(commands, bsm.modulation_factor, dt_bus)
-
             # 3. Send commands (unless dry run), filtered and scaled by PowerManager + bus safety
             if not self.dry_run and commands:
                 bus_scale = bsm.modulation_factor
@@ -479,9 +446,7 @@ class Controller:
                 logger.info("[Controller] Saving home offsets...")
                 try:
                     await self.backend.write_home_offsets()
-                    # Clear slew and bus-mod state so filters don't hold pre-home positions.
                     self._slew_last_sent_rad.clear()
-                    self._bus_mod_last_rad.clear()
                     logger.info("[Controller] Home saved — positions reset to 0.")
                 except Exception as e:
                     logger.error("[Controller] write_home_offsets error: %s", e)

@@ -413,7 +413,6 @@ class RerunVisualizer(Visualizer):
         for event in pt.events:
             rr.log("power/events", rr.TextLog(event))
         rr.log("power/bus/modulation_factor", rr.Scalars(pt.bus_modulation_factor))
-        rr.log("power/bus/source_inference", rr.TextLog(pt.bus_source_inference))
         if pt.bus_current_filtered_a is not None:
             rr.log("power/bus/current_filtered_a", rr.Scalars(pt.bus_current_filtered_a))
 
