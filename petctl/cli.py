@@ -123,6 +123,16 @@ def run(
         "--log-loop",
         help="Print control loop timing stats (Hz, min/mean/max ms) every 5s",
     ),
+    dev_ui: bool = typer.Option(
+        False,
+        "--dev-ui",
+        help="Serve pattern dev UI in browser (localhost:8765 by default)",
+    ),
+    ui_port: int = typer.Option(
+        8765,
+        "--ui-port",
+        help="Port for the dev UI HTTP server",
+    ),
 ) -> None:
     """Run the petctl controller."""
 
@@ -190,7 +200,17 @@ def run(
             log_touch=log_touch,
             log_loop=log_loop,
         )
-        await ctrl.run()
+        _ui = None
+        if dev_ui:
+            from petctl.dev_ui import DevUI
+            _ui = DevUI(ctrl, port=ui_port)
+            _ui.start()
+            print(f"[DevUI] http://localhost:{ui_port}")
+        try:
+            await ctrl.run()
+        finally:
+            if _ui is not None:
+                _ui.stop()
 
     try:
         asyncio.run(_run())
