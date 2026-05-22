@@ -240,7 +240,9 @@ class RobotBackend(_BackendBase):
                 phys = self._motor_state.get(sid)
                 last_p = phys["pos"] if phys is not None else p_target
             if last_t is not None:
-                dt = max(now - last_t, 1.0 / 120.0)
+                # Cap dt at one motor-TX period so a gap (scheme swap, slow tick,
+                # reconnect) never inflates max_step into a position snap.
+                dt = max(min(now - last_t, 1.0 / LOOP_LIMITS.motor_update_hz), 1.0 / 120.0)
                 max_step = LOOP_LIMITS.max_speed_rad_s * dt
                 delta = p_target - last_p
                 pos_rad = last_p + max(min(delta, max_step), -max_step)

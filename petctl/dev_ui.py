@@ -56,6 +56,8 @@ _HTML = """\
   button.selected { background: #1a3a1a; border-color: #4a8; color: #afa; }
   button.action { background: #1a1a3a; border-color: #48a; color: #adf; }
   button.action:hover { background: #222a44; }
+  button.stop { background: #3a1a1a; border-color: #a44; color: #faa; }
+  button.stop:hover { background: #442222; }
   #params { margin-bottom: 18px; min-height: 60px; }
   .param-row { margin: 8px 0; display: flex; align-items: center; gap: 10px; }
   .param-row label { width: 140px; color: #aaa; }
@@ -74,7 +76,7 @@ _HTML = """\
 
 <div id="launch-row">
   <button class="action" onclick="launch()">&#9654; Launch</button>
-  <button class="action" onclick="launchPattern('freeze')">&#9632; Freeze</button>
+  <button class="stop" onclick="stop()">&#9632; Stop</button>
 </div>
 
 <script>
@@ -172,6 +174,13 @@ function launch() {
   launchPattern(selected, gatherParams());
 }
 
+function stop() {
+  fetch("/stop", { method: "POST" })
+    .then(r => r.json())
+    .then(d => { document.getElementById("active-label").textContent = d.scheme || "?"; })
+    .catch(console.error);
+}
+
 // Poll active scheme every 2 s
 function pollStatus() {
   fetch("/status").then(r => r.json())
@@ -236,6 +245,14 @@ class DevUI:
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+                elif self.path == "/stop":
+                    response = _stop(ctrl)
+                    body = json.dumps(response).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -254,13 +271,42 @@ class DevUI:
             self._server.shutdown()
 
 
+def _stop(controller: "Controller") -> dict:
+    """Disable all motor torques and deactivate the TX loop for every motor."""
+    loop = getattr(controller, "_event_loop", None)
+    if loop is not None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                controller.backend.disable_torques(), loop
+            ).result(timeout=2.0)
+        except Exception:
+            pass
+    return {"scheme": "stopped"}
+
+
 def _launch(controller: "Controller", name: str, params: dict) -> dict:
-    """Instantiate the named pattern with filtered params and hot-swap it in."""
+    """Instantiate the named pattern with filtered params and hot-swap it in.
+
+    Re-enables motors first in case they were previously stopped.
+    """
     from petctl.schemes.patterns import ALL_PATTERNS
 
     cls = next((c for c in ALL_PATTERNS if c.name == name), None)
     if cls is None:
         return {"error": f"unknown pattern: {name}"}
+
+    # Re-enable any motors that were disabled by stop.
+    backend = controller.backend
+    loop = getattr(controller, "_event_loop", None)
+    if loop is not None and hasattr(backend, "enable_motor"):
+        ids = getattr(backend, "_discovered_motors", None) or list(range(1, 8))
+        for mid in ids:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    backend.enable_motor(mid), loop
+                ).result(timeout=1.0)
+            except Exception:
+                pass
 
     valid = inspect.signature(cls).parameters
     filtered = {k: v for k, v in params.items() if k in valid and k != "self"}
