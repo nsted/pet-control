@@ -398,11 +398,12 @@ class RerunVisualizer(Visualizer):
         if pt is None:
             return
         rr.log("power/voltage/raw", rr.Scalars(pt.voltage_raw_v))
-        if pt.voltage_filtered_v is not None:
-            rr.log("power/voltage/filtered", rr.Scalars(pt.voltage_filtered_v))
-        rr.log("power/voltage/spike_count", rr.Scalars(float(pt.voltage_spike_count)))
-        rr.log("power/voltage/spike_rate_per_min", rr.Scalars(float(pt.voltage_spike_rate_per_min)))
+        if pt.voltage_ema_v is not None:
+            rr.log("power/voltage/ema", rr.Scalars(pt.voltage_ema_v))
         rr.log("power/voltage/state", rr.TextLog(pt.voltage_state))
+        rr.log("power/current/raw_a", rr.Scalars(pt.current_amps_raw))
+        rr.log("power/current/filtered_a", rr.Scalars(pt.current_amps_filtered))
+        rr.log("power/current/drive_scale", rr.Scalars(pt.current_drive_scale))
         rr.log("power/global_state", rr.TextLog(pt.system_state))
         for mid, state_str in pt.motor_states.items():
             rr.log(f"power/motors/{mid}/state", rr.TextLog(state_str))

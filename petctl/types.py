@@ -21,11 +21,11 @@ class PowerTelemetry:
     """Snapshot of power management state for a single control tick."""
 
     voltage_raw_v: float = 0.0
-    voltage_filtered_v: Optional[float] = None
+    voltage_ema_v: Optional[float] = None   # heavy EMA — for display only, not safety
     voltage_state: str = "NORMAL"
-    voltage_spike_count: int = 0
-    voltage_spike_rate_per_min: int = 0
-    voltage_last_spike_peak_v: float = 0.0
+    current_amps_raw: float = 0.0
+    current_amps_filtered: float = 0.0
+    current_drive_scale: float = 1.0        # 1.0 = full drive; <1.0 = current-limited
     system_state: str = "RUNNING"
     # Per-motor state (keyed by servo_id)
     motor_states: dict[int, str] = field(default_factory=dict)

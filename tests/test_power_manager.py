@@ -25,7 +25,6 @@ M1, M2 = 1, 2
 # Tight thresholds so tests run without real wall-clock waits
 _FAST_THRESHOLDS = PowerThresholds(
     temp_hysteresis_cooldown_s=0.05,  # 50ms — fast hysteresis for tests
-    voltage_median_window=3,           # fewer samples to fill
 )
 
 
@@ -36,24 +35,24 @@ def _state(
     winding_temps: dict[int, int] | None = None,
     err_codes: dict[int, int] | None = None,
     voltage_v: float = 14.5,
+    current_a: float = 0.0,
 ) -> RobotState:
     """Build a minimal RobotState for testing."""
     ids = motor_ids or []
-    # Patch battery_voltage_v by injecting raw values that produce the desired voltage.
-    # Easier: subclass RobotState or just set via property workaround.
-    # Since battery_voltage_v is a property computed from battery_voltage_raw, we monkeypatch
-    # by overriding the attribute on the instance directly.
     rs = RobotState(
         active_servo_ids=set(ids),
         motor_temperatures=drive_temps or {},
         motor_winding_temperatures=winding_temps or {},
         motor_err_codes=err_codes or {},
     )
-    # Override battery_voltage_v via __dict__ (property override for testing)
+    # Override computed properties for testing
     rs.__class__ = type(
         "_TestRobotState",
         (RobotState,),
-        {"battery_voltage_v": property(lambda self: voltage_v)},
+        {
+            "battery_voltage_v": property(lambda self: voltage_v),
+            "battery_current_amps": property(lambda self: current_a),
+        },
     )
     return rs
 
@@ -299,109 +298,110 @@ class TestHysteresisRecovery:
 
 
 # ---------------------------------------------------------------------------
-# Voltage state machine
+# Voltage EMA (display only — no safety actions)
 # ---------------------------------------------------------------------------
 
-class TestVoltageSanityFilter:
+class TestVoltageEMA:
     def test_insane_reading_discarded(self) -> None:
-        """Readings outside [0, 40V] are silently dropped."""
+        """Readings outside sanity bounds are silently dropped — EMA stays None."""
         w = _PM()
-        # Feed only insane readings
         for _ in range(10):
             w.tick(_state(voltage_v=50.0))
-        # Window never fills → no threshold action
+        assert w.pm._voltage_ema is None
         assert w.pm._system_state == SystemState.RUNNING
-        assert w.pm._voltage_filtered is None
 
     def test_negative_voltage_discarded(self) -> None:
         w = _PM()
         for _ in range(10):
             w.tick(_state(voltage_v=-1.0))
-        assert w.pm._voltage_filtered is None
+        assert w.pm._voltage_ema is None
 
-    def test_median_filter_smooths_spike(self) -> None:
-        """A single spike in a window of 3 should not affect the median."""
-        w = _PM(_FAST_THRESHOLDS)
-        # Feed two normal samples
-        w.tick(_state(voltage_v=14.5))
-        w.tick(_state(voltage_v=14.5))
-        # Feed one spike — median of [14.5, 14.5, 20.0] = 14.5
-        w.tick(_state(voltage_v=20.0))
-        assert w.pm._voltage_filtered == pytest.approx(14.5)
-
-
-class TestVoltageLowWarning:
-    def test_low_warning_fires(self) -> None:
+    def test_ema_seeds_on_first_valid_sample(self) -> None:
         w = _PM()
-        for _ in range(_FAST_THRESHOLDS.voltage_median_window):
-            w.tick(_state(voltage_v=11.5))
+        w.tick(_state(voltage_v=14.5))
+        assert w.pm._voltage_ema == pytest.approx(14.5)
+
+    def test_ema_smooths_spike(self) -> None:
+        """A single high-voltage reading should barely move the heavy EMA."""
+        w = _PM()
+        for _ in range(100):
+            w.tick(_state(voltage_v=12.0))
+        w.tick(_state(voltage_v=20.0))
+        # alpha=0.02: 0.98*12 + 0.02*20 = 11.76 + 0.40 = 12.16
+        assert w.pm._voltage_ema is not None
+        assert w.pm._voltage_ema < 12.5
+        assert w.pm._system_state == SystemState.RUNNING  # no emergency from voltage
+
+    def test_high_voltage_never_triggers_emergency(self) -> None:
+        """Voltage spikes — even extreme ones — must not trigger emergency stop."""
+        w = _PM()
+        for _ in range(20):
+            w.tick(_state(voltage_v=30.0))
+        assert w.pm._system_state == SystemState.RUNNING
+
+    def test_low_warning_fires_after_ema_settles(self) -> None:
+        """LOW_WARNING is informational only; fires once EMA drops below threshold."""
+        w = _PM()
+        for _ in range(200):
+            w.tick(_state(voltage_v=10.0))
         assert w.pm._voltage_state == VoltageState.LOW_WARNING
         assert w.pm._system_state == SystemState.RUNNING  # warning, not emergency
 
-    def test_critical_low_triggers_emergency(self) -> None:
-        w = _PM()
-        for _ in range(_FAST_THRESHOLDS.voltage_median_window):
-            w.tick(_state(voltage_v=9.0))
-        assert w.pm._system_state == SystemState.EMERGENCY_STOPPED
-
     def test_normal_voltage_no_action(self) -> None:
         w = _PM()
-        for _ in range(_FAST_THRESHOLDS.voltage_median_window):
+        for _ in range(50):
             w.tick(_state(voltage_v=14.5))
         assert w.pm._system_state == SystemState.RUNNING
         assert w.pm._voltage_state == VoltageState.NORMAL
 
 
-class TestVoltageSpikeDetection:
-    def test_spike_logged(self) -> None:
-        w = _PM()
-        w.tick(_state(voltage_v=20.0))
-        assert w.pm._spike_count_total == 1
-        assert w.pm._last_spike_peak_v == pytest.approx(20.0)
+# ---------------------------------------------------------------------------
+# Current-based compliance limiting
+# ---------------------------------------------------------------------------
 
-    def test_sanity_rejected_not_counted_as_spike(self) -> None:
-        """Readings above sanity_max_v are discarded before spike detection."""
+class TestCurrentLimiting:
+    def test_below_threshold_scale_is_one(self) -> None:
+        """Current well below limit → compliance unaffected."""
         w = _PM()
-        w.tick(_state(voltage_v=45.0))
-        assert w.pm._spike_count_total == 0
+        for _ in range(100):
+            w.tick(_state(motor_ids=[M1], current_a=1.0))
+        assert w.pm._current_drive_scale == pytest.approx(1.0)
+        assert w.pm.get_compliance_scale(M1) == pytest.approx(1.0)
 
-    def test_absolute_emergency_single_sample(self) -> None:
+    def test_above_limit_scale_is_zero(self) -> None:
+        """Current saturated above limit → compliance zeroed."""
         w = _PM()
-        w.tick(_state(voltage_v=31.0))
-        _, is_global = w.drain()
-        assert is_global
-        assert w.pm._system_state == SystemState.EMERGENCY_STOPPED
+        for _ in range(100):
+            w.tick(_state(motor_ids=[M1], current_a=5.0))
+        assert w.pm._current_drive_scale == pytest.approx(0.0, abs=0.01)
+        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.0, abs=0.01)
 
-    def test_spike_rate_emergency(self) -> None:
-        """More than voltage_spike_rate_emergency_count spikes in window → emergency."""
+    def test_midpoint_scale(self) -> None:
+        """At 3.75A (midpoint of 3.5–4.0 range) → scale ≈ 0.5."""
+        w = _PM()
+        for _ in range(100):
+            w.tick(_state(current_a=3.75))
+        assert w.pm._current_drive_scale == pytest.approx(0.5, abs=0.02)
+
+    def test_ema_softens_brief_current_spike(self) -> None:
+        """A single-tick current spike should not immediately zero compliance."""
+        w = _PM()
+        for _ in range(50):
+            w.tick(_state(current_a=1.0))
+        w.tick(_state(current_a=10.0))
+        # EMA: 0.1*10 + 0.9*~1.0 ≈ 1.9A — still well below 3.5A
+        assert w.pm._current_drive_scale == pytest.approx(1.0)
+
+    def test_current_scale_multiplied_with_thermal(self) -> None:
+        """Compliance = thermal_scale × current_scale."""
         t = PowerThresholds(
-            voltage_spike_rate_emergency_count=3,
-            voltage_spike_rate_window_s=60.0,
-            voltage_median_window=3,
+            temp_hysteresis_cooldown_s=0.05,
+            current_ema_alpha=1.0,   # instant EMA for precise test
         )
         w = _PM(t)
-        for _ in range(5):  # 5 spikes > threshold of 3
-            w.tick(_state(voltage_v=20.0), dt=0.1)
-        _, is_global = w.drain()
-        assert is_global
-
-    def test_old_spikes_age_out(self) -> None:
-        """Spikes older than the window should not count toward rate."""
-        t = PowerThresholds(
-            voltage_spike_rate_emergency_count=3,
-            voltage_spike_rate_window_s=1.0,  # very short window
-            voltage_median_window=3,
-            voltage_absolute_emergency_v=100.0,  # raise to not trip on raw spikes
-        )
-        w = _PM(t)
-        # Fire 3 spikes
-        for _ in range(3):
-            w.tick(_state(voltage_v=20.0), dt=0.1)
-        # Advance past the window
-        w.advance(1.5)
-        # One more spike — count in window should be 1, below threshold of 3
-        w.tick(_state(voltage_v=20.0))
-        assert w.pm._system_state == SystemState.RUNNING
+        # Thermal warning (scale=0.5) + current at midpoint (scale=0.5)
+        w.tick(_state(motor_ids=[M1], drive_temps={M1: 58}, current_a=3.75))
+        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.25, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -424,12 +424,26 @@ class TestTelemetry:
         t2 = w.pm.get_telemetry(14.5)
         assert len(t2.events) == 0  # drained on first call
 
-    def test_telemetry_spike_tracking(self) -> None:
+    def test_telemetry_current_fields(self) -> None:
         w = _PM()
-        w.tick(_state(voltage_v=20.0))
-        t = w.pm.get_telemetry(20.0)
-        assert t.voltage_spike_count == 1
-        assert t.voltage_last_spike_peak_v == pytest.approx(20.0)
+        w.tick(_state(current_a=2.0))
+        t = w.pm.get_telemetry(14.5)
+        assert t.current_amps_raw == pytest.approx(2.0)
+        assert t.current_amps_filtered == pytest.approx(0.2, abs=0.01)  # 0.1 * 2.0
+        assert t.current_drive_scale == pytest.approx(1.0)
+
+    def test_telemetry_current_scale_saturated(self) -> None:
+        w = _PM()
+        for _ in range(100):
+            w.tick(_state(current_a=5.0))
+        t = w.pm.get_telemetry(14.5)
+        assert t.current_drive_scale == pytest.approx(0.0, abs=0.01)
+
+    def test_telemetry_voltage_ema(self) -> None:
+        w = _PM()
+        w.tick(_state(voltage_v=14.5))
+        t = w.pm.get_telemetry(14.5)
+        assert t.voltage_ema_v == pytest.approx(14.5)
 
     def test_telemetry_system_state(self) -> None:
         w = _PM()
