@@ -118,6 +118,56 @@ class SensorLimits:
 
 
 @dataclass(frozen=True)
+class BusSafetyLimits:
+    """Bus-level voltage and current protection for the power rail.
+
+    Separate from PowerManager (which handles thermal and extreme spike events).
+    BusSafetyMonitor reads these to compute a continuous modulation factor [0,1]
+    applied to velocity cap and impedance gains — no hard cutoffs anywhere.
+    """
+
+    # --- Source inference ---
+    # Slow EMA so a 3-second fault spike (18.7V) does not flip battery→supply.
+    # At tau=15s, 3s of fault data moves score ≤0.2 from a battery baseline.
+    # Under a steady 14.5V supply, score reaches SUPPLY threshold in ~16s.
+    source_tau_s: float = 15.0
+    source_supply_vote_v: float = 13.5      # sustained voltage above this votes "supply"
+    source_battery_vote_v: float = 12.5     # sustained voltage below this votes "battery"
+    source_supply_threshold: float = 0.65   # score above this → SUPPLY
+    source_battery_threshold: float = 0.35  # score below this → BATTERY
+
+    # --- Voltage modulation ---
+    voltage_ceiling_v: float = 15.0         # absolute ceiling, source-independent
+    voltage_battery_onset_v: float = 13.0   # modulation begins here on battery
+    voltage_supply_onset_v: float = 14.8    # modulation begins here on supply (near ceiling)
+    voltage_hysteresis_v: float = 0.3       # voltage must drop this far below onset to recover
+
+    # --- Current modulation ---
+    current_onset_a: float = 3.5            # modulation begins above this (A)
+    current_ceiling_a: float = 4.0          # modulation = 0.0 at this level
+    current_hysteresis_a: float = 0.3       # current must drop this far below onset to recover
+
+    # --- Sensor sanity ---
+    current_sanity_min_a: float = -2.0      # reject below this (regen artifact)
+    current_sanity_max_a: float = 12.0      # reject above this (impossible on this hardware)
+    current_median_window: int = 3          # small window — current is the leading indicator
+    voltage_stale_timeout_s: float = 3.0    # no valid voltage → gentle modulation (0.5)
+    current_stale_timeout_s: float = 2.0    # no valid current → suppress current modulation
+
+    # --- Modulation ramp rates ---
+    # Restrict fast: back-EMF spikes must be arrested quickly.
+    # Recover slow: prevents oscillation in the borderline zone.
+    modulation_ramp_down_per_s: float = 1.0
+    modulation_ramp_up_per_s: float = 0.15
+
+    # --- Velocity cap ---
+    # Safety layer modulates between floor and normal; backend ramp at 8.0 rad/s
+    # remains as an independent backstop regardless of this value.
+    velocity_cap_normal_rad_s: float = 6.0  # normal operating ceiling (tune at bench)
+    velocity_cap_floor_rad_s: float = 0.2   # minimum when fully modulated (keeps servo alive)
+
+
+@dataclass(frozen=True)
 class BatteryConfig:
     """Conversion constants for head-board battery telemetry.
 
@@ -158,3 +208,4 @@ LOOP_LIMITS = ControlLoopLimits()
 BEHAVIOR_LIMITS = BehaviorLimits()
 SENSOR_LIMITS = SensorLimits()
 BATTERY_CONFIG = BatteryConfig()
+BUS_SAFETY = BusSafetyLimits()

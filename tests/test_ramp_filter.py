@@ -201,3 +201,62 @@ class TestResetSeeding:
         # dt floored at 1/120 → max_step ≈ 0.067 rad; pos should be ≈ 0.067, not 2.0
         assert pos < 0.5, f"pos={pos:.4f} suggests a snap, not a ramp"
         assert pos >= 0.0
+
+
+class TestEnableMotorStaleFix:
+    """enable_motor() must clear stale TX state so the TX loop cannot send a pre-stop
+    position frame before send_commands() seeds a fresh ramp from physical position."""
+
+    async def _seed_last_sent(self, b: RobotBackend) -> None:
+        """Populate _last_sent_frames and _last_command_time as the TX loop would after
+        an active command — simulating the state that exists just before a stop."""
+        await b.send_commands([_cmd(2.5)])
+        b._last_sent_frames[MOTOR_ID] = b._pending_frames.pop(MOTOR_ID)
+        b._last_command_time[MOTOR_ID] = time.monotonic()
+
+    @pytest.mark.asyncio
+    async def test_enable_motor_clears_stale_tx_state(self):
+        """enable_motor() removes _last_sent_frames and _last_command_time for the motor."""
+        b = _make_backend()
+        b._ws = AsyncMock()
+        _seed_ramp(b, pos=2.5, dt_ago=1.0 / 30.0)
+        await self._seed_last_sent(b)
+        b._disabled_motor_ids.add(MOTOR_ID)
+
+        assert MOTOR_ID in b._last_sent_frames
+        assert MOTOR_ID in b._last_command_time
+
+        await b.enable_motor(MOTOR_ID)
+
+        assert MOTOR_ID not in b._last_sent_frames, (
+            "stale pre-stop frame survived enable_motor() — TX loop would snap to old position"
+        )
+        assert MOTOR_ID not in b._last_command_time, (
+            "_last_command_time survived enable_motor() — idle_s check could still select stale frame"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_then_launch_ramps_from_physical_not_prestop(self):
+        """Full stop→enable cycle: first command after re-enable ramps from physical
+        position (0.0), not the pre-stop commanded position (2.5 rad)."""
+        b = _make_backend()
+        b._ws = AsyncMock()
+        b._motor_state[MOTOR_ID]["pos"] = 0.0  # robot drifted to home while limp
+
+        # Seed state as if motor was actively running at 2.5 rad before stop.
+        _seed_ramp(b, pos=2.5, dt_ago=1.0 / 30.0)
+        await self._seed_last_sent(b)
+        b._disabled_motor_ids.add(MOTOR_ID)
+
+        await b.enable_motor(MOTOR_ID)
+
+        # First command after re-enable targets 1.0 rad.
+        await b.send_commands([_cmd(1.0)])
+
+        pos = _decode_pos(b._pending_frames[MOTOR_ID])
+        # Must ramp from physical (0.0), not snap to pre-stop (2.5) or jump to target (1.0).
+        # dt floored at 1/120 → max_step ≈ 0.067 rad; expect pos ≈ 0.067.
+        assert pos < 0.2, (
+            f"pos={pos:.4f} rad — motor snapped to pre-stop position ({2.5:.1f} rad) "
+            "or jumped to target instead of ramping from physical position (0.0 rad)"
+        )

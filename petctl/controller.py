@@ -46,7 +46,8 @@ import threading
 import time
 from typing import Optional
 
-from petctl.config import LOOP_LIMITS
+from petctl.bus_safety import BusSafetyMonitor
+from petctl.config import BUS_SAFETY, LOOP_LIMITS
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState, ServoCommand
@@ -191,6 +192,7 @@ class Controller:
         self._touch_logger: Optional[_TouchLogger] = _TouchLogger() if log_touch else None
 
         self.power_manager = PowerManager()
+        self.bus_safety_monitor = BusSafetyMonitor()
         self._power_reset_requested: bool = False
 
         self._state: RobotState = RobotState.empty()
@@ -215,6 +217,9 @@ class Controller:
 
         # Last commanded position (rad) after slew — used to cap per-tick jumps.
         self._slew_last_sent_rad: dict[int, float] = {}
+        # Last commanded position (rad) after bus modulation — separate from slew
+        # so the slew filter always tracks the scheme target faithfully.
+        self._bus_mod_last_rad: dict[int, float] = {}
 
 
     # ------------------------------------------------------------------
@@ -236,6 +241,10 @@ class Controller:
         if self._running:
             self.scheme.on_stop()
         self.scheme = scheme
+        # Re-seed slew and bus-modulation filters from physical position on the
+        # first tick of the new scheme to avoid carrying over stale state.
+        self._slew_last_sent_rad.clear()
+        self._bus_mod_last_rad.clear()
         if self._running:
             scheme.on_start(self)
 
@@ -347,6 +356,37 @@ class Controller:
             cmd.position = prev + delta
             self._slew_last_sent_rad[sid] = cmd.position
 
+    def _apply_bus_modulation(
+        self,
+        commands: list[ServoCommand],
+        modulation_factor: float,
+        dt: float,
+    ) -> None:
+        """Cap per-tick velocity based on the current bus-safety modulation factor.
+
+        Runs after the slew filter so the slew filter always tracks the scheme's
+        true target. When modulation releases, the slew filter holds the correct
+        target and ramps smoothly toward it without relearning from a stale position.
+        """
+        lim = BUS_SAFETY
+        effective_vel_cap = (
+            lim.velocity_cap_floor_rad_s
+            + modulation_factor * (lim.velocity_cap_normal_rad_s - lim.velocity_cap_floor_rad_s)
+        )
+        max_delta = effective_vel_cap * dt
+        for cmd in commands:
+            if cmd.position is None:
+                continue
+            sid = cmd.servo_id
+            prev = self._bus_mod_last_rad.get(sid)
+            if prev is None:
+                prev = self._slew_last_sent_rad.get(sid, cmd.position)
+            delta = cmd.position - prev
+            if max_delta > 0.0:
+                delta = max(-max_delta, min(max_delta, delta))
+            cmd.position = prev + delta
+            self._bus_mod_last_rad[sid] = cmd.position
+
     async def _loop(self) -> None:
         assert self._stop_event is not None
         while not self._stop_event.is_set():
@@ -357,7 +397,12 @@ class Controller:
 
             # 1b. Power management — evaluate protection conditions
             pm = self.power_manager
+            bsm = self.bus_safety_monitor
             pm.update(self._state, t0)
+            try:
+                bsm.update(self._state, t0)
+            except Exception as e:
+                logger.error("[Controller] BusSafetyMonitor.update error: %s", e)
             disable_ids, is_global_emergency = pm.drain_disable_events()
             if is_global_emergency:
                 try:
@@ -371,6 +416,7 @@ class Controller:
                     except Exception as e:
                         logger.error("[Controller] disable_motor(%d) error: %s", _mid, e)
             self._state.power_telemetry = pm.get_telemetry(self._state.battery_voltage_v)
+            bsm.update_telemetry(self._state.power_telemetry)
 
             # Handle operator power-reset request
             if self._power_reset_requested:
@@ -400,17 +446,26 @@ class Controller:
 
             self._apply_slew_to_commands(commands)
 
-            # 3. Send commands (unless dry run), filtered and scaled by PowerManager
+            # Apply bus-safety velocity cap (after slew so slew always tracks true target)
+            dt_bus = max(self._state.dt, 1e-3)
+            self._apply_bus_modulation(commands, bsm.modulation_factor, dt_bus)
+
+            # 3. Send commands (unless dry run), filtered and scaled by PowerManager + bus safety
             if not self.dry_run and commands:
+                bus_scale = bsm.modulation_factor
                 safe_commands = []
                 for cmd in commands:
                     if not pm.is_motor_enabled(cmd.servo_id):
                         continue
-                    scale = pm.get_compliance_scale(cmd.servo_id)
-                    if scale != 1.0:
-                        cmd.kp *= scale
-                        cmd.kd *= scale
-                        cmd.torque_ff *= scale
+                    thermal_scale = pm.get_compliance_scale(cmd.servo_id)
+                    combined_kp_kd = thermal_scale * bus_scale
+                    if combined_kp_kd != 1.0:
+                        cmd.kp *= combined_kp_kd
+                        cmd.kd *= combined_kp_kd
+                    if thermal_scale != 1.0:
+                        # torque_ff: thermal compliance only — not bus modulation
+                        # (scaling torque_ff by bus_scale causes gravity sag during events)
+                        cmd.torque_ff *= thermal_scale
                     safe_commands.append(cmd)
                 if safe_commands:
                     try:
@@ -424,8 +479,9 @@ class Controller:
                 logger.info("[Controller] Saving home offsets...")
                 try:
                     await self.backend.write_home_offsets()
-                    # Clear slew state so the filter doesn't hold pre-home positions.
+                    # Clear slew and bus-mod state so filters don't hold pre-home positions.
                     self._slew_last_sent_rad.clear()
+                    self._bus_mod_last_rad.clear()
                     logger.info("[Controller] Home saved — positions reset to 0.")
                 except Exception as e:
                     logger.error("[Controller] write_home_offsets error: %s", e)

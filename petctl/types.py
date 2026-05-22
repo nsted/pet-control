@@ -33,6 +33,10 @@ class PowerTelemetry:
     motor_compliance_scales: dict[int, float] = field(default_factory=dict)
     # State transition events since last tick
     events: list[str] = field(default_factory=list)
+    # Bus safety modulation (BusSafetyMonitor)
+    bus_modulation_factor: float = 1.0
+    bus_current_filtered_a: Optional[float] = None
+    bus_source_inference: str = "BATTERY"
 
 
 @dataclass

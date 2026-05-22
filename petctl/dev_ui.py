@@ -296,23 +296,34 @@ def _launch(controller: "Controller", name: str, params: dict) -> dict:
     if cls is None:
         return {"error": f"unknown pattern: {name}"}
 
-    # Re-enable any motors that were disabled by stop.
-    backend = controller.backend
-    loop = getattr(controller, "_event_loop", None)
-    if loop is not None and hasattr(backend, "enable_motor"):
-        ids = getattr(backend, "_discovered_motors", None) or list(range(1, 8))
-        for mid in ids:
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    backend.enable_motor(mid), loop
-                ).result(timeout=1.0)
-            except Exception:
-                pass
-
     valid = inspect.signature(cls).parameters
     filtered = {k: v for k, v in params.items() if k in valid and k != "self"}
-    try:
-        controller.set_scheme(cls(**filtered))
-    except Exception as e:
-        return {"error": str(e)}
+
+    backend = controller.backend
+    loop = getattr(controller, "_event_loop", None)
+
+    # Run enable + scheme-swap as one atomic coroutine on the event loop so the
+    # control loop cannot interleave between the two operations, and so that the
+    # scheme is always installed after all enables have cleared their stale frames.
+    if loop is not None:
+        async def _do_launch() -> None:
+            if hasattr(backend, "enable_motor"):
+                ids = getattr(backend, "_discovered_motors", None) or list(range(1, 8))
+                for mid in ids:
+                    try:
+                        await backend.enable_motor(mid)
+                    except Exception:
+                        pass
+            controller.set_scheme(cls(**filtered))
+
+        try:
+            asyncio.run_coroutine_threadsafe(_do_launch(), loop).result(timeout=5.0)
+        except Exception as e:
+            return {"error": str(e)}
+    else:
+        try:
+            controller.set_scheme(cls(**filtered))
+        except Exception as e:
+            return {"error": str(e)}
+
     return {"scheme": controller.scheme.name}

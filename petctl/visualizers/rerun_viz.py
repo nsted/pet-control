@@ -366,6 +366,8 @@ class RerunVisualizer(Visualizer):
             rrb.TimeSeriesView(origin="motors/temperature", name="Temperature (°C)"),
             rrb.TimeSeriesView(origin="telemetry/voltage_v", name="Battery voltage (V)"),
             rrb.TimeSeriesView(origin="telemetry/current_amps", name="Battery current (A)"),
+            rrb.TimeSeriesView(origin="power/bus/modulation_factor", name="Bus modulation factor"),
+            rrb.TimeSeriesView(origin="power/bus/current_filtered_a", name="Bus current filtered (A)"),
         ))
         rr.send_blueprint(rrb.Blueprint(
             rrb.Horizontal(*views),
@@ -410,6 +412,10 @@ class RerunVisualizer(Visualizer):
             rr.log(f"power/motors/{mid}/compliance_scale", rr.Scalars(scale))
         for event in pt.events:
             rr.log("power/events", rr.TextLog(event))
+        rr.log("power/bus/modulation_factor", rr.Scalars(pt.bus_modulation_factor))
+        rr.log("power/bus/source_inference", rr.TextLog(pt.bus_source_inference))
+        if pt.bus_current_filtered_a is not None:
+            rr.log("power/bus/current_filtered_a", rr.Scalars(pt.bus_current_filtered_a))
 
     def _setup_battery_series(self) -> None:
         """Declare SeriesLines for head battery telemetry."""

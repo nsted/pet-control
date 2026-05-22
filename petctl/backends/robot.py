@@ -160,6 +160,9 @@ class RobotBackend(_BackendBase):
         self._bare_reply_fut = None
         self._last_mit_abs_pos.clear()
         self._last_mit_wall_s.clear()
+        self._last_sent_frames.clear()
+        self._last_command_time.clear()
+        self._pending_frames.clear()
 
     async def get_state(self) -> RobotState:
         if not self._connected:
@@ -377,6 +380,13 @@ class RobotBackend(_BackendBase):
             )
             for mid in self._discovered_motors:
                 await self._ws.send(_encode_mit_enable(mid))
+            # Clear all per-motor tracking so TX loop and send_commands() re-seed
+            # from physical position — prevents stale frame snap after reconnect.
+            self._last_mit_abs_pos.clear()
+            self._last_mit_wall_s.clear()
+            self._pending_frames.clear()
+            self._last_sent_frames.clear()
+            self._last_command_time.clear()
             await asyncio.sleep(0.3)
         else:
             self._discovered_modules = await self._discover_modules()
@@ -780,6 +790,10 @@ class RobotBackend(_BackendBase):
         self._last_mit_abs_pos.pop(motor_id, None)
         self._last_mit_wall_s.pop(motor_id, None)
         self._pending_frames.pop(motor_id, None)
+        # Clear stale TX frame so the loop falls back to _encode_mit_zero until
+        # send_commands() provides a ramp-seeded frame from physical position.
+        self._last_sent_frames.pop(motor_id, None)
+        self._last_command_time.pop(motor_id, None)
         self._disabled_motor_ids.discard(motor_id)
 
     async def write_home_offsets(self) -> None:
