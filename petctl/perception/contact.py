@@ -32,6 +32,14 @@ from enum import Enum
 from petctl.perception.stroke import HoldReading
 from petctl.types import RobotState
 
+# Fixed-width labels for console log lines, keyed by contact type string.
+CONTACT_LABELS: dict[str, str] = {
+    "stroke":   "STROKE  ",
+    "hold":     "HOLD    ",
+    "squeeze":  "SQUEEZE ",
+    "restrict": "RESTRICT",
+    "wrench":   "WRENCH  ",
+}
 
 class ContactType(str, Enum):
     HOLD = "hold"

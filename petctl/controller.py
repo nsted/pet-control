@@ -47,20 +47,13 @@ import time
 from typing import Optional
 
 from petctl.config import LOOP_LIMITS
+from petctl.perception.contact import CONTACT_LABELS
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
 
-
-_CONTACT_LABELS: dict[str, str] = {
-    "stroke":   "STROKE  ",
-    "hold":     "HOLD    ",
-    "squeeze":  "SQUEEZE ",
-    "restrict": "RESTRICT",
-    "wrench":   "WRENCH  ",
-}
 
 _STROKE_END_GRACE_S: float = 0.45  # don't fire end until stroke absent this long
 

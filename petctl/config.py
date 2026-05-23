@@ -51,12 +51,6 @@ class ControlLoopLimits:
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10
 
-    # How often to send zero-torque MIT poll frames when no commands are active.
-    # Lower rates reduce Arduino WS/CAN load; at 5 Hz each motor is polled every 200 ms.
-    # During active control, MIT command frames carry position and implicitly poll state,
-    # so this only applies when the control scheme produces no output.
-    idle_motor_poll_hz: float = 5.0
-
     # Seconds after the last position command before the TX loop reverts a motor
     # to zero-torque (idle) mode.  Prevents motors from holding position indefinitely
     # after a scheme goes quiet.  Should be long enough for the slew filter to settle
@@ -82,7 +76,13 @@ class ControlLoopLimits:
 
 @dataclass(frozen=True)
 class BehaviorLimits:
-    """Limits that behaviors must respect."""
+    """Limits for the BehaviorEngine (when implemented).
+
+    These are advisory for standalone ControlScheme subclasses — the controller
+    does not clamp direct scheme output against these values. Only LOOP_LIMITS
+    (slew rate, per-tick delta) and MOTOR_LIMITS (encoding ceiling) apply to all
+    schemes unconditionally.
+    """
 
     # Maximum angle contribution from any single behavior (degrees)
     max_behavior_angle_deg: float = 45.0

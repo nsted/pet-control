@@ -290,7 +290,8 @@ def _pad_centroid(state: RobotState) -> tuple[float | None, float]:
     average active-pad value.  Returns (None, 0.0) when no pad is above threshold.
     """
     weighted_sum = 0.0
-    total_weight = 0.0
+    weight_sum = 0.0
+    active_sum = 0.0
     n_active = 0
     for mod_id, sens in state.sensors.items():
         all_pads = (*sens.touch_right_pads, *sens.touch_left_pads, *sens.touch_middle_pads)
@@ -298,11 +299,12 @@ def _pad_centroid(state: RobotState) -> tuple[float | None, float]:
             if val >= PAD_THRESHOLD:
                 body_pos = mod_id + _PAD_BODY_SUB[pad_idx]
                 weighted_sum += body_pos * val
-                total_weight += val
+                weight_sum += val
+                active_sum += val
                 n_active += 1
-    if total_weight < 1e-6:
+    if weight_sum < 1e-6:
         return None, 0.0
-    return weighted_sum / total_weight, total_weight / n_active
+    return weighted_sum / weight_sum, active_sum / n_active
 
 
 def _find_blobs(activations: dict[int, float]) -> list[TouchBlob]:
