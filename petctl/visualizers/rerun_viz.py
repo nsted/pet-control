@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from petctl.perception.stroke import HoldDetector, StrokeDetector
 from petctl.protocols import Visualizer
 from petctl.types import RobotState
 
@@ -93,6 +92,14 @@ _TOUCH_COLOR_RGB    = (255, 215, 0)    # gold
 _PRESSURE_COLOR_RGB = (50, 120, 220)   # royal blue
 _MIN_ALPHA = 38   # 15% opacity at zero activation
 _MAX_ALPHA = 204  # 80% opacity at full activation
+
+# Touch-blob sphere colours by contact type
+_COLOR_STROKE   = [220,  30,  30, 220]   # red
+_COLOR_HOLD     = [137, 207, 240, 220]   # baby blue
+_COLOR_SQUEEZE  = [ 80, 180,  80, 220]   # green
+_COLOR_RESTRICT = [255, 140,   0, 220]   # orange
+_COLOR_WRENCH   = [180,   0, 220, 220]   # purple
+_COLOR_NONE     = [  0,   0,   0, 220]   # black
 
 _SENSOR_FACE_NAMES = ("left", "middle", "right")
 
@@ -281,12 +288,8 @@ class RerunVisualizer(Visualizer):
         self._pad_quats: list = []
         self._rr = None
         self._show_pad_labels: bool = False
-        self._stroke_detector = StrokeDetector()
-        self._stroke_active: bool = False
-        self._stroke_color_until: float = 0.0
-        self._hold_detector = HoldDetector()
-        self._hold_active: bool = False
-        self._hold_color_until: float = 0.0
+        self._contact_type: str = "none"      # stroke | hold | squeeze | restrict | wrench | none
+        self._contact_color_until: float = 0.0
         self._last_viz_time: float = -1.0
         self._prev_touch_colors: dict[int, tuple] = {}
         self._prev_pressure_colors: dict[int, tuple] = {}
@@ -328,16 +331,18 @@ class RerunVisualizer(Visualizer):
         rr.set_time("time", duration=state.timestamp)
         now = state.timestamp
         _COLOR_HOLD_S = 0.15   # minimum sphere color hold time to prevent flicker
-        stroke_now = self._stroke_detector.update(state) is not None
-        hold_reading = self._hold_detector.update(state)
-        hold_now = hold_reading is not None
-        if stroke_now:
-            self._stroke_color_until = now + _COLOR_HOLD_S
-            self._hold_color_until = 0.0   # stroke cancels any pending hold display
-        if hold_now and not stroke_now:
-            self._hold_color_until = now + _COLOR_HOLD_S
-        self._stroke_active = stroke_now or now < self._stroke_color_until
-        self._hold_active = (hold_now or now < self._hold_color_until) and not self._stroke_active
+        touch = state.touch
+        if touch is not None and touch.stroke is not None:
+            detected = "stroke"
+        elif touch is not None and touch.contact is not None:
+            detected = touch.contact.contact_type.value   # hold | squeeze | restrict | wrench
+        else:
+            detected = "none"
+        if detected != "none":
+            self._contact_type = detected
+            self._contact_color_until = now + _COLOR_HOLD_S
+        elif now >= self._contact_color_until:
+            self._contact_type = "none"
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
         self._log_power_telemetry(rr, state)
@@ -613,15 +618,16 @@ class RerunVisualizer(Visualizer):
             current.append(mod_id)
         if current:
             blobs.append(current)
-        min_pads = 1 if self._stroke_active else 2
+        min_pads = 1 if self._contact_type == "stroke" else 2
         blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= min_pads]
 
-        if self._stroke_active:
-            color = [220, 30, 30, 220]       # red
-        elif self._hold_active:
-            color = [137, 207, 240, 220]     # baby blue
-        else:
-            color = [0, 0, 0, 220]           # black
+        color = {
+            "stroke":   _COLOR_STROKE,
+            "hold":     _COLOR_HOLD,
+            "squeeze":  _COLOR_SQUEEZE,
+            "restrict": _COLOR_RESTRICT,
+            "wrench":   _COLOR_WRENCH,
+        }.get(self._contact_type, _COLOR_NONE)
         for i in range(_MAX_BLOBS):
             path = f"robot/touch_centroid/{i}"
             if i < len(blobs):

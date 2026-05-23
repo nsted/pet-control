@@ -11,9 +11,13 @@ from __future__ import annotations
 import time
 import math
 from dataclasses import asdict, dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from petctl.config import BATTERY_CONFIG, MOTOR_LIMITS
+
+if TYPE_CHECKING:
+    from petctl.perception.stroke import HoldReading, StrokeReading
+    from petctl.perception.contact import ContactReading
 
 
 @dataclass
@@ -33,6 +37,20 @@ class PowerTelemetry:
     motor_compliance_scales: dict[int, float] = field(default_factory=dict)
     # State transition events since last tick
     events: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TouchEvent:
+    """Processed touch classification for one tick, populated by the controller.
+
+    Exactly one of stroke or hold is non-None when contact is detected.
+    contact is always non-None when hold is non-None (it wraps the hold reading
+    with a sub-type: HOLD / SQUEEZE / RESTRICT / WRENCH).
+    """
+
+    stroke: StrokeReading | None = None
+    hold: HoldReading | None = None
+    contact: ContactReading | None = None
 
 
 @dataclass
@@ -103,6 +121,10 @@ class RobotState:
     sensors: dict[int, ModuleSensors] = field(default_factory=dict)
     # Keyed by servo_id (int). Position in radians; home = 0.0.
     servo_positions: dict[int, float] = field(default_factory=dict)
+    # Last commanded position per servo after the slew filter (rad). Populated by
+    # Controller each tick so contact classification can compute displacement from
+    # commanded rather than from home.
+    servo_commanded_positions: dict[int, float] = field(default_factory=dict)
     # Per-motor feedback from hardware (all keyed by servo_id).
     motor_velocities: dict[int, float] = field(default_factory=dict)              # rad/s
     motor_torques: dict[int, float] = field(default_factory=dict)                 # Nm
@@ -114,6 +136,8 @@ class RobotState:
     # Head-only battery telemetry raw ADC values.
     battery_current_raw: int = 0
     battery_voltage_raw: int = 0
+    # Touch classification for this tick — populated by Controller before scheme.update().
+    touch: TouchEvent | None = field(default=None)
     # Module IDs currently detected on the robot
     active_modules: list[int] = field(default_factory=list)
     # Servo IDs confirmed to exist — used by schemes to avoid sending commands

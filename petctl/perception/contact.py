@@ -10,10 +10,10 @@ Both WRENCH and RESTRICT use per-servo hysteresis so they stay latched once
 triggered and don't flicker at threshold boundaries.
 
 WRENCH semantics:
-  Begins when displacement from commanded position (home = 0) exceeds
-  WRENCH_POS_ON_RAD while motor torque is above WRENCH_TORQUE_NM.
-  Persists until the joint returns within WRENCH_POS_OFF_RAD — even if the
-  motor never fully reaches home.  Call reset() when contact ends.
+  Begins when displacement from the commanded position exceeds WRENCH_POS_ON_RAD
+  while motor torque is above WRENCH_TORQUE_NM.
+  Persists until the joint returns within WRENCH_POS_OFF_RAD of commanded.
+  Call reset() when contact ends.
 
 RESTRICT semantics:
   Begins when |torque| > RESTRICT_TORQUE_NM and |velocity| < RESTRICT_VEL_ON.
@@ -66,10 +66,10 @@ class ContactClassifier:
     Call reset() when contact ends to clear hysteresis state.
     """
 
-    # WRENCH: joint displaced from home (commanded = 0.0) while motor resists.
+    # WRENCH: joint displaced from commanded position while motor resists.
     WRENCH_TORQUE_NM: float = 0.4
-    WRENCH_POS_ON_RAD: float = 0.15   # ~8.6° — displacement to enter wrench
-    WRENCH_POS_OFF_RAD: float = 0.05  # ~2.9° — displacement to exit wrench
+    WRENCH_POS_ON_RAD: float = 0.15   # ~8.6° — displacement from commanded to enter wrench
+    WRENCH_POS_OFF_RAD: float = 0.05  # ~2.9° — displacement from commanded to exit wrench
 
     # RESTRICT: motor stalled under load.
     RESTRICT_TORQUE_ON: float = 0.5   # enter when torque exceeds this
@@ -93,10 +93,11 @@ class ContactClassifier:
         servo_ids = sorted({m for blob in hold.q_blobs for m in blob.modules if m >= 1})
 
         # --- WRENCH hysteresis ---
-        # Enter: joint clearly displaced from home AND motor resisting.
-        # Exit: joint returns near home (motor succeeded or released).
+        # Enter: joint clearly displaced from commanded position AND motor resisting.
+        # Exit: joint returns near commanded position (motor succeeded or released).
         for sid in servo_ids:
-            displacement = abs(state.servo_positions.get(sid, 0.0))
+            commanded = state.servo_commanded_positions.get(sid, 0.0)
+            displacement = abs(state.servo_positions.get(sid, 0.0) - commanded)
             torque = abs(state.motor_torques.get(sid, 0.0))
             if sid in self._wrench_active:
                 if displacement < self.WRENCH_POS_OFF_RAD:

@@ -972,134 +972,29 @@ class StrokeRippleScheme(ControlScheme):
         return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
 
 
-class StrokeWatchScheme(ControlScheme):
-    """Observer scheme: detects strokes along the body and logs them to console + Rerun.
+class WatchScheme(ControlScheme):
+    """Observer scheme: classifies STROKE / HOLD / SQUEEZE / RESTRICT / WRENCH.
 
-    Emits no servo commands. Run with --observe to avoid moving the robot.
-    Rerun paths logged: stroke/centroid, stroke/velocity, stroke/blob_count,
-    stroke/activation/mod_<i>.
-    """
+    Holds all joints at home (0°) so RESTRICT and WRENCH are detectable.
+    Logs contact transitions to console (always) and Rerun (when available).
 
-    name = "stroke-watch"
-
-    def __init__(self) -> None:
-        from petctl.perception.stroke import StrokeDetector
-        self._detector = StrokeDetector()
-        self._tick = 0
-        self._rr = None
-        try:
-            import rerun as rr
-            self._rr = rr
-        except ImportError:
-            pass
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        self._tick += 1
-
-        reading = self._detector.update(state)
-
-        rr = self._rr
-        if rr is not None:
-            # Scheme runs before RerunVisualizer.update(); set time explicitly
-            # (Rerun timeline is per-thread).
-            rr.set_time("time", duration=state.timestamp)
-            rr.log("stroke/velocity", rr.Scalars(reading.velocity if reading else 0.0))
-
-        # Console output at most every 3 ticks to keep it readable
-        if reading is not None and self._tick % 3 == 0:
-            arrow = "→" if reading.direction == "head_to_tail" else "←"
-            logger.info(
-                "[STROKE]  dir=%s %s  speed=%.1f mod/s  centroid=%.1f  side=%s  intensity=%.2f  conf=%.2f",
-                reading.direction.replace("_", " "), arrow,
-                reading.speed, reading.centroid, reading.side, reading.intensity, reading.confidence,
-            )
-
-        return []
-
-
-class HoldWatchScheme(ControlScheme):
-    """Observer scheme: detects holds and logs them to console + Rerun.
-
-    Emits no servo commands. Run with --observe to avoid moving the robot.
-    Rerun paths logged: hold/active, hold/centroid, hold/duration, hold/blob_count.
-    """
-
-    name = "hold-watch"
-
-    def __init__(self) -> None:
-        from petctl.perception.stroke import HoldDetector
-        self._detector = HoldDetector()
-        self._tick = 0
-        self._verbose = False
-        self._rr = None
-        try:
-            import rerun as rr
-            self._rr = rr
-        except ImportError:
-            pass
-
-    def on_start(self, controller: "Controller") -> None:
-        self._verbose = controller.log_touch
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        self._tick += 1
-
-        reading = self._detector.update(state)
-
-        rr = self._rr
-        if rr is not None:
-            rr.set_time("time", duration=state.timestamp)
-            rr.log("hold/active", rr.Scalars(1.0 if reading else 0.0))
-            rr.log("hold/centroid", rr.Scalars(reading.centroid if reading else 0.0))
-            rr.log("hold/duration", rr.Scalars(reading.duration if reading else 0.0))
-            rr.log("hold/blob_count", rr.Scalars(len(reading.q_blobs) if reading else 0))
-
-        if not self._verbose:
-            return []
-
-        if reading is not None and self._tick % 3 == 0:
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in reading.q_blobs)
-            logger.info(
-                "[HOLD]  blobs=%s  centroid=%.1f  dur=%.1fs  intensity=%.2f  side=%s",
-                blobs, reading.centroid, reading.duration, reading.intensity, reading.side,
-            )
-        elif reading is None and self._tick % 30 == 0:
-            logger.info("[HOLD]  --")
-
-        return []
-
-
-class ContactWatchScheme(ControlScheme):
-    """Contact type observer: classifies STROKE / HOLD / SQUEEZE / RESTRICT / WRENCH.
-
-    Holds all joints at home (0°). Motors resist displacement, so RESTRICT and
-    WRENCH are detectable whenever the user pushes against or holds away from home.
-
-    StrokeDetector and HoldDetector are mutually exclusive by construction
-    (same VELOCITY_THRESHOLD), so exactly one fires per tick when contact is active.
-
-    Rerun paths: stroke/velocity, contact/type (enum index 0-3),
-                 contact/torque_peak, contact/pressure_peak, hold/active, hold/centroid.
+    Rerun paths: stroke/velocity, hold/active, hold/centroid, hold/duration,
+                 hold/blob_count, contact/type, contact/torque_peak,
+                 contact/pressure_peak.
 
     To test:
       STROKE   — move a hand along the body
-      HOLD     — grip the body without pushing or squeezing hard
+      HOLD     — grip without pushing or squeezing hard
       SQUEEZE  — grip and compress firmly (FSR pressure above threshold)
       RESTRICT — hold a joint away from home while motors try to return
       WRENCH   — actively push a joint further away from home
     """
 
-    name = "contact-watch"
+    name = "watch"
 
     _TYPE_ORDER = ("hold", "squeeze", "restrict", "wrench")
 
     def __init__(self) -> None:
-        from petctl.perception.contact import ContactClassifier
-        from petctl.perception.stroke import HoldDetector, StrokeDetector
-        self._stroke = StrokeDetector()
-        self._hold = HoldDetector()
-        self._clf = ContactClassifier()
-        self._verbose = False
         self._prev_type: str | None = None
         self._rr = None
         try:
@@ -1109,30 +1004,29 @@ class ContactWatchScheme(ControlScheme):
             pass
 
     def on_start(self, controller: "Controller") -> None:
-        self._verbose = controller.log_touch
         logger.info(
-            "[ContactWatch] Holding all joints at home (0°).\n"
+            "[Watch] Holding all joints at home (0°).\n"
             "  STROKE   — move hand along body\n"
             "  HOLD     — grip without pushing or squeezing hard\n"
             "  SQUEEZE  — grip and compress (FSR)\n"
             "  RESTRICT — hold a joint away from home\n"
             "  WRENCH   — push a joint further away from home\n"
-            "Pass --log-touch to log contact type to console. Ctrl-C to stop."
+            "Ctrl-C to stop."
         )
 
     def _log_transition(self, prev: str | None, curr: str | None, details: str) -> None:
-        """Log a type transition. Only called when self._verbose is True."""
         if prev is not None and curr != prev:
             logger.info("[%s] end", CONTACT_LABELS.get(prev, prev.upper()[:8]))
         if curr is not None and curr != prev:
-            label = CONTACT_LABELS.get(curr, curr.upper()[:8])
-            logger.info("[%s] start  %s", label, details)
+            logger.info("[%s] start  %s", CONTACT_LABELS.get(curr, curr.upper()[:8]), details)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         commands = [ServoCommand(servo_id=sid, position=0.0) for sid in state.active_servo_ids]
 
-        stroke = self._stroke.update(state)
-        hold = self._hold.update(state)
+        touch = state.touch
+        stroke = touch.stroke if touch else None
+        hold = touch.hold if touch else None
+        cr = touch.contact if touch else None
 
         rr = self._rr
         if rr is not None:
@@ -1140,18 +1034,17 @@ class ContactWatchScheme(ControlScheme):
             rr.log("stroke/velocity", rr.Scalars(stroke.velocity if stroke else 0.0))
             rr.log("hold/active", rr.Scalars(1.0 if hold else 0.0))
             rr.log("hold/centroid", rr.Scalars(hold.centroid if hold else 0.0))
+            rr.log("hold/duration", rr.Scalars(hold.duration if hold else 0.0))
+            rr.log("hold/blob_count", rr.Scalars(len(hold.q_blobs) if hold else 0))
 
         if stroke is not None:
             curr = "stroke"
-            if self._verbose and curr != self._prev_type:
+            if curr != self._prev_type:
                 arrow = "→" if stroke.direction == "head_to_tail" else "←"
-                details = (
-                    f"{arrow}  speed={stroke.speed:.1f} mod/s"
-                    f"  centroid={stroke.centroid:.1f}"
-                    f"  side={stroke.side}"
-                    f"  conf={stroke.confidence:.2f}"
+                self._log_transition(
+                    self._prev_type, curr,
+                    f"{arrow}  speed={stroke.speed:.1f} mod/s  centroid={stroke.centroid:.1f}  side={stroke.side}  conf={stroke.confidence:.2f}",
                 )
-                self._log_transition(self._prev_type, curr, details)
             self._prev_type = curr
             if rr is not None:
                 rr.log("contact/type", rr.Scalars(-1.0))
@@ -1159,11 +1052,9 @@ class ContactWatchScheme(ControlScheme):
                 rr.log("contact/pressure_peak", rr.Scalars(0.0))
             return commands
 
-        if hold is None:
-            self._clf.reset()
-            if self._verbose and self._prev_type is not None:
-                label = CONTACT_LABELS.get(self._prev_type, self._prev_type.upper()[:8])
-                logger.info("[%s] end", label)
+        if hold is None or cr is None:
+            if self._prev_type is not None:
+                self._log_transition(self._prev_type, None, "")
             self._prev_type = None
             if rr is not None:
                 rr.log("contact/type", rr.Scalars(-1.0))
@@ -1171,7 +1062,6 @@ class ContactWatchScheme(ControlScheme):
                 rr.log("contact/pressure_peak", rr.Scalars(0.0))
             return commands
 
-        cr = self._clf.classify(hold, state)
         curr = cr.contact_type.value
         type_idx = float(self._TYPE_ORDER.index(curr))
 
@@ -1180,13 +1070,12 @@ class ContactWatchScheme(ControlScheme):
             rr.log("contact/torque_peak", rr.Scalars(cr.torque_peak))
             rr.log("contact/pressure_peak", rr.Scalars(cr.pressure_peak))
 
-        if self._verbose and curr != self._prev_type:
+        if curr != self._prev_type:
             blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
             servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
             torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
             pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-            details = f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}"
-            self._log_transition(self._prev_type, curr, details)
+            self._log_transition(self._prev_type, curr, f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
         self._prev_type = curr
 
         return commands
@@ -1379,9 +1268,7 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     WanderControlScheme,
     DriftControlScheme,
     ExploreControlScheme,
-    StrokeWatchScheme,
-    HoldWatchScheme,
-    ContactWatchScheme,
+    WatchScheme,
     YieldStiffScheme,
     PoseScheme,
 ]

@@ -50,7 +50,7 @@ from petctl.config import LOOP_LIMITS
 from petctl.perception.contact import CONTACT_LABELS
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
-from petctl.types import RobotState, ServoCommand
+from petctl.types import RobotState, ServoCommand, TouchEvent
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +58,13 @@ logger = logging.getLogger(__name__)
 _STROKE_END_GRACE_S: float = 0.45  # don't fire end until stroke absent this long
 
 
-class _TouchLogger:
-    """Runs stroke/hold/contact detection every tick and prints transitions."""
+class _TouchProcessor:
+    """Owns the touch detectors and runs them once per tick.
+
+    Called by the Controller immediately after get_state(). The result is
+    attached to state.touch so schemes, visualizers, and _TouchLogger all
+    read from the same computed value rather than each running their own detectors.
+    """
 
     def __init__(self) -> None:
         from petctl.perception.contact import ContactClassifier
@@ -67,16 +72,40 @@ class _TouchLogger:
         self._stroke = StrokeDetector()
         self._hold = HoldDetector()
         self._clf = ContactClassifier()
+
+    def update(self, state: RobotState) -> TouchEvent:
+        stroke = self._stroke.update(state)
+        if stroke is not None:
+            # Flush hold velocity window so hold fires promptly after stroke ends.
+            self._hold.reset()
+            self._clf.reset()
+            return TouchEvent(stroke=stroke)
+
+        hold = self._hold.update(state)
+        if hold is None:
+            self._clf.reset()
+            return TouchEvent()
+
+        contact = self._clf.classify(hold, state)
+        return TouchEvent(hold=hold, contact=contact)
+
+
+class _TouchLogger:
+    """Logs touch transition events to console, reading from state.touch."""
+
+    def __init__(self) -> None:
         self._prev: str | None = None
-        self._prev_direction: str | None = None
         self._stroke_last_t: float | None = None
         self._stroke_start_centroid: float | None = None
         self._stroke_last_centroid: float | None = None
         self._stroke_last_speed: float = 0.0
 
     def update(self, state: RobotState) -> None:
-        stroke = self._stroke.update(state)
-        hold = self._hold.update(state)
+        touch = state.touch
+        if touch is None:
+            return
+
+        stroke = touch.stroke
 
         if stroke is not None:
             curr = "stroke"
@@ -85,19 +114,17 @@ class _TouchLogger:
                 self._transition(self._prev, curr,
                     f"centroid={stroke.centroid:.1f}  side={stroke.side}")
             self._prev = curr
-            self._prev_direction = stroke.direction
             self._stroke_last_t = state.timestamp
             self._stroke_last_centroid = stroke.centroid
             self._stroke_last_speed = stroke.speed
-            self._clf.reset()
-            self._hold.reset()  # flush stroke frames so hold fires promptly after stroke ends
             return
 
-        # Grace period: a brief hold/squeeze or no-touch gap doesn't end a stroke.
+        # Grace period: don't end a stroke on a brief gap.
         if self._prev == "stroke" and self._stroke_last_t is not None:
             if state.timestamp - self._stroke_last_t < _STROKE_END_GRACE_S:
                 return
 
+        hold = touch.hold
         if hold is None:
             if self._prev is not None:
                 if self._prev == "stroke" and self._stroke_start_centroid is not None:
@@ -106,17 +133,17 @@ class _TouchLogger:
                     logger.info("[STROKE  ] end  %s from=%.1f to=%.1f  speed=%.1f mod/s",
                         arrow, s, e, self._stroke_last_speed)
                 else:
-                    logger.info("[%s] end", _CONTACT_LABELS.get(self._prev, self._prev.upper()[:8]))
+                    logger.info("[%s] end", CONTACT_LABELS.get(self._prev, self._prev.upper()[:8]))
             self._prev = None
-            self._prev_direction = None
             self._stroke_last_t = None
             self._stroke_start_centroid = None
             self._stroke_last_centroid = None
             self._stroke_last_speed = 0.0
-            self._clf.reset()
             return
 
-        cr = self._clf.classify(hold, state)
+        cr = touch.contact
+        if cr is None:
+            return
         curr = cr.contact_type.value
         if curr != self._prev:
             prev_for_transition = self._prev
@@ -140,8 +167,8 @@ class _TouchLogger:
 
     def _transition(self, prev: str | None, curr: str, details: str) -> None:
         if prev is not None:
-            logger.info("[%s] end", _CONTACT_LABELS.get(prev, prev.upper()[:8]))
-        logger.info("[%s] start  %s", _CONTACT_LABELS.get(curr, curr.upper()[:8]), details)
+            logger.info("[%s] end", CONTACT_LABELS.get(prev, prev.upper()[:8]))
+        logger.info("[%s] start  %s", CONTACT_LABELS.get(curr, curr.upper()[:8]), details)
 
 
 class Controller:
@@ -184,6 +211,7 @@ class Controller:
         self._touch_logger: Optional[_TouchLogger] = _TouchLogger() if log_touch else None
 
         self.power_manager = PowerManager()
+        self._touch_processor = _TouchProcessor()
         self._power_reset_requested: bool = False
 
         self._state: RobotState = RobotState.empty()
@@ -347,6 +375,8 @@ class Controller:
 
             # 1. Get state from backend
             self._state = await self.backend.get_state()
+            self._state.servo_commanded_positions = dict(self._slew_last_sent_rad)
+            self._state.touch = self._touch_processor.update(self._state)
 
             # 1b. Power management — evaluate protection conditions
             pm = self.power_manager
