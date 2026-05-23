@@ -221,7 +221,7 @@ class _TouchLogger:
                 and self._stroke_last_t is not None
                 and now - self._stroke_last_t < _STROKE_END_GRACE_S):
             curr = "stroke"  # grace period — keep sub-type
-        elif cr is not None and cr.contact_type.value != "touch":
+        elif cr is not None and cr.contact_type.value not in ("touch", "budge"):
             curr = cr.contact_type.value
         else:
             curr = None  # plain touch baseline — no sub-type label

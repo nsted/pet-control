@@ -90,7 +90,8 @@ class ContactClassifier:
     # TWIST/BUDGE: joint rotating passively (any centroid count).
     TWIST_VEL_ON: float = 0.3          # rad/s — enter twist/budge when velocity exceeds this
     TWIST_VEL_OFF: float = 0.15        # rad/s — exit twist/budge when velocity drops below this
-    TWIST_MIN_TRAVEL_RAD: float = 0.3  # rad — cumulative travel to upgrade BUDGE → TWIST
+    BUDGE_MIN_TRAVEL_RAD: float = 0.1  # rad — minimum travel before BUDGE fires
+    TWIST_MIN_TRAVEL_RAD: float = 0.3  # rad — cumulative travel to promote BUDGE → TWIST
 
     SQUEEZE_PRESSURE: float = 0.15
 
@@ -144,11 +145,12 @@ class ContactClassifier:
         for s in active_servos:
             if self._servo_travel.get(s, 0.0) >= self.TWIST_MIN_TRAVEL_RAD:
                 self._twist_promoted.add(s)
-        contact_type = (
-            ContactType.TWIST if self._twist_promoted & set(active_servos)
-            else ContactType.BUDGE
-        )
-        return ContactReading(contact_type=contact_type, affected_servos=active_servos)
+        if self._twist_promoted & set(active_servos):
+            return ContactReading(contact_type=ContactType.TWIST, affected_servos=active_servos)
+        max_travel = max(self._servo_travel.get(s, 0.0) for s in active_servos)
+        if max_travel < self.BUDGE_MIN_TRAVEL_RAD:
+            return None  # velocity active but not enough travel yet
+        return ContactReading(contact_type=ContactType.BUDGE, affected_servos=active_servos)
 
     def classify(self, hold: HoldReading, state: RobotState) -> ContactReading:
         """Return a ContactReading for the given hold and robot state."""
