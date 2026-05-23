@@ -103,6 +103,10 @@ class ContactClassifier:
         self._servo_travel: dict[int, float] = {}
         self._servo_last_pos: dict[int, float] = {}
 
+    def has_active_motion(self) -> bool:
+        """True if any servo is currently above the velocity exit threshold."""
+        return bool(self._twist_active)
+
     def reset(self) -> None:
         """Clear hysteresis state. Call when contact ends."""
         self._wrench_active.clear()

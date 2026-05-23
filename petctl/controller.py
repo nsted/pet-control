@@ -142,7 +142,8 @@ class _TouchProcessor:
                 ))
             if motion is not None:
                 return TouchEvent(contact=motion)
-            self._clf.reset()  # truly no contact — full reset including promotion
+            if not self._clf.has_active_motion():
+                self._clf.reset()  # no motion, no contact — full reset
             return TouchEvent()
 
         contact = self._clf.classify(hold, state)
