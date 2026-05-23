@@ -158,16 +158,15 @@ class StrokeDetector:
 
 class HoldDetector:
     """
-    Detects a hold gesture: substantial static contact on the robot body.
+    Detects static contact on the robot body.
 
     Fires when the global touch centroid is not moving (velocity < VELOCITY_THRESHOLD)
-    AND the contact meets one of:
-      - ≥1 qualifying blob spanning ≥2 modules  (cradling / wide single grip)
-      - ≥2 separate qualifying blobs            (two hands at distinct locations)
+    AND there is at least one qualifying blob.  A qualifying blob is a contiguous run
+    of modules where each module has ≥2 adjacent active cap pads — this filters single
+    isolated pad taps.
 
-    A "qualifying blob" is a contiguous run of modules where each module has
-    ≥2 adjacent active cap pads (intra-face or across the module boundary with
-    its neighbour).  This filters out single isolated pad taps.
+    The ContactClassifier downstream determines the sub-type (touch / squeeze / hold /
+    twist / restrict / wrench) based on blob count and motor state.
 
     Mutually exclusive with StrokeDetector by construction.
     """
@@ -199,7 +198,7 @@ class HoldDetector:
                 return None
 
         q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
-        if not (any(b.width >= 2 for b in q_blobs) or len(q_blobs) >= 2):
+        if not q_blobs:
             self._hold_start = None
             return None
 

@@ -1,26 +1,24 @@
 """
 Contact sub-classifier — enriches a HoldReading with motor-state context.
 
-Three sub-types extend plain HOLD:
-  RESTRICT  — motors are pushing but the joint is not moving (stalled under load).
-  WRENCH    — a joint is displaced from its commanded position and the motor is resisting.
-  SQUEEZE   — hold with meaningful FSR pressure across the held modules.
+Classification chains
+  One centroid:   TOUCH → STROKE | SQUEEZE | RESTRICT | BUDGE | TWIST
+  Two centroids:  TOUCH → STROKE | HOLD → SQUEEZE | RESTRICT | BUDGE | TWIST | WRENCH
 
-Both WRENCH and RESTRICT use per-servo hysteresis so they stay latched once
-triggered and don't flicker at threshold boundaries.
+Sub-type semantics
+  TOUCH    — one hand, static, no special condition.
+  SQUEEZE  — any centroid count, meaningful FSR pressure.
+  RESTRICT — any centroid count, motor stalled under load (high torque, near-zero velocity).
+  HOLD     — two hands, static, no motor event.
+  BUDGE    — any contact, brief or small joint displacement (travel < TWIST_MIN_TRAVEL_RAD).
+  TWIST    — any contact, joint rotating passively with meaningful travel (≥ TWIST_MIN_TRAVEL_RAD).
+  WRENCH   — two hands, joint displaced from commanded position while motor resists.
 
-WRENCH semantics:
-  Begins when displacement from the commanded position exceeds WRENCH_POS_ON_RAD
-  while motor torque is above WRENCH_TORQUE_NM.
-  Persists until the joint returns within WRENCH_POS_OFF_RAD of commanded.
-  Call reset() when contact ends.
+WRENCH, RESTRICT, and TWIST use per-servo hysteresis.
+BUDGE is promoted to TWIST once cumulative travel threshold is met.
 
-RESTRICT semantics:
-  Begins when |torque| > RESTRICT_TORQUE_NM and |velocity| < RESTRICT_VEL_ON.
-  Persists until torque drops below RESTRICT_TORQUE_OFF or velocity exceeds
-  RESTRICT_VEL_OFF.
-
-Priority: WRENCH > RESTRICT > SQUEEZE > HOLD.
+When multiple conditions are met simultaneously the priority is:
+  WRENCH > RESTRICT > TWIST > BUDGE > SQUEEZE > HOLD > TOUCH.
 All thresholds are initial guesses — tune on real hardware.
 """
 
@@ -39,28 +37,32 @@ CONTACT_LABELS: dict[str, str] = {
     "hold":     "HOLD    ",
     "squeeze":  "SQUEEZE ",
     "restrict": "RESTRICT",
+    "budge":    "BUDGE   ",
+    "twist":    "TWIST   ",
     "wrench":   "WRENCH  ",
 }
 
 class ContactType(str, Enum):
-    TOUCH = "touch"
-    HOLD = "hold"
-    SQUEEZE = "squeeze"
+    TOUCH    = "touch"
+    HOLD     = "hold"
+    SQUEEZE  = "squeeze"
     RESTRICT = "restrict"
-    WRENCH = "wrench"
+    BUDGE    = "budge"
+    TWIST    = "twist"
+    WRENCH   = "wrench"
 
 
 @dataclass
 class ContactReading:
     """Contact classification with optional hold/motor context.
 
-    For TOUCH: hold is None; centroid and side describe the raw pad activity.
-    For HOLD/SQUEEZE/RESTRICT/WRENCH: hold is populated.
+    For TOUCH: centroid and side describe the pad activity; hold may be populated.
+    For all other types: hold is populated.
     """
     contact_type: ContactType
     hold: HoldReading | None = None
-    centroid: float | None = None  # body-axis centroid (TOUCH type)
-    side: str = ""                  # active face(s) (TOUCH type)
+    centroid: float | None = None
+    side: str = ""
     affected_servos: list[int] = field(default_factory=list)
     torque_peak: float = 0.0
     pressure_peak: float = 0.0
@@ -79,30 +81,83 @@ class ContactClassifier:
     WRENCH_POS_ON_RAD: float = 0.15   # ~8.6° — displacement from commanded to enter wrench
     WRENCH_POS_OFF_RAD: float = 0.05  # ~2.9° — displacement from commanded to exit wrench
 
-    # RESTRICT: motor stalled under load.
-    RESTRICT_TORQUE_ON: float = 0.5   # enter when torque exceeds this
-    RESTRICT_TORQUE_OFF: float = 0.25  # exit when torque drops below this
-    RESTRICT_VEL_ON: float = 0.12     # enter when |velocity| is below this
-    RESTRICT_VEL_OFF: float = 0.22    # exit when |velocity| rises above this
+    # RESTRICT: motor stalled under load (any centroid count).
+    RESTRICT_TORQUE_ON: float = 0.5
+    RESTRICT_TORQUE_OFF: float = 0.25
+    RESTRICT_VEL_ON: float = 0.12
+    RESTRICT_VEL_OFF: float = 0.22
+
+    # TWIST/BUDGE: joint rotating passively (any centroid count).
+    TWIST_VEL_ON: float = 0.3          # rad/s — enter twist/budge when velocity exceeds this
+    TWIST_VEL_OFF: float = 0.15        # rad/s — exit twist/budge when velocity drops below this
+    TWIST_MIN_TRAVEL_RAD: float = 0.3  # rad — cumulative travel to upgrade BUDGE → TWIST
 
     SQUEEZE_PRESSURE: float = 0.15
 
     def __init__(self) -> None:
         self._wrench_active: set[int] = set()
         self._restrict_active: set[int] = set()
+        self._twist_active: set[int] = set()
+        self._twist_promoted: set[int] = set()  # servos that have crossed TWIST_MIN_TRAVEL_RAD
+        self._servo_travel: dict[int, float] = {}
+        self._servo_last_pos: dict[int, float] = {}
 
     def reset(self) -> None:
         """Clear hysteresis state. Call when contact ends."""
         self._wrench_active.clear()
         self._restrict_active.clear()
+        self._twist_active.clear()
+        self._twist_promoted.clear()
+        self._servo_travel.clear()
+        self._servo_last_pos.clear()
+
+    def classify_no_hold(self, state: RobotState) -> ContactReading | None:
+        """Check for BUDGE/TWIST from motor state alone — no qualifying hold required.
+
+        Returns a ContactReading (hold=None) if any servo is moving above the velocity
+        threshold, else None.  WRENCH/RESTRICT/SQUEEZE are not checked.
+        """
+        servo_ids = sorted(sid for sid in state.motor_velocities if sid >= 1)
+        if not servo_ids:
+            return None
+
+        for sid in servo_ids:
+            pos = state.servo_positions.get(sid, 0.0)
+            if sid in self._servo_last_pos:
+                self._servo_travel[sid] = self._servo_travel.get(sid, 0.0) + abs(pos - self._servo_last_pos[sid])
+            self._servo_last_pos[sid] = pos
+
+            v = abs(state.motor_velocities.get(sid, 0.0))
+            if sid in self._twist_active:
+                if v < self.TWIST_VEL_OFF:
+                    self._twist_active.discard(sid)
+                    self._servo_travel.pop(sid, None)
+            else:
+                if v >= self.TWIST_VEL_ON:
+                    self._twist_active.add(sid)
+        self._twist_active &= set(servo_ids)
+
+        if not self._twist_active:
+            return None
+
+        active_servos = sorted(self._twist_active)
+        for s in active_servos:
+            if self._servo_travel.get(s, 0.0) >= self.TWIST_MIN_TRAVEL_RAD:
+                self._twist_promoted.add(s)
+        contact_type = (
+            ContactType.TWIST if self._twist_promoted & set(active_servos)
+            else ContactType.BUDGE
+        )
+        return ContactReading(contact_type=contact_type, affected_servos=active_servos)
 
     def classify(self, hold: HoldReading, state: RobotState) -> ContactReading:
         """Return a ContactReading for the given hold and robot state."""
         servo_ids = sorted({m for blob in hold.q_blobs for m in blob.modules if m >= 1})
+        two_centroids = len(hold.q_blobs) >= 2
 
-        # --- WRENCH hysteresis ---
-        # Enter: joint clearly displaced from commanded position AND motor resisting.
-        # Exit: joint returns near commanded position (motor succeeded or released).
+        # --- WRENCH hysteresis (two centroids required) ---
+        # Always update hysteresis state even when not returning WRENCH, so exit
+        # conditions are evaluated correctly when centroid count drops below 2.
         for sid in servo_ids:
             commanded = state.servo_commanded_positions.get(sid, 0.0)
             displacement = abs(state.servo_positions.get(sid, 0.0) - commanded)
@@ -115,8 +170,8 @@ class ContactClassifier:
                     self._wrench_active.add(sid)
         self._wrench_active &= set(servo_ids)
 
-        wrench_servos = sorted(self._wrench_active)
-        if wrench_servos:
+        if two_centroids and self._wrench_active:
+            wrench_servos = sorted(self._wrench_active)
             torque_peak = max(abs(state.motor_torques.get(s, 0.0)) for s in wrench_servos)
             return ContactReading(
                 hold=hold,
@@ -125,9 +180,7 @@ class ContactClassifier:
                 torque_peak=torque_peak,
             )
 
-        # --- RESTRICT hysteresis ---
-        # Enter: high torque, near-zero velocity (motor stalled under load).
-        # Exit: torque drops OR velocity rises (load removed or joint moves).
+        # --- RESTRICT hysteresis (any centroid count) ---
         for sid in servo_ids:
             t = abs(state.motor_torques.get(sid, 0.0))
             v = abs(state.motor_velocities.get(sid, 0.0))
@@ -139,8 +192,8 @@ class ContactClassifier:
                     self._restrict_active.add(sid)
         self._restrict_active &= set(servo_ids)
 
-        restrict_servos = sorted(self._restrict_active)
-        if restrict_servos:
+        if self._restrict_active:
+            restrict_servos = sorted(self._restrict_active)
             torque_peak = max(abs(state.motor_torques.get(s, 0.0)) for s in restrict_servos)
             return ContactReading(
                 hold=hold,
@@ -149,20 +202,69 @@ class ContactClassifier:
                 torque_peak=torque_peak,
             )
 
-        # --- SQUEEZE ---
+        # --- TWIST/BUDGE hysteresis (passive joint rotation; any centroid count) ---
+        # Motor velocity is the primary signal — blob geometry is unreliable when both
+        # hands grip close together or one grip is too light to qualify as a second blob.
+        # WRENCH and RESTRICT already handle high-torque cases above.
+        # Cumulative travel per servo distinguishes a real twist (≥ TWIST_MIN_TRAVEL_RAD)
+        # from a brief jostle (BUDGE).
+        for sid in servo_ids:
+            pos = state.servo_positions.get(sid, 0.0)
+            if sid in self._servo_last_pos:
+                self._servo_travel[sid] = self._servo_travel.get(sid, 0.0) + abs(pos - self._servo_last_pos[sid])
+            self._servo_last_pos[sid] = pos
+
+            v = abs(state.motor_velocities.get(sid, 0.0))
+            if sid in self._twist_active:
+                if v < self.TWIST_VEL_OFF:
+                    self._twist_active.discard(sid)
+                    self._servo_travel.pop(sid, None)
+            else:
+                if v >= self.TWIST_VEL_ON:
+                    self._twist_active.add(sid)
+        self._twist_active &= set(servo_ids)
+
+        if self._twist_active:
+            active_servos = sorted(self._twist_active)
+            for s in active_servos:
+                if self._servo_travel.get(s, 0.0) >= self.TWIST_MIN_TRAVEL_RAD:
+                    self._twist_promoted.add(s)
+            contact_type = (
+                ContactType.TWIST if self._twist_promoted & set(active_servos)
+                else ContactType.BUDGE
+            )
+            return ContactReading(
+                hold=hold,
+                contact_type=contact_type,
+                affected_servos=active_servos,
+            )
+
+        # --- SQUEEZE (any centroid count, one blob's pressure sufficient) ---
         held_modules = {m for blob in hold.q_blobs for m in blob.modules}
-        pressure_total = sum(
-            state.sensors[m].pressure_total for m in held_modules if m in state.sensors
-        )
         pressure_peak = max(
             (state.sensors[m].pressure_total for m in held_modules if m in state.sensors),
             default=0.0,
         )
-        if pressure_total > self.SQUEEZE_PRESSURE:
+        blob_pressure_max = max(
+            (
+                sum(state.sensors[m].pressure_total for m in blob.modules if m in state.sensors)
+                for blob in hold.q_blobs
+            ),
+            default=0.0,
+        )
+        if blob_pressure_max > self.SQUEEZE_PRESSURE:
             return ContactReading(
                 hold=hold,
                 contact_type=ContactType.SQUEEZE,
                 pressure_peak=pressure_peak,
             )
 
-        return ContactReading(hold=hold, contact_type=ContactType.HOLD)
+        # --- HOLD (two centroids) / TOUCH fallback (one centroid) ---
+        if two_centroids:
+            return ContactReading(hold=hold, contact_type=ContactType.HOLD)
+        return ContactReading(
+            hold=hold,
+            contact_type=ContactType.TOUCH,
+            centroid=hold.centroid,
+            side=hold.side,
+        )
