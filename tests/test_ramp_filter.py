@@ -95,8 +95,80 @@ class TestRampFilterBasics:
         dt = 1.0 / 30.0
         _seed_ramp(b, pos=0.0, dt_ago=dt)
 
+        await b.send_commands([_cmd(target)])
         for _ in range(200):
-            _seed_ramp(b, pos=_decode_pos(b._pending_frames.get(MOTOR_ID, "t00780000000000000000")), dt_ago=dt)
+            current = _decode_pos(b._pending_frames[MOTOR_ID])
+            b._motor_state[MOTOR_ID]["pos"] = current  # motor tracks command
+            _seed_ramp(b, pos=current, dt_ago=dt)
+            await b.send_commands([_cmd(target)])
+
+        assert abs(_decode_pos(b._pending_frames[MOTOR_ID]) - target) < 0.01
+
+    @pytest.mark.asyncio
+    async def test_no_snap_after_occlusion(self):
+        """Motor held in place during ramp must not snap when freed."""
+        b = _make_backend()
+        dt = 1.0 / 30.0
+        target = 2.0
+
+        # Ramp partway toward target while motor tracks normally.
+        _seed_ramp(b, pos=0.0, dt_ago=dt)
+        await b.send_commands([_cmd(target)])
+        for _ in range(9):
+            current = _decode_pos(b._pending_frames[MOTOR_ID])
+            b._motor_state[MOTOR_ID]["pos"] = current
+            _seed_ramp(b, pos=current, dt_ago=dt)
+            await b.send_commands([_cmd(target)])
+
+        pos_before_occlusion = _decode_pos(b._pending_frames[MOTOR_ID])
+
+        # Occlusion: motor stays put for 20 ticks while commands keep coming.
+        for _ in range(20):
+            b._motor_state[MOTOR_ID]["pos"] = pos_before_occlusion
+            _seed_ramp(b, pos=pos_before_occlusion, dt_ago=dt)
+            await b.send_commands([_cmd(target)])
+
+        # First command after occlusion clears: step must not exceed one ramp budget.
+        b._motor_state[MOTOR_ID]["pos"] = pos_before_occlusion
+        _seed_ramp(b, pos=pos_before_occlusion, dt_ago=dt)
+        await b.send_commands([_cmd(target)])
+
+        max_step = LOOP_LIMITS.max_speed_rad_s * dt
+        pos_after = _decode_pos(b._pending_frames[MOTOR_ID])
+        assert pos_after <= pos_before_occlusion + max_step + 0.01, (
+            f"snap detected: jumped {pos_after - pos_before_occlusion:.3f} rad in one tick"
+        )
+
+    @pytest.mark.asyncio
+    async def test_antiwindup_clamp_limits_overshoot(self):
+        """During occlusion _last_mit_abs_pos saturates at physical + anti_windup_rad."""
+        b = _make_backend()
+        dt = 1.0 / 30.0
+        blocked_pos = 0.5
+        target = 3.0
+
+        b._motor_state[MOTOR_ID]["pos"] = blocked_pos
+        _seed_ramp(b, pos=blocked_pos, dt_ago=dt)
+
+        w = LOOP_LIMITS.anti_windup_rad
+        max_step = LOOP_LIMITS.max_speed_rad_s * dt
+        # Run 200 ticks with motor stuck at blocked_pos.
+        for _ in range(200):
+            b._motor_state[MOTOR_ID]["pos"] = blocked_pos
+            _seed_ramp(b, pos=b._last_mit_abs_pos.get(MOTOR_ID, blocked_pos), dt_ago=dt)
+            await b.send_commands([_cmd(target)])
+            commanded = _decode_pos(b._pending_frames[MOTOR_ID])
+            # Ceiling: clamp limits last_p to physical+window, then pos_rad adds max_step.
+            assert commanded <= blocked_pos + w + max_step + 0.01, (
+                f"wind-up not clamped: commanded={commanded:.3f} "
+                f"physical={blocked_pos:.3f} window+step={w + max_step:.3f}"
+            )
+
+        # Release: motor now tracks; verify smooth convergence without snap.
+        for _ in range(200):
+            current = _decode_pos(b._pending_frames[MOTOR_ID])
+            b._motor_state[MOTOR_ID]["pos"] = current
+            _seed_ramp(b, pos=current, dt_ago=dt)
             await b.send_commands([_cmd(target)])
 
         assert abs(_decode_pos(b._pending_frames[MOTOR_ID]) - target) < 0.01
@@ -193,6 +265,7 @@ class TestResetSeeding:
         b._motor_state[MOTOR_ID]["pos"] = 3.0
         b._ws = AsyncMock()
         await b.set_hardware_zero()
+        b._motor_state[MOTOR_ID]["pos"] = 0.0  # motor reports new zero after hardware reset
 
         # Command software position 2.0; offset cleared → absolute target = 2.0, delta = 2.0 from 0.0
         await b.send_commands([_cmd(2.0)])

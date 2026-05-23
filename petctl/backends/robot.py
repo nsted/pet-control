@@ -234,13 +234,21 @@ class RobotBackend(_BackendBase):
             if sid in self._disabled_motor_ids:
                 continue  # don't drift tracking state while motor is off
             p_target = cmd.position + self._angle_offsets.get(sid, 0.0)
-            last_p = self._last_mit_abs_pos.get(sid)
             last_t = self._last_mit_wall_s.get(sid)
-            if last_p is None:
-                # Seed from current physical position so the first command ramps
-                # from where the motor actually is rather than snapping to p_target.
-                phys = self._motor_state.get(sid)
+            phys = self._motor_state.get(sid)
+            prev_last_p = self._last_mit_abs_pos.get(sid)
+
+            if prev_last_p is None:
+                # First command: seed from physical to avoid a snap on the first move.
                 last_p = phys["pos"] if phys is not None else p_target
+            elif phys is not None:
+                # Anti-windup: clamp ramp state to within window of actual position.
+                # During normal motion phys ≈ prev_last_p so clamp never fires.
+                # During occlusion it saturates at physical ± window, bounding torque.
+                w = LOOP_LIMITS.anti_windup_rad
+                last_p = max(min(prev_last_p, phys["pos"] + w), phys["pos"] - w)
+            else:
+                last_p = prev_last_p
             if last_t is not None:
                 # Cap dt at one motor-TX period so a gap (scheme swap, slow tick,
                 # reconnect) never inflates max_step into a position snap.

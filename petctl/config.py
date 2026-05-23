@@ -63,6 +63,12 @@ class ControlLoopLimits:
     # (command_smoothing_tau_s × ~5) plus a small margin.
     idle_hold_s: float = 60.0
 
+    # Anti-windup window for the backend ramp-filter integrator (_last_mit_abs_pos).
+    # During a physical occlusion the integrator is clamped to within this distance
+    # of the motor's actual position, keeping holding torque = kp × anti_windup_rad.
+    # 0.3 rad ≈ 17° — ~5 motor-TX ticks of max_speed budget.
+    anti_windup_rad: float = 0.3
+
     # Background sensor poll rate (touch + FSR).
     sensor_poll_hz: float = 20.0
     sensor_poll_hz_min: float = 0.5
