@@ -47,7 +47,7 @@ import time
 from typing import Optional
 
 from petctl.config import LOOP_LIMITS
-from petctl.perception.contact import CONTACT_LABELS
+from petctl.perception.contact import CONTACT_LABELS, ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState, ServoCommand, TouchEvent
@@ -67,11 +67,13 @@ class _TouchProcessor:
     """
 
     def __init__(self) -> None:
-        from petctl.perception.contact import ContactClassifier
-        from petctl.perception.stroke import HoldDetector, StrokeDetector
+        from petctl.perception.contact import ContactClassifier, ContactReading
+        from petctl.perception.stroke import HoldDetector, StrokeDetector, qualifying_contact
         self._stroke = StrokeDetector()
         self._hold = HoldDetector()
         self._clf = ContactClassifier()
+        self._qualifying_contact = qualifying_contact
+        self._ContactReading = ContactReading
 
     def update(self, state: RobotState) -> TouchEvent:
         stroke = self._stroke.update(state)
@@ -84,6 +86,13 @@ class _TouchProcessor:
         hold = self._hold.update(state)
         if hold is None:
             self._clf.reset()
+            centroid, side = self._qualifying_contact(state)
+            if centroid is not None:
+                return TouchEvent(contact=self._ContactReading(
+                    contact_type=ContactType.TOUCH,
+                    centroid=centroid,
+                    side=side,
+                ))
             return TouchEvent()
 
         contact = self._clf.classify(hold, state)
@@ -124,8 +133,8 @@ class _TouchLogger:
             if state.timestamp - self._stroke_last_t < _STROKE_END_GRACE_S:
                 return
 
-        hold = touch.hold
-        if hold is None:
+        cr = touch.contact
+        if cr is None:
             if self._prev is not None:
                 if self._prev == "stroke" and self._stroke_start_centroid is not None:
                     s, e = self._stroke_start_centroid, self._stroke_last_centroid
@@ -141,9 +150,6 @@ class _TouchLogger:
             self._stroke_last_speed = 0.0
             return
 
-        cr = touch.contact
-        if cr is None:
-            return
         curr = cr.contact_type.value
         if curr != self._prev:
             prev_for_transition = self._prev
@@ -157,12 +163,17 @@ class _TouchLogger:
             self._stroke_last_centroid = None
             self._stroke_last_speed = 0.0
             self._stroke_last_t = None
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
-            servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
-            torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
-            pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-            self._transition(prev_for_transition, curr,
-                f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
+            if curr == "touch":
+                centroid_str = f"centroid={cr.centroid:.1f}  " if cr.centroid is not None else ""
+                details = f"{centroid_str}side={cr.side}" if cr.side else centroid_str.rstrip()
+            else:
+                hold = touch.hold  # non-None for hold/squeeze/restrict/wrench
+                blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
+                servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
+                torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
+                pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
+                details = f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}"
+            self._transition(prev_for_transition, curr, details)
         self._prev = curr
 
     def _transition(self, prev: str | None, curr: str, details: str) -> None:

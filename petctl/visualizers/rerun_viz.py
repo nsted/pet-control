@@ -288,7 +288,7 @@ class RerunVisualizer(Visualizer):
         self._pad_quats: list = []
         self._rr = None
         self._show_pad_labels: bool = False
-        self._contact_type: str = "none"      # stroke | hold | squeeze | restrict | wrench | none
+        self._contact_type: str = "none"      # touch | stroke | hold | squeeze | restrict | wrench | none
         self._contact_color_until: float = 0.0
         self._last_viz_time: float = -1.0
         self._prev_touch_colors: dict[int, tuple] = {}
@@ -618,7 +618,7 @@ class RerunVisualizer(Visualizer):
             current.append(mod_id)
         if current:
             blobs.append(current)
-        min_pads = 1 if self._contact_type == "stroke" else 2
+        min_pads = 1 if self._contact_type in ("stroke", "touch") else 2
         blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= min_pads]
 
         color = {

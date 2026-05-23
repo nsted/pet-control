@@ -34,6 +34,7 @@ from petctl.types import RobotState
 
 # Fixed-width labels for console log lines, keyed by contact type string.
 CONTACT_LABELS: dict[str, str] = {
+    "touch":    "TOUCH   ",
     "stroke":   "STROKE  ",
     "hold":     "HOLD    ",
     "squeeze":  "SQUEEZE ",
@@ -42,6 +43,7 @@ CONTACT_LABELS: dict[str, str] = {
 }
 
 class ContactType(str, Enum):
+    TOUCH = "touch"
     HOLD = "hold"
     SQUEEZE = "squeeze"
     RESTRICT = "restrict"
@@ -50,9 +52,15 @@ class ContactType(str, Enum):
 
 @dataclass
 class ContactReading:
-    """HoldReading enriched with contact sub-type and motor/pressure context."""
-    hold: HoldReading
+    """Contact classification with optional hold/motor context.
+
+    For TOUCH: hold is None; centroid and side describe the raw pad activity.
+    For HOLD/SQUEEZE/RESTRICT/WRENCH: hold is populated.
+    """
     contact_type: ContactType
+    hold: HoldReading | None = None
+    centroid: float | None = None  # body-axis centroid (TOUCH type)
+    side: str = ""                  # active face(s) (TOUCH type)
     affected_servos: list[int] = field(default_factory=list)
     torque_peak: float = 0.0
     pressure_peak: float = 0.0

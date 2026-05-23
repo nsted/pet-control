@@ -19,6 +19,7 @@ from petctl.types import RobotState
 PAD_THRESHOLD: float = 0.35     # minimum per-pad value to contribute to centroid
 TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grouping
 VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
+MIN_STROKE_TRAVEL: float = 0.35  # centroid must travel this far (body-units) over the velocity window
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
 TOUCH_GAP_GRACE_S: float = 0.25  # don't clear velocity window during brief inter-module gaps
@@ -131,6 +132,13 @@ class StrokeDetector:
         velocity, r_squared = _linear_fit(list(self._window))
 
         if abs(velocity) < VELOCITY_THRESHOLD:
+            return None
+
+        # A press keeps the centroid near the contact location — the linear fit can
+        # still show a high slope from sensor noise or settling.  Require the centroid
+        # to have actually moved over the window so that presses and local oscillations
+        # are not mistaken for strokes.
+        if abs(centroid - self._window[0][1]) < MIN_STROKE_TRAVEL:
             return None
 
         activations = {mid: s.touch_total for mid, s in state.sensors.items()}
@@ -362,6 +370,34 @@ def _active_side(state: RobotState) -> str:
     if has_right:
         parts.append("right")
     return "-".join(parts) if parts else "none"
+
+
+def any_contact(state: RobotState) -> tuple[float | None, float, str]:
+    """Return (centroid, intensity, side) for current pad activity.
+
+    centroid is None when no pad is above PAD_THRESHOLD (no contact).
+    """
+    centroid, intensity = _pad_centroid(state)
+    side = _active_side(state) if centroid is not None else "none"
+    return centroid, intensity, side
+
+
+def qualifying_contact(state: RobotState) -> tuple[float | None, str]:
+    """Return (centroid, side) for contact qualifying as real touch.
+
+    Requires at least one module with ≥2 physically adjacent pads above
+    PAD_THRESHOLD.  Filters single floating/noisy pads that would otherwise
+    pass any_contact.  Returns (None, "none") when no qualifying contact.
+    """
+    q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
+    if not q_blobs:
+        return None, "none"
+    total_w = sum(b.intensity * b.width for b in q_blobs)
+    centroid = (
+        sum(b.centroid * b.intensity * b.width for b in q_blobs) / total_w
+        if total_w > 0 else q_blobs[0].centroid
+    )
+    return centroid, _active_side(state)
 
 
 def _linear_fit(window: list[tuple[float, float]]) -> tuple[float, float]:
