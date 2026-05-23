@@ -50,7 +50,7 @@ from petctl.config import LOOP_LIMITS
 from petctl.perception.contact import CONTACT_LABELS, ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
-from petctl.types import RobotState, ServoCommand, TouchEvent
+from petctl.types import RobotState, ServoCommand, TouchEvent, TouchSummary
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +330,49 @@ class _TouchLogger:
             logger.info("[%s] end  dur=%.1fs", label, dur)
 
 
+class _TouchEventEmitter:
+    """Detects touch type transitions and pushes TouchSummary to a queue.
+
+    Emits on onset, type-change, and end — not every tick.  The queue is
+    bounded; summaries are dropped (not block) when the consumer is slow.
+    """
+
+    def __init__(self, queue: asyncio.Queue) -> None:
+        self._queue = queue
+        self._last_type: str = "none"
+        self._session_start: float | None = None
+
+    def update(self, state: RobotState) -> None:
+        touch = state.touch
+        if touch is None:
+            return
+        now = state.timestamp
+        curr = self._touch_type(touch)
+        if curr == self._last_type:
+            return
+
+        if curr != "none" and self._last_type == "none":
+            self._session_start = now
+        elif curr == "none":
+            self._session_start = None
+
+        session_dur = now - self._session_start if self._session_start is not None else 0.0
+        summary = TouchSummary.from_touch_event(touch, now, session_dur)
+        self._last_type = curr
+        try:
+            self._queue.put_nowait(summary)
+        except asyncio.QueueFull:
+            pass
+
+    @staticmethod
+    def _touch_type(touch: TouchEvent) -> str:
+        if touch.stroke is not None:
+            return "rub" if touch.stroke.is_rub else "stroke"
+        if touch.contact is not None:
+            return touch.contact.contact_type.value
+        return "none"
+
+
 class Controller:
     """
     Central coordinator for petctl.
@@ -372,6 +415,12 @@ class Controller:
         self.power_manager = PowerManager()
         self._touch_processor = _TouchProcessor()
         self._power_reset_requested: bool = False
+
+        # Async queue of TouchSummary events, emitted on type transitions.
+        # Bounded so a slow consumer never stalls the control loop.
+        # Read from this in any async task to receive touch events for LLM or other consumers.
+        self.touch_events: asyncio.Queue[TouchSummary] = asyncio.Queue(maxsize=64)
+        self._touch_emitter = _TouchEventEmitter(self.touch_events)
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -536,6 +585,7 @@ class Controller:
             self._state = await self.backend.get_state()
             self._state.servo_commanded_positions = dict(self._slew_last_sent_rad)
             self._state.touch = self._touch_processor.update(self._state)
+            self._touch_emitter.update(self._state)
 
             # 1b. Power management — evaluate protection conditions
             pm = self.power_manager
