@@ -57,6 +57,29 @@ logger = logging.getLogger(__name__)
 
 _STROKE_END_GRACE_S: float = 0.45  # don't fire end until stroke absent this long
 
+# Downgrade hysteresis: how many consecutive frames at a lower level are required
+# before committing a downgrade.  Upgrades are always immediate.
+_DOWNGRADE_GRACE_FRAMES: int = 8  # ~265ms at 30Hz
+
+# Contact levels for hysteresis comparison (higher = more specific).
+_CONTACT_LEVEL: dict[str, int] = {
+    "none":     0,
+    "touch":    1,
+    "hold":     2,
+    "squeeze":  3,
+    "restrict": 4,
+    "wrench":   5,
+    "stroke":   6,
+}
+
+
+def _event_level(event: TouchEvent) -> int:
+    if event.stroke is not None:
+        return _CONTACT_LEVEL["stroke"]
+    if event.contact is not None:
+        return _CONTACT_LEVEL.get(event.contact.contact_type.value, 1)
+    return _CONTACT_LEVEL["none"]
+
 
 class _TouchProcessor:
     """Owns the touch detectors and runs them once per tick.
@@ -64,6 +87,11 @@ class _TouchProcessor:
     Called by the Controller immediately after get_state(). The result is
     attached to state.touch so schemes, visualizers, and _TouchLogger all
     read from the same computed value rather than each running their own detectors.
+
+    Hysteresis: upgrades (touch → hold → squeeze/restrict/wrench) are immediate.
+    Downgrades require _DOWNGRADE_GRACE_FRAMES consecutive frames at the lower
+    level before being committed.  This suppresses sub-200ms oscillations at
+    hold/touch and stroke/touch boundaries caused by qualifying-blob flicker.
     """
 
     def __init__(self) -> None:
@@ -74,8 +102,21 @@ class _TouchProcessor:
         self._clf = ContactClassifier()
         self._qualifying_contact = qualifying_contact
         self._ContactReading = ContactReading
+        self._committed: TouchEvent = TouchEvent()
+        self._downgrade_count: int = 0
 
     def update(self, state: RobotState) -> TouchEvent:
+        raw = self._detect(state)
+        if _event_level(raw) < _event_level(self._committed):
+            self._downgrade_count += 1
+            if self._downgrade_count < _DOWNGRADE_GRACE_FRAMES:
+                return self._committed  # hold the higher state
+        else:
+            self._downgrade_count = 0
+        self._committed = raw
+        return self._committed
+
+    def _detect(self, state: RobotState) -> TouchEvent:
         stroke = self._stroke.update(state)
         if stroke is not None:
             # Flush hold velocity window so hold fires promptly after stroke ends.
