@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 
 _STROKE_END_GRACE_S: float = 0.45   # don't fire end until stroke absent this long
+_SUBTYPE_END_GRACE_S: float = 0.35  # hold a sub-type after apparent downgrade before logging the end
 _TOUCH_MIN_DUR_S: float = 0.220     # suppress any touch event shorter than this
 
 # Downgrade hysteresis: how many consecutive frames at a lower level are required
@@ -173,6 +174,7 @@ class _TouchLogger:
         self._session_start_details: str = ""
         self._subtype: str | None = None        # currently active logged sub-type
         self._subtype_start: float | None = None
+        self._subtype_last_t: float | None = None  # last tick the sub-type was genuinely active
         self._stroke_start_centroid: float | None = None
         self._stroke_last_centroid: float | None = None
         self._stroke_last_speed: float = 0.0
@@ -195,6 +197,13 @@ class _TouchLogger:
             self._session_start_details = self._session_details(touch)
             ct = cr.contact_type.value if cr is not None else "touch"
             self._session_type = ct if ct in ("budge", "twist") else "touch"
+
+        # Upgrade a pending BUDGE session to TOUCH the moment real contact appears.
+        if not self._session_logged and self._session_type == "budge":
+            ct = cr.contact_type.value if cr is not None else None
+            if stroke is not None or (ct is not None and ct not in ("budge",)):
+                self._session_type = "touch"
+                self._session_start_details = self._session_details(touch)
 
         # Emit session start once 220ms threshold is crossed
         if (not self._session_logged
@@ -231,6 +240,20 @@ class _TouchLogger:
         else:
             curr = None  # plain touch baseline — no sub-type label
 
+        # Sub-type end grace: suppress logging a downgrade in sub-type level if the
+        # higher sub-type was active recently.  Consolidates SQUEEZE flicker and brief
+        # TWIST→SQUEEZE→TWIST interruptions into a single event.
+        if (curr != self._subtype
+                and self._subtype is not None
+                and self._subtype != "stroke"  # stroke has its own grace above
+                and _CONTACT_LEVEL.get(curr or "none", 0) < _CONTACT_LEVEL.get(self._subtype, 0)
+                and self._subtype_last_t is not None
+                and now - self._subtype_last_t < _SUBTYPE_END_GRACE_S):
+            curr = self._subtype  # hold the higher sub-type
+
+        if curr == self._subtype:
+            self._subtype_last_t = now
+
         # Log sub-type transitions once session is confirmed
         if self._session_logged and curr != self._subtype:
             self._end_subtype(now)
@@ -240,6 +263,7 @@ class _TouchLogger:
     def _begin_subtype(self, subtype: str, touch: TouchEvent, now: float) -> None:
         self._subtype = subtype
         self._subtype_start = now
+        self._subtype_last_t = now
         details = self._subtype_details(subtype, touch)
         logger.info("[%s] start  %s", CONTACT_LABELS.get(subtype, subtype.upper()[:8]), details)
 
@@ -250,6 +274,7 @@ class _TouchLogger:
         dur = now - (self._subtype_start or now)
         self._subtype = None
         self._subtype_start = None
+        self._subtype_last_t = None
         label = CONTACT_LABELS.get(subtype, subtype.upper()[:8])
         if subtype == "stroke" and self._stroke_start_centroid is not None:
             s, e = self._stroke_start_centroid, self._stroke_last_centroid
