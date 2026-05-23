@@ -26,7 +26,6 @@ import time
 from typing import TYPE_CHECKING
 
 from petctl.config import MOTOR_LIMITS
-from petctl.perception.contact import CONTACT_LABELS
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
 
@@ -972,113 +971,6 @@ class StrokeRippleScheme(ControlScheme):
         return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
 
 
-class WatchScheme(ControlScheme):
-    """Observer scheme: classifies STROKE / HOLD / SQUEEZE / RESTRICT / WRENCH.
-
-    Holds all joints at home (0°) so RESTRICT and WRENCH are detectable.
-    Logs contact transitions to console (always) and Rerun (when available).
-
-    Rerun paths: stroke/velocity, hold/active, hold/centroid, hold/duration,
-                 hold/blob_count, contact/type, contact/torque_peak,
-                 contact/pressure_peak.
-
-    To test:
-      STROKE   — move a hand along the body
-      HOLD     — grip without pushing or squeezing hard
-      SQUEEZE  — grip and compress firmly (FSR pressure above threshold)
-      RESTRICT — hold a joint away from home while motors try to return
-      WRENCH   — actively push a joint further away from home
-    """
-
-    name = "watch"
-
-    _TYPE_ORDER = ("hold", "squeeze", "restrict", "wrench")
-
-    def __init__(self) -> None:
-        self._prev_type: str | None = None
-        self._rr = None
-        try:
-            import rerun as rr
-            self._rr = rr
-        except ImportError:
-            pass
-
-    def on_start(self, controller: "Controller") -> None:
-        logger.info(
-            "[Watch] Holding all joints at home (0°).\n"
-            "  STROKE   — move hand along body\n"
-            "  HOLD     — grip without pushing or squeezing hard\n"
-            "  SQUEEZE  — grip and compress (FSR)\n"
-            "  RESTRICT — hold a joint away from home\n"
-            "  WRENCH   — push a joint further away from home\n"
-            "Ctrl-C to stop."
-        )
-
-    def _log_transition(self, prev: str | None, curr: str | None, details: str) -> None:
-        if prev is not None and curr != prev:
-            logger.info("[%s] end", CONTACT_LABELS.get(prev, prev.upper()[:8]))
-        if curr is not None and curr != prev:
-            logger.info("[%s] start  %s", CONTACT_LABELS.get(curr, curr.upper()[:8]), details)
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        commands = [ServoCommand(servo_id=sid, position=0.0) for sid in state.active_servo_ids]
-
-        touch = state.touch
-        stroke = touch.stroke if touch else None
-        hold = touch.hold if touch else None
-        cr = touch.contact if touch else None
-
-        rr = self._rr
-        if rr is not None:
-            rr.set_time("time", duration=state.timestamp)
-            rr.log("stroke/velocity", rr.Scalars(stroke.velocity if stroke else 0.0))
-            rr.log("hold/active", rr.Scalars(1.0 if hold else 0.0))
-            rr.log("hold/centroid", rr.Scalars(hold.centroid if hold else 0.0))
-            rr.log("hold/duration", rr.Scalars(hold.duration if hold else 0.0))
-            rr.log("hold/blob_count", rr.Scalars(len(hold.q_blobs) if hold else 0))
-
-        if stroke is not None:
-            curr = "stroke"
-            if curr != self._prev_type:
-                arrow = "→" if stroke.direction == "head_to_tail" else "←"
-                self._log_transition(
-                    self._prev_type, curr,
-                    f"{arrow}  speed={stroke.speed:.1f} mod/s  centroid={stroke.centroid:.1f}  side={stroke.side}  conf={stroke.confidence:.2f}",
-                )
-            self._prev_type = curr
-            if rr is not None:
-                rr.log("contact/type", rr.Scalars(-1.0))
-                rr.log("contact/torque_peak", rr.Scalars(0.0))
-                rr.log("contact/pressure_peak", rr.Scalars(0.0))
-            return commands
-
-        if hold is None or cr is None:
-            if self._prev_type is not None:
-                self._log_transition(self._prev_type, None, "")
-            self._prev_type = None
-            if rr is not None:
-                rr.log("contact/type", rr.Scalars(-1.0))
-                rr.log("contact/torque_peak", rr.Scalars(0.0))
-                rr.log("contact/pressure_peak", rr.Scalars(0.0))
-            return commands
-
-        curr = cr.contact_type.value
-        type_idx = float(self._TYPE_ORDER.index(curr))
-
-        if rr is not None:
-            rr.log("contact/type", rr.Scalars(type_idx))
-            rr.log("contact/torque_peak", rr.Scalars(cr.torque_peak))
-            rr.log("contact/pressure_peak", rr.Scalars(cr.pressure_peak))
-
-        if curr != self._prev_type:
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
-            servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
-            torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
-            pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-            self._log_transition(self._prev_type, curr, f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
-        self._prev_type = curr
-
-        return commands
 
 
 class YieldStiffScheme(ControlScheme):
@@ -1268,7 +1160,6 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     WanderControlScheme,
     DriftControlScheme,
     ExploreControlScheme,
-    WatchScheme,
     YieldStiffScheme,
     PoseScheme,
 ]
