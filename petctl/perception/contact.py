@@ -18,7 +18,7 @@ WRENCH, RESTRICT, and TWIST use per-servo hysteresis.
 BUDGE is promoted to TWIST once cumulative travel threshold is met.
 
 When multiple conditions are met simultaneously the priority is:
-  WRENCH > RESTRICT > TWIST > BUDGE > SQUEEZE > HOLD > TOUCH.
+  WRENCH > RESTRICT > TWIST > SQUEEZE > HOLD > TOUCH > BUDGE.
 All thresholds are initial guesses — tune on real hardware.
 """
 
@@ -229,15 +229,13 @@ class ContactClassifier:
             for s in active_servos:
                 if self._servo_travel.get(s, 0.0) >= self.TWIST_MIN_TRAVEL_RAD:
                     self._twist_promoted.add(s)
-            contact_type = (
-                ContactType.TWIST if self._twist_promoted & set(active_servos)
-                else ContactType.BUDGE
-            )
-            return ContactReading(
-                hold=hold,
-                contact_type=contact_type,
-                affected_servos=active_servos,
-            )
+            if self._twist_promoted & set(active_servos):
+                return ContactReading(
+                    hold=hold,
+                    contact_type=ContactType.TWIST,
+                    affected_servos=active_servos,
+                )
+            # BUDGE has lower priority than TOUCH/HOLD/SQUEEZE — fall through.
 
         # --- SQUEEZE (any centroid count, one blob's pressure sufficient) ---
         held_modules = {m for blob in hold.q_blobs for m in blob.modules}

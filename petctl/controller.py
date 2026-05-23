@@ -65,11 +65,11 @@ _DOWNGRADE_GRACE_FRAMES: int = 8  # ~265ms at 30Hz
 # Contact levels for hysteresis comparison (higher = more specific).
 _CONTACT_LEVEL: dict[str, int] = {
     "none":     0,
-    "touch":    1,
-    "hold":     2,
-    "squeeze":  3,
-    "restrict": 4,
-    "budge":    5,
+    "budge":    1,
+    "touch":    2,
+    "hold":     3,
+    "squeeze":  4,
+    "restrict": 5,
     "twist":    6,
     "wrench":   7,
     "stroke":   8,
@@ -130,7 +130,8 @@ class _TouchProcessor:
         hold = self._hold.update(state)
         if hold is None:
             motion = self._clf.classify_no_hold(state)
-            if motion is not None:
+            # TWIST fires regardless of contact; BUDGE only fires when no contact.
+            if motion is not None and motion.contact_type == ContactType.TWIST:
                 return TouchEvent(contact=motion)
             centroid, side = self._qualifying_contact(state)
             if centroid is not None:
@@ -139,6 +140,8 @@ class _TouchProcessor:
                     centroid=centroid,
                     side=side,
                 ))
+            if motion is not None:
+                return TouchEvent(contact=motion)
             self._clf.reset()  # truly no contact — full reset including promotion
             return TouchEvent()
 
