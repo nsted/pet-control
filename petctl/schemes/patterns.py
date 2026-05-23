@@ -677,16 +677,24 @@ class ExploreControlScheme(ControlScheme):
         self._direction: dict[int, float] = {}
         self._stall_since: dict[int, float] = {}
         self._reversed_at: dict[int, float] = {}
+        self._pending_slew_resets: dict[int, float] = {}
 
     def on_start(self, controller: "Controller") -> None:
         self._pos_cmd = {}
         self._direction = {}
         self._stall_since = {}
         self._reversed_at = {}
+        self._pending_slew_resets = {}
         logger.info(
             "[Explore] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
             math.degrees(self._speed_rad_s),
         )
+
+    def take_slew_resets(self) -> dict[int, float]:
+        """Called by the controller before _apply_slew_to_commands each tick."""
+        resets = self._pending_slew_resets
+        self._pending_slew_resets = {}
+        return resets
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = time.monotonic()
@@ -719,7 +727,10 @@ class ExploreControlScheme(ControlScheme):
                 stall_triggered = True
 
             if stall_triggered:
-                self._pos_cmd[sid] = state.servo_positions.get(sid, self._pos_cmd[sid])
+                actual = state.servo_positions.get(sid, self._pos_cmd[sid])
+                clamped = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, actual))
+                self._pos_cmd[sid] = clamped
+                self._pending_slew_resets[sid] = clamped
                 self._direction[sid] *= -1.0
                 self._reversed_at[sid] = now
                 self._stall_since[sid] = 0.0

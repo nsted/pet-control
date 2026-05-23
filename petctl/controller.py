@@ -377,6 +377,14 @@ class Controller:
                 self._power_reset_requested = False
                 if pm.operator_reset():
                     logger.info("[Controller] Power manager reset: system re-enabled.")
+                    # Re-enter MIT mode for all servos — hardware is still in exit-motor-mode
+                    # after a thermal/compliance disable. enable_motor also resets ramp state,
+                    # preventing a position snap on the first command post-recovery.
+                    for _mid in sorted(self._state.active_servo_ids):
+                        try:
+                            await self.backend.enable_motor(_mid)
+                        except Exception as e:
+                            logger.error("[Controller] enable_motor(%d) after reset error: %s", _mid, e)
                 else:
                     logger.warning("[Controller] Power manager reset denied: conditions not safe.")
 
