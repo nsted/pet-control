@@ -25,6 +25,7 @@ import random
 import time
 from typing import TYPE_CHECKING
 
+from petctl.config import MOTOR_LIMITS
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
 
@@ -349,7 +350,7 @@ class StrokeReactControlScheme(ControlScheme):
     TOUCH_THRESHOLD: float = 0.05   # mean pad activation below this = no touch
     EQUAL_DEADZONE: float = 0.2     # |net_norm| below this = treat as equal
     MAX_SPEED_DEG_PER_S: float = 60.0
-    POS_LIMIT_DEG: float = math.degrees(12.5)  # stay inside MIT encoding range
+    POS_LIMIT_DEG: float = math.degrees(MOTOR_LIMITS.pos_max)
 
     def __init__(self) -> None:
         self._angle_deg: dict[int, float] = {}
@@ -431,7 +432,7 @@ class WanderControlScheme(ControlScheme):
     STALL_WINDOW_S: float = 0.8
     STALL_TORQUE_NM: float = 0.9       # peak torque that must be seen during the window
     REVERSAL_COOLDOWN_S: float = 0.5
-    MAX_POS_RAD: float = 12.4
+    MAX_POS_RAD: float = MOTOR_LIMITS.pos_max
 
     def __init__(self, speed_deg_per_s: float = SPEED_DEG_PER_S) -> None:
         self._speed_rad_s = math.radians(speed_deg_per_s)
@@ -549,7 +550,7 @@ class DriftControlScheme(ControlScheme):
     STALL_WINDOW_S: float = 0.8
     STALL_TORQUE_NM: float = 0.9
     REVERSAL_COOLDOWN_S: float = 0.5
-    MAX_POS_RAD: float = 12.4
+    MAX_POS_RAD: float = MOTOR_LIMITS.pos_max
 
     def __init__(self) -> None:
         self._start_time: float = 0.0
@@ -669,7 +670,7 @@ class ExploreControlScheme(ControlScheme):
     STALL_VEL_THRESHOLD: float = 0.15
     STALL_WINDOW_S: float = 0.6
     REVERSAL_COOLDOWN_S: float = 0.4
-    MAX_POS_RAD: float = 12.4
+    MAX_POS_RAD: float = MOTOR_LIMITS.pos_max
 
     def __init__(self, speed_deg_per_s: float = SPEED_DEG_PER_S) -> None:
         self._speed_rad_s = math.radians(speed_deg_per_s)
