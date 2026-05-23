@@ -95,6 +95,7 @@ _MAX_ALPHA = 204  # 80% opacity at full activation
 
 # Touch-blob sphere colours by contact type
 _COLOR_STROKE   = [220,  30,  30, 220]   # red
+_COLOR_RUB      = [255, 100,   0, 220]   # orange-red
 _COLOR_HOLD     = [137, 207, 240, 220]   # baby blue
 _COLOR_SQUEEZE  = [ 80, 180,  80, 220]   # green
 _COLOR_RESTRICT = [255, 140,   0, 220]   # orange
@@ -333,7 +334,7 @@ class RerunVisualizer(Visualizer):
         _COLOR_HOLD_S = 0.15   # minimum sphere color hold time to prevent flicker
         touch = state.touch
         if touch is not None and touch.stroke is not None:
-            detected = "stroke"
+            detected = "rub" if touch.stroke.is_rub else "stroke"
         elif touch is not None and touch.contact is not None:
             detected = touch.contact.contact_type.value   # hold | squeeze | restrict | wrench
         else:
@@ -618,11 +619,12 @@ class RerunVisualizer(Visualizer):
             current.append(mod_id)
         if current:
             blobs.append(current)
-        min_pads = 1 if self._contact_type in ("stroke", "touch") else 2
+        min_pads = 1 if self._contact_type in ("stroke", "rub", "touch") else 2
         blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= min_pads]
 
         color = {
             "stroke":   _COLOR_STROKE,
+            "rub":      _COLOR_RUB,
             "hold":     _COLOR_HOLD,
             "squeeze":  _COLOR_SQUEEZE,
             "restrict": _COLOR_RESTRICT,

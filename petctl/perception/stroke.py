@@ -81,6 +81,7 @@ class StrokeReading:
     confidence: float    # R² of the linear fit over the centroid window
     side: str            # which face(s) are active: "top", "left", "right", "top-left", etc.
     blobs: list[TouchBlob] = field(default_factory=list)
+    is_rub: bool = False  # True once direction has reversed within this stroke session
 
 
 @dataclass
@@ -110,6 +111,8 @@ class StrokeDetector:
     def __init__(self) -> None:
         self._window: deque[tuple[float, float]] = deque(maxlen=WINDOW_FRAMES)
         self._last_touch_t: float | None = None
+        self._initial_direction: str | None = None
+        self._is_rub: bool = False
 
     def update(self, state: RobotState) -> StrokeReading | None:
         """Process one tick of RobotState. Returns StrokeReading or None."""
@@ -120,6 +123,8 @@ class StrokeDetector:
                     state.timestamp - self._last_touch_t >= TOUCH_GAP_GRACE_S):
                 self._window.clear()
                 self._last_touch_t = None
+                self._initial_direction = None
+                self._is_rub = False
             # else: brief inter-module gap — keep window so velocity fit survives
             return None
 
@@ -144,15 +149,22 @@ class StrokeDetector:
         activations = {mid: s.touch_total for mid, s in state.sensors.items()}
         blobs = _find_blobs(activations)
 
+        curr_dir = "head_to_tail" if velocity > 0 else "tail_to_head"
+        if self._initial_direction is None:
+            self._initial_direction = curr_dir
+        elif not self._is_rub and curr_dir != self._initial_direction:
+            self._is_rub = True
+
         return StrokeReading(
             centroid=centroid,
             velocity=velocity,
             speed=abs(velocity),
-            direction="head_to_tail" if velocity > 0 else "tail_to_head",
+            direction=curr_dir,
             intensity=intensity,
             confidence=r_squared,
             side=_active_side(state),
             blobs=blobs,
+            is_rub=self._is_rub,
         )
 
 

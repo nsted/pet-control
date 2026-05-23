@@ -74,6 +74,7 @@ _CONTACT_LEVEL: dict[str, int] = {
     "twist":    6,
     "wrench":   7,
     "stroke":   8,
+    "rub":      9,
 }
 
 
@@ -223,18 +224,18 @@ class _TouchLogger:
             return
 
         # Determine current sub-type.
-        # Stroke grace: keep "stroke" sub-type briefly after stroke reading drops.
+        # Stroke grace: keep "stroke"/"rub" sub-type briefly after stroke reading drops.
         if stroke is not None:
             self._stroke_last_t = now
             self._stroke_last_centroid = stroke.centroid
             self._stroke_last_speed = stroke.speed
-            if self._subtype != "stroke":
+            if self._subtype not in ("stroke", "rub"):
                 self._stroke_start_centroid = stroke.centroid
-            curr = "stroke"
-        elif (self._subtype == "stroke"
+            curr = "rub" if stroke.is_rub else "stroke"
+        elif (self._subtype in ("stroke", "rub")
                 and self._stroke_last_t is not None
                 and now - self._stroke_last_t < _STROKE_END_GRACE_S):
-            curr = "stroke"  # grace period — keep sub-type
+            curr = self._subtype  # grace period — keep sub-type
         elif cr is not None and cr.contact_type.value not in ("touch", "budge"):
             curr = cr.contact_type.value
         else:
@@ -245,7 +246,7 @@ class _TouchLogger:
         # TWIST→SQUEEZE→TWIST interruptions into a single event.
         if (curr != self._subtype
                 and self._subtype is not None
-                and self._subtype != "stroke"  # stroke has its own grace above
+                and self._subtype not in ("stroke", "rub")  # stroke/rub have their own grace above
                 and _CONTACT_LEVEL.get(curr or "none", 0) < _CONTACT_LEVEL.get(self._subtype, 0)
                 and self._subtype_last_t is not None
                 and now - self._subtype_last_t < _SUBTYPE_END_GRACE_S):
@@ -276,9 +277,9 @@ class _TouchLogger:
         self._subtype_start = None
         self._subtype_last_t = None
         label = CONTACT_LABELS.get(subtype, subtype.upper()[:8])
-        if subtype == "stroke" and self._stroke_start_centroid is not None:
+        if subtype in ("stroke", "rub") and self._stroke_start_centroid is not None:
             s, e = self._stroke_start_centroid, self._stroke_last_centroid
-            arrow = "→" if (e or 0.0) > (s or 0.0) else "←"
+            arrow = "↔" if subtype == "rub" else ("→" if (e or 0.0) > (s or 0.0) else "←")
             logger.info("[%s] end  %s from=%.1f to=%.1f  speed=%.1f mod/s  dur=%.1fs",
                 label, arrow, s, e, self._stroke_last_speed, dur)
             self._stroke_start_centroid = None
@@ -298,7 +299,7 @@ class _TouchLogger:
         return (centroid_str + (f"side={side}" if side else "")).rstrip()
 
     def _subtype_details(self, subtype: str, touch: TouchEvent) -> str:
-        if subtype == "stroke":
+        if subtype in ("stroke", "rub"):
             s = touch.stroke
             return f"centroid={s.centroid:.1f}  side={s.side}" if s is not None else ""
         cr = touch.contact
