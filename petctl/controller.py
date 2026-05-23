@@ -130,8 +130,10 @@ class _TouchProcessor:
         hold = self._hold.update(state)
         if hold is None:
             motion = self._clf.classify_no_hold(state)
-            # TWIST fires regardless of contact; BUDGE only fires when no contact.
-            if motion is not None and motion.contact_type == ContactType.TWIST:
+            if motion is not None:
+                # Motor motion (BUDGE or TWIST) takes priority over bare contact —
+                # incidental sensor activation from movement is not a real touch.
+                # BUDGE is suppressed only when classify() has a qualifying hold blob.
                 return TouchEvent(contact=motion)
             centroid, side = self._qualifying_contact(state)
             if centroid is not None:
@@ -140,8 +142,6 @@ class _TouchProcessor:
                     centroid=centroid,
                     side=side,
                 ))
-            if motion is not None:
-                return TouchEvent(contact=motion)
             if not self._clf.has_active_motion():
                 self._clf.reset()  # no motion, no contact — full reset
             return TouchEvent()
