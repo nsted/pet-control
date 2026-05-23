@@ -169,6 +169,7 @@ class _TouchLogger:
     def __init__(self) -> None:
         self._session_start: float | None = None
         self._session_logged: bool = False
+        self._session_type: str = "touch"       # outer label: "touch", "budge", or "twist"
         self._session_start_details: str = ""
         self._subtype: str | None = None        # currently active logged sub-type
         self._subtype_start: float | None = None
@@ -192,12 +193,15 @@ class _TouchLogger:
             self._session_start = now
             self._session_logged = False
             self._session_start_details = self._session_details(touch)
+            ct = cr.contact_type.value if cr is not None else "touch"
+            self._session_type = ct if ct in ("budge", "twist") else "touch"
 
-        # Emit Touch start once 220ms threshold is crossed
+        # Emit session start once 220ms threshold is crossed
         if (not self._session_logged
                 and self._session_start is not None
                 and now - self._session_start >= _TOUCH_MIN_DUR_S):
-            logger.info("[TOUCH   ] start  %s", self._session_start_details)
+            label = CONTACT_LABELS.get(self._session_type, "TOUCH   ")
+            logger.info("[%s] start  %s", label, self._session_start_details)
             self._session_logged = True
 
         # Session end
@@ -287,14 +291,17 @@ class _TouchLogger:
             return
         dur = now - self._session_start
         logged = self._session_logged
+        session_type = self._session_type
         self._session_start = None
         self._session_logged = False
+        self._session_type = "touch"
         self._session_start_details = ""
         self._stroke_last_t = None
         self._stroke_last_centroid = None
         self._stroke_last_speed = 0.0
         if logged:
-            logger.info("[TOUCH   ] end  dur=%.1fs", dur)
+            label = CONTACT_LABELS.get(session_type, "TOUCH   ")
+            logger.info("[%s] end  dur=%.1fs", label, dur)
 
 
 class Controller:

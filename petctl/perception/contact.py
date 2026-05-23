@@ -241,7 +241,13 @@ class ContactClassifier:
                     contact_type=ContactType.TWIST,
                     affected_servos=active_servos,
                 )
-            # BUDGE has lower priority than TOUCH/HOLD/SQUEEZE — fall through.
+            max_travel = max(self._servo_travel.get(s, 0.0) for s in active_servos)
+            if max_travel >= self.BUDGE_MIN_TRAVEL_RAD:
+                return ContactReading(
+                    hold=hold,
+                    contact_type=ContactType.BUDGE,
+                    affected_servos=active_servos,
+                )
 
         # --- SQUEEZE (any centroid count, one blob's pressure sufficient) ---
         held_modules = {m for blob in hold.q_blobs for m in blob.modules}
