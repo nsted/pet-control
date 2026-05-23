@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import time
 import math
-from dataclasses import asdict, dataclass, field
-from typing import Optional
+from dataclasses import asdict, dataclass, field, fields
+from typing import TYPE_CHECKING, Optional
 
 from petctl.config import BATTERY_CONFIG, MOTOR_LIMITS
+
+if TYPE_CHECKING:
+    from petctl.perception.stroke import HoldReading, StrokeReading
+    from petctl.perception.contact import ContactReading
 
 
 @dataclass
@@ -21,11 +25,11 @@ class PowerTelemetry:
     """Snapshot of power management state for a single control tick."""
 
     voltage_raw_v: float = 0.0
-    voltage_filtered_v: Optional[float] = None
+    voltage_ema_v: Optional[float] = None   # heavy EMA — for display only, not safety
     voltage_state: str = "NORMAL"
-    voltage_spike_count: int = 0
-    voltage_spike_rate_per_min: int = 0
-    voltage_last_spike_peak_v: float = 0.0
+    current_amps_raw: float = 0.0
+    current_amps_filtered: float = 0.0
+    current_drive_scale: float = 1.0        # 1.0 = full drive; <1.0 = current-limited
     system_state: str = "RUNNING"
     # Per-motor state (keyed by servo_id)
     motor_states: dict[int, str] = field(default_factory=dict)
@@ -33,6 +37,170 @@ class PowerTelemetry:
     motor_compliance_scales: dict[int, float] = field(default_factory=dict)
     # State transition events since last tick
     events: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TouchEvent:
+    """Processed touch classification for one tick, populated by the controller.
+
+    Exactly one of stroke or hold is non-None when contact is detected.
+    contact is always non-None when hold is non-None (it wraps the hold reading
+    with a sub-type: HOLD / SQUEEZE / RESTRICT / WRENCH).
+    """
+
+    stroke: StrokeReading | None = None
+    hold: HoldReading | None = None
+    contact: ContactReading | None = None
+
+
+@dataclass
+class TouchSummary:
+    """Serializable summary of a touch event, emitted on type transitions.
+
+    Passed to async consumers (e.g. an LLM valence driver) via
+    Controller.touch_events.  to_dict() is the primary LLM interface
+    (JSON function calling); describe() produces a natural-language phrase
+    for prompt injection.
+
+    Fields are the common envelope; type-specific fields are None when not
+    applicable to that touch type.
+    """
+
+    touch_type: str            # stroke | rub | hold | squeeze | restrict | budge | twist | wrench | touch | none
+    timestamp: float
+    duration: float            # seconds since contact onset; 0.0 for instantaneous / stroke start
+    intensity: float           # 0.0–1.0 mean pad activation
+    centroid: float | None     # body-axis position (0.0 = head, 7.0 = tail)
+    side: str                  # active face(s): "top" | "left" | "right" | combinations
+    modules: list[int]         # active module IDs in body order
+    velocity: float | None     # stroke/rub only: signed body-units/s (+ = head→tail)
+    direction: str | None      # stroke/rub only: "head_to_tail" | "tail_to_head"
+    confidence: float | None   # stroke/rub only: R² of linear centroid fit
+    pressure_peak: float | None  # squeeze: peak FSR value (0–1)
+    torque_peak: float | None    # restrict/wrench: peak torque in Nm
+    affected_servos: list[int] = field(default_factory=list)  # restrict/wrench/twist
+
+    @classmethod
+    def from_touch_event(
+        cls,
+        event: TouchEvent,
+        timestamp: float,
+        session_duration: float = 0.0,
+    ) -> TouchSummary:
+        """Build a TouchSummary from a per-tick TouchEvent.
+
+        session_duration is the wall-clock time since first contact this
+        session; it's used for stroke types since StrokeReading doesn't
+        track its own duration.  HoldReading.duration is used directly
+        for hold-family types.
+        """
+        stroke = event.stroke
+        hold = event.hold
+        contact = event.contact
+
+        if stroke is not None:
+            modules: list[int] = []
+            for blob in stroke.blobs:
+                for m in blob.modules:
+                    if m not in modules:
+                        modules.append(m)
+            return cls(
+                touch_type="rub" if stroke.is_rub else "stroke",
+                timestamp=timestamp,
+                duration=session_duration,
+                intensity=stroke.intensity,
+                centroid=stroke.centroid,
+                side=stroke.side,
+                modules=modules,
+                velocity=stroke.velocity,
+                direction=stroke.direction,
+                confidence=stroke.confidence,
+                pressure_peak=None,
+                torque_peak=None,
+            )
+
+        if contact is not None:
+            centroid: float | None
+            if hold is not None:
+                centroid = hold.centroid
+                side = hold.side
+                intensity = hold.intensity
+                duration = hold.duration
+                modules = []
+                for blob in hold.q_blobs:
+                    for m in blob.modules:
+                        if m not in modules:
+                            modules.append(m)
+            else:
+                centroid = contact.centroid
+                side = contact.side
+                intensity = 0.0
+                duration = session_duration
+                modules = []
+            return cls(
+                touch_type=contact.contact_type.value,
+                timestamp=timestamp,
+                duration=duration,
+                intensity=intensity,
+                centroid=centroid,
+                side=side,
+                modules=modules,
+                velocity=None,
+                direction=None,
+                confidence=None,
+                pressure_peak=contact.pressure_peak or None,
+                torque_peak=contact.torque_peak or None,
+                affected_servos=list(contact.affected_servos),
+            )
+
+        return cls(
+            touch_type="none",
+            timestamp=timestamp,
+            duration=session_duration,
+            intensity=0.0,
+            centroid=None,
+            side="",
+            modules=[],
+            velocity=None,
+            direction=None,
+            confidence=None,
+            pressure_peak=None,
+            torque_peak=None,
+        )
+
+    def to_dict(self) -> dict:
+        """JSON-serializable dict, omitting None-valued fields."""
+        result: dict = {}
+        for f in fields(self):
+            val = getattr(self, f.name)
+            if val is not None:
+                result[f.name] = val
+        return result
+
+    def describe(self) -> str:
+        """Human-readable one-line description for LLM prompt injection."""
+        if self.touch_type == "none":
+            return "contact ended"
+        parts: list[str] = [self.touch_type]
+        if self.direction and self.velocity is not None:
+            arrow = "→" if self.direction == "head_to_tail" else "←"
+            parts.append(f"{arrow} {abs(self.velocity):.1f} mod/s")
+        if self.centroid is not None:
+            parts.append(f"centroid={self.centroid:.1f}")
+        if self.side:
+            parts.append(f"{self.side} face")
+        if self.modules:
+            lo, hi = min(self.modules), max(self.modules)
+            parts.append(f"mod {lo}–{hi}" if lo != hi else f"mod {lo}")
+        if self.duration > 0:
+            parts.append(f"{self.duration:.1f}s")
+        if self.pressure_peak:
+            parts.append(f"pressure={self.pressure_peak:.2f}")
+        if self.torque_peak:
+            parts.append(f"torque={self.torque_peak:.2f}Nm")
+        if self.affected_servos:
+            parts.append(f"servos={self.affected_servos}")
+        return ", ".join(parts)
 
 
 @dataclass
@@ -103,6 +271,10 @@ class RobotState:
     sensors: dict[int, ModuleSensors] = field(default_factory=dict)
     # Keyed by servo_id (int). Position in radians; home = 0.0.
     servo_positions: dict[int, float] = field(default_factory=dict)
+    # Last commanded position per servo after the slew filter (rad). Populated by
+    # Controller each tick so contact classification can compute displacement from
+    # commanded rather than from home.
+    servo_commanded_positions: dict[int, float] = field(default_factory=dict)
     # Per-motor feedback from hardware (all keyed by servo_id).
     motor_velocities: dict[int, float] = field(default_factory=dict)              # rad/s
     motor_torques: dict[int, float] = field(default_factory=dict)                 # Nm
@@ -114,6 +286,8 @@ class RobotState:
     # Head-only battery telemetry raw ADC values.
     battery_current_raw: int = 0
     battery_voltage_raw: int = 0
+    # Touch classification for this tick — populated by Controller before scheme.update().
+    touch: TouchEvent | None = field(default=None)
     # Module IDs currently detected on the robot
     active_modules: list[int] = field(default_factory=list)
     # Servo IDs confirmed to exist — used by schemes to avoid sending commands

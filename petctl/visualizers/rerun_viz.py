@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from petctl.perception.stroke import HoldDetector, StrokeDetector
 from petctl.protocols import Visualizer
 from petctl.types import RobotState
 
@@ -93,6 +92,15 @@ _TOUCH_COLOR_RGB    = (255, 215, 0)    # gold
 _PRESSURE_COLOR_RGB = (50, 120, 220)   # royal blue
 _MIN_ALPHA = 38   # 15% opacity at zero activation
 _MAX_ALPHA = 204  # 80% opacity at full activation
+
+# Touch-blob sphere colours by contact type
+_COLOR_STROKE   = [220,  30,  30, 220]   # red
+_COLOR_RUB      = [255, 100,   0, 220]   # orange-red
+_COLOR_HOLD     = [137, 207, 240, 220]   # baby blue
+_COLOR_SQUEEZE  = [ 80, 180,  80, 220]   # green
+_COLOR_RESTRICT = [255, 140,   0, 220]   # orange
+_COLOR_WRENCH   = [180,   0, 220, 220]   # purple
+_COLOR_NONE     = [  0,   0,   0, 220]   # black
 
 _SENSOR_FACE_NAMES = ("left", "middle", "right")
 
@@ -281,12 +289,8 @@ class RerunVisualizer(Visualizer):
         self._pad_quats: list = []
         self._rr = None
         self._show_pad_labels: bool = False
-        self._stroke_detector = StrokeDetector()
-        self._stroke_active: bool = False
-        self._stroke_color_until: float = 0.0
-        self._hold_detector = HoldDetector()
-        self._hold_active: bool = False
-        self._hold_color_until: float = 0.0
+        self._contact_type: str = "none"      # touch | stroke | hold | squeeze | restrict | wrench | none
+        self._contact_color_until: float = 0.0
         self._last_viz_time: float = -1.0
         self._prev_touch_colors: dict[int, tuple] = {}
         self._prev_pressure_colors: dict[int, tuple] = {}
@@ -328,16 +332,18 @@ class RerunVisualizer(Visualizer):
         rr.set_time("time", duration=state.timestamp)
         now = state.timestamp
         _COLOR_HOLD_S = 0.15   # minimum sphere color hold time to prevent flicker
-        stroke_now = self._stroke_detector.update(state) is not None
-        hold_reading = self._hold_detector.update(state)
-        hold_now = hold_reading is not None
-        if stroke_now:
-            self._stroke_color_until = now + _COLOR_HOLD_S
-            self._hold_color_until = 0.0   # stroke cancels any pending hold display
-        if hold_now and not stroke_now:
-            self._hold_color_until = now + _COLOR_HOLD_S
-        self._stroke_active = stroke_now or now < self._stroke_color_until
-        self._hold_active = (hold_now or now < self._hold_color_until) and not self._stroke_active
+        touch = state.touch
+        if touch is not None and touch.stroke is not None:
+            detected = "rub" if touch.stroke.is_rub else "stroke"
+        elif touch is not None and touch.contact is not None:
+            detected = touch.contact.contact_type.value   # hold | squeeze | restrict | wrench
+        else:
+            detected = "none"
+        if detected != "none":
+            self._contact_type = detected
+            self._contact_color_until = now + _COLOR_HOLD_S
+        elif now >= self._contact_color_until:
+            self._contact_type = "none"
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
         self._log_power_telemetry(rr, state)
@@ -398,11 +404,12 @@ class RerunVisualizer(Visualizer):
         if pt is None:
             return
         rr.log("power/voltage/raw", rr.Scalars(pt.voltage_raw_v))
-        if pt.voltage_filtered_v is not None:
-            rr.log("power/voltage/filtered", rr.Scalars(pt.voltage_filtered_v))
-        rr.log("power/voltage/spike_count", rr.Scalars(float(pt.voltage_spike_count)))
-        rr.log("power/voltage/spike_rate_per_min", rr.Scalars(float(pt.voltage_spike_rate_per_min)))
+        if pt.voltage_ema_v is not None:
+            rr.log("power/voltage/ema", rr.Scalars(pt.voltage_ema_v))
         rr.log("power/voltage/state", rr.TextLog(pt.voltage_state))
+        rr.log("power/current/raw_a", rr.Scalars(pt.current_amps_raw))
+        rr.log("power/current/filtered_a", rr.Scalars(pt.current_amps_filtered))
+        rr.log("power/current/drive_scale", rr.Scalars(pt.current_drive_scale))
         rr.log("power/global_state", rr.TextLog(pt.system_state))
         for mid, state_str in pt.motor_states.items():
             rr.log(f"power/motors/{mid}/state", rr.TextLog(state_str))
@@ -612,15 +619,17 @@ class RerunVisualizer(Visualizer):
             current.append(mod_id)
         if current:
             blobs.append(current)
-        min_pads = 1 if self._stroke_active else 2
+        min_pads = 1 if self._contact_type in ("stroke", "rub", "touch") else 2
         blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= min_pads]
 
-        if self._stroke_active:
-            color = [220, 30, 30, 220]       # red
-        elif self._hold_active:
-            color = [137, 207, 240, 220]     # baby blue
-        else:
-            color = [0, 0, 0, 220]           # black
+        color = {
+            "stroke":   _COLOR_STROKE,
+            "rub":      _COLOR_RUB,
+            "hold":     _COLOR_HOLD,
+            "squeeze":  _COLOR_SQUEEZE,
+            "restrict": _COLOR_RESTRICT,
+            "wrench":   _COLOR_WRENCH,
+        }.get(self._contact_type, _COLOR_NONE)
         for i in range(_MAX_BLOBS):
             path = f"robot/touch_centroid/{i}"
             if i < len(blobs):

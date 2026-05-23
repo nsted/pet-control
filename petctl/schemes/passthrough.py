@@ -18,6 +18,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 
+from petctl.config import MOTOR_LIMITS
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
 
@@ -40,14 +41,14 @@ class PassthroughControlScheme(ControlScheme):
     # External API — call these from outside the loop
     # ------------------------------------------------------------------
 
-    def set_position(self, servo_id: int, position: float, kp: float = 1.0, kd: float = 0.01, torque_ff: float = 0.0) -> None:
+    def set_position(self, servo_id: int, position: float, kp: float = MOTOR_LIMITS.kp_default, kd: float = MOTOR_LIMITS.kd_default, torque_ff: float = 0.0) -> None:
         """Queue a position command in radians."""
         with self._lock:
             self._queue.append(
                 ServoCommand(servo_id=servo_id, position=position, kp=kp, kd=kd, torque_ff=torque_ff)
             )
 
-    def set_angle(self, servo_id: int, angle_deg: float, kp: float = 1.0, kd: float = 0.01) -> None:
+    def set_angle(self, servo_id: int, angle_deg: float, kp: float = MOTOR_LIMITS.kp_default, kd: float = MOTOR_LIMITS.kd_default) -> None:
         """Queue a position command by angle in degrees."""
         with self._lock:
             self._queue.append(

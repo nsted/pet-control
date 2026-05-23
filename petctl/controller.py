@@ -47,108 +47,330 @@ import time
 from typing import Optional
 
 from petctl.config import LOOP_LIMITS
+from petctl.perception.contact import CONTACT_LABELS, ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
-from petctl.types import RobotState, ServoCommand
+from petctl.types import RobotState, ServoCommand, TouchEvent, TouchSummary
 
 logger = logging.getLogger(__name__)
 
 
-_CONTACT_LABELS: dict[str, str] = {
-    "stroke":   "STROKE  ",
-    "hold":     "HOLD    ",
-    "squeeze":  "SQUEEZE ",
-    "restrict": "RESTRICT",
-    "wrench":   "WRENCH  ",
+_STROKE_END_GRACE_S: float = 0.45   # don't fire end until stroke absent this long
+_SUBTYPE_END_GRACE_S: float = 0.35  # hold a sub-type after apparent downgrade before logging the end
+_TOUCH_MIN_DUR_S: float = 0.220     # suppress any touch event shorter than this
+
+# Downgrade hysteresis: how many consecutive frames at a lower level are required
+# before committing a downgrade.  Upgrades are always immediate.
+_DOWNGRADE_GRACE_FRAMES: int = 8  # ~265ms at 30Hz
+
+# Contact levels for hysteresis comparison (higher = more specific).
+_CONTACT_LEVEL: dict[str, int] = {
+    "none":     0,
+    "budge":    1,
+    "touch":    2,
+    "hold":     3,
+    "squeeze":  4,
+    "restrict": 5,
+    "twist":    6,
+    "wrench":   7,
+    "stroke":   8,
+    "rub":      9,
 }
 
-_STROKE_END_GRACE_S: float = 0.45  # don't fire end until stroke absent this long
+
+def _event_level(event: TouchEvent) -> int:
+    if event.stroke is not None:
+        return _CONTACT_LEVEL["stroke"]
+    if event.contact is not None:
+        return _CONTACT_LEVEL.get(event.contact.contact_type.value, 1)
+    return _CONTACT_LEVEL["none"]
 
 
-class _TouchLogger:
-    """Runs stroke/hold/contact detection every tick and prints transitions."""
+class _TouchProcessor:
+    """Owns the touch detectors and runs them once per tick.
+
+    Called by the Controller immediately after get_state(). The result is
+    attached to state.touch so schemes, visualizers, and _TouchLogger all
+    read from the same computed value rather than each running their own detectors.
+
+    Hysteresis: upgrades (touch → hold → squeeze/restrict/wrench) are immediate.
+    Downgrades require _DOWNGRADE_GRACE_FRAMES consecutive frames at the lower
+    level before being committed.  This suppresses sub-200ms oscillations at
+    hold/touch and stroke/touch boundaries caused by qualifying-blob flicker.
+    """
 
     def __init__(self) -> None:
-        from petctl.perception.contact import ContactClassifier
-        from petctl.perception.stroke import HoldDetector, StrokeDetector
+        from petctl.perception.contact import ContactClassifier, ContactReading
+        from petctl.perception.stroke import HoldDetector, StrokeDetector, qualifying_contact
         self._stroke = StrokeDetector()
         self._hold = HoldDetector()
         self._clf = ContactClassifier()
-        self._prev: str | None = None
-        self._prev_direction: str | None = None
-        self._stroke_last_t: float | None = None
+        self._qualifying_contact = qualifying_contact
+        self._ContactReading = ContactReading
+        self._committed: TouchEvent = TouchEvent()
+        self._downgrade_count: int = 0
+
+    def update(self, state: RobotState) -> TouchEvent:
+        raw = self._detect(state)
+        if _event_level(raw) < _event_level(self._committed):
+            self._downgrade_count += 1
+            if self._downgrade_count < _DOWNGRADE_GRACE_FRAMES:
+                return self._committed  # hold the higher state
+        else:
+            self._downgrade_count = 0
+        self._committed = raw
+        return self._committed
+
+    def _detect(self, state: RobotState) -> TouchEvent:
+        stroke = self._stroke.update(state)
+        if stroke is not None:
+            # Flush hold velocity window so hold fires promptly after stroke ends.
+            self._hold.reset()
+            self._clf.reset()
+            return TouchEvent(stroke=stroke)
+
+        hold = self._hold.update(state)
+        if hold is None:
+            motion = self._clf.classify_no_hold(state)
+            if motion is not None:
+                # Motor motion (BUDGE or TWIST) takes priority over bare contact —
+                # incidental sensor activation from movement is not a real touch.
+                # BUDGE is suppressed only when classify() has a qualifying hold blob.
+                return TouchEvent(contact=motion)
+            centroid, side = self._qualifying_contact(state)
+            if centroid is not None:
+                return TouchEvent(contact=self._ContactReading(
+                    contact_type=ContactType.TOUCH,
+                    centroid=centroid,
+                    side=side,
+                ))
+            if not self._clf.has_active_motion():
+                self._clf.reset()  # no motion, no contact — full reset
+            return TouchEvent()
+
+        contact = self._clf.classify(hold, state)
+        return TouchEvent(hold=hold, contact=contact)
+
+
+class _TouchLogger:
+    """Logs touch events to console.
+
+    Touch is the outer session; sub-types (hold/squeeze/restrict/wrench/stroke)
+    are logged as explicit start/end events nested within it:
+
+        [TOUCH   ] start  ...
+        [SQUEEZE ] start  ...
+        [SQUEEZE ] end  dur=X.Xs
+        [TOUCH   ] end  dur=X.Xs
+
+    Sessions shorter than _TOUCH_MIN_DUR_S are suppressed entirely.  Touch start
+    is emitted once the threshold is crossed; sub-type events are emitted in
+    real-time after the session is confirmed.
+    """
+
+    def __init__(self) -> None:
+        self._session_start: float | None = None
+        self._session_logged: bool = False
+        self._session_type: str = "touch"       # outer label: "touch", "budge", or "twist"
+        self._session_start_details: str = ""
+        self._subtype: str | None = None        # currently active logged sub-type
+        self._subtype_start: float | None = None
+        self._subtype_last_t: float | None = None  # last tick the sub-type was genuinely active
         self._stroke_start_centroid: float | None = None
         self._stroke_last_centroid: float | None = None
         self._stroke_last_speed: float = 0.0
+        self._stroke_last_t: float | None = None
 
     def update(self, state: RobotState) -> None:
-        stroke = self._stroke.update(state)
-        hold = self._hold.update(state)
+        touch = state.touch
+        if touch is None:
+            return
 
+        now = state.timestamp
+        stroke = touch.stroke
+        cr = touch.contact
+        any_contact = stroke is not None or cr is not None
+
+        # Session start
+        if any_contact and self._session_start is None:
+            self._session_start = now
+            self._session_logged = False
+            self._session_start_details = self._session_details(touch)
+            ct = cr.contact_type.value if cr is not None else "touch"
+            self._session_type = ct if ct in ("budge", "twist") else "touch"
+
+        # Upgrade a pending BUDGE session to TOUCH the moment real contact appears.
+        if not self._session_logged and self._session_type == "budge":
+            ct = cr.contact_type.value if cr is not None else None
+            if stroke is not None or (ct is not None and ct not in ("budge",)):
+                self._session_type = "touch"
+                self._session_start_details = self._session_details(touch)
+
+        # Emit session start once 220ms threshold is crossed
+        if (not self._session_logged
+                and self._session_start is not None
+                and now - self._session_start >= _TOUCH_MIN_DUR_S):
+            label = CONTACT_LABELS.get(self._session_type, "TOUCH   ")
+            logger.info("[%s] start  %s", label, self._session_start_details)
+            self._session_logged = True
+
+        # Session end
+        if not any_contact and self._session_start is not None:
+            self._end_subtype(now)
+            self._end_session(now)
+            return
+
+        if self._session_start is None:
+            return
+
+        # Determine current sub-type.
+        # Stroke grace: keep "stroke"/"rub" sub-type briefly after stroke reading drops.
         if stroke is not None:
-            curr = "stroke"
-            if curr != self._prev:
-                self._stroke_start_centroid = stroke.centroid
-                self._transition(self._prev, curr,
-                    f"centroid={stroke.centroid:.1f}  side={stroke.side}")
-            self._prev = curr
-            self._prev_direction = stroke.direction
-            self._stroke_last_t = state.timestamp
+            self._stroke_last_t = now
             self._stroke_last_centroid = stroke.centroid
             self._stroke_last_speed = stroke.speed
-            self._clf.reset()
-            self._hold.reset()  # flush stroke frames so hold fires promptly after stroke ends
+            if self._subtype not in ("stroke", "rub"):
+                self._stroke_start_centroid = stroke.centroid
+            curr = "rub" if stroke.is_rub else "stroke"
+        elif (self._subtype in ("stroke", "rub")
+                and self._stroke_last_t is not None
+                and now - self._stroke_last_t < _STROKE_END_GRACE_S):
+            curr = self._subtype  # grace period — keep sub-type
+        elif cr is not None and cr.contact_type.value not in ("touch", "budge"):
+            curr = cr.contact_type.value
+        else:
+            curr = None  # plain touch baseline — no sub-type label
+
+        # Sub-type end grace: suppress logging a downgrade in sub-type level if the
+        # higher sub-type was active recently.  Consolidates SQUEEZE flicker and brief
+        # TWIST→SQUEEZE→TWIST interruptions into a single event.
+        if (curr != self._subtype
+                and self._subtype is not None
+                and self._subtype not in ("stroke", "rub")  # stroke/rub have their own grace above
+                and _CONTACT_LEVEL.get(curr or "none", 0) < _CONTACT_LEVEL.get(self._subtype, 0)
+                and self._subtype_last_t is not None
+                and now - self._subtype_last_t < _SUBTYPE_END_GRACE_S):
+            curr = self._subtype  # hold the higher sub-type
+
+        if curr == self._subtype:
+            self._subtype_last_t = now
+
+        # Log sub-type transitions once session is confirmed
+        if self._session_logged and curr != self._subtype:
+            self._end_subtype(now)
+            if curr is not None:
+                self._begin_subtype(curr, touch, now)
+
+    def _begin_subtype(self, subtype: str, touch: TouchEvent, now: float) -> None:
+        self._subtype = subtype
+        self._subtype_start = now
+        self._subtype_last_t = now
+        details = self._subtype_details(subtype, touch)
+        logger.info("[%s] start  %s", CONTACT_LABELS.get(subtype, subtype.upper()[:8]), details)
+
+    def _end_subtype(self, now: float) -> None:
+        if self._subtype is None:
+            return
+        subtype = self._subtype
+        dur = now - (self._subtype_start or now)
+        self._subtype = None
+        self._subtype_start = None
+        self._subtype_last_t = None
+        label = CONTACT_LABELS.get(subtype, subtype.upper()[:8])
+        if subtype in ("stroke", "rub") and self._stroke_start_centroid is not None:
+            s, e = self._stroke_start_centroid, self._stroke_last_centroid
+            arrow = "↔" if subtype == "rub" else ("→" if (e or 0.0) > (s or 0.0) else "←")
+            logger.info("[%s] end  %s from=%.1f to=%.1f  speed=%.1f mod/s  dur=%.1fs",
+                label, arrow, s, e, self._stroke_last_speed, dur)
+            self._stroke_start_centroid = None
+        else:
+            logger.info("[%s] end  dur=%.1fs", label, dur)
+
+    def _session_details(self, touch: TouchEvent) -> str:
+        stroke = touch.stroke
+        cr = touch.contact
+        if stroke is not None:
+            return f"centroid={stroke.centroid:.1f}  side={stroke.side}"
+        if cr is None:
+            return ""
+        centroid = touch.hold.centroid if touch.hold is not None else cr.centroid
+        side = (touch.hold.side if touch.hold is not None else cr.side) or ""
+        centroid_str = f"centroid={centroid:.1f}  " if centroid is not None else ""
+        return (centroid_str + (f"side={side}" if side else "")).rstrip()
+
+    def _subtype_details(self, subtype: str, touch: TouchEvent) -> str:
+        if subtype in ("stroke", "rub"):
+            s = touch.stroke
+            return f"centroid={s.centroid:.1f}  side={s.side}" if s is not None else ""
+        cr = touch.contact
+        hold = touch.hold
+        if hold is None or cr is None:
+            return ""
+        blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
+        servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
+        torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
+        pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
+        return f"blobs={blobs}{servos}{torque}{pressure}"
+
+    def _end_session(self, now: float) -> None:
+        if self._session_start is None:
+            return
+        dur = now - self._session_start
+        logged = self._session_logged
+        session_type = self._session_type
+        self._session_start = None
+        self._session_logged = False
+        self._session_type = "touch"
+        self._session_start_details = ""
+        self._stroke_last_t = None
+        self._stroke_last_centroid = None
+        self._stroke_last_speed = 0.0
+        if logged:
+            label = CONTACT_LABELS.get(session_type, "TOUCH   ")
+            logger.info("[%s] end  dur=%.1fs", label, dur)
+
+
+class _TouchEventEmitter:
+    """Detects touch type transitions and pushes TouchSummary to a queue.
+
+    Emits on onset, type-change, and end — not every tick.  The queue is
+    bounded; summaries are dropped (not block) when the consumer is slow.
+    """
+
+    def __init__(self, queue: asyncio.Queue) -> None:
+        self._queue = queue
+        self._last_type: str = "none"
+        self._session_start: float | None = None
+
+    def update(self, state: RobotState) -> None:
+        touch = state.touch
+        if touch is None:
+            return
+        now = state.timestamp
+        curr = self._touch_type(touch)
+        if curr == self._last_type:
             return
 
-        # Grace period: a brief hold/squeeze or no-touch gap doesn't end a stroke.
-        if self._prev == "stroke" and self._stroke_last_t is not None:
-            if state.timestamp - self._stroke_last_t < _STROKE_END_GRACE_S:
-                return
+        if curr != "none" and self._last_type == "none":
+            self._session_start = now
+        elif curr == "none":
+            self._session_start = None
 
-        if hold is None:
-            if self._prev is not None:
-                if self._prev == "stroke" and self._stroke_start_centroid is not None:
-                    s, e = self._stroke_start_centroid, self._stroke_last_centroid
-                    arrow = "→" if e > s else "←"
-                    logger.info("[STROKE  ] end  %s from=%.1f to=%.1f  speed=%.1f mod/s",
-                        arrow, s, e, self._stroke_last_speed)
-                else:
-                    logger.info("[%s] end", _CONTACT_LABELS.get(self._prev, self._prev.upper()[:8]))
-            self._prev = None
-            self._prev_direction = None
-            self._stroke_last_t = None
-            self._stroke_start_centroid = None
-            self._stroke_last_centroid = None
-            self._stroke_last_speed = 0.0
-            self._clf.reset()
-            return
+        session_dur = now - self._session_start if self._session_start is not None else 0.0
+        summary = TouchSummary.from_touch_event(touch, now, session_dur)
+        self._last_type = curr
+        try:
+            self._queue.put_nowait(summary)
+        except asyncio.QueueFull:
+            pass
 
-        cr = self._clf.classify(hold, state)
-        curr = cr.contact_type.value
-        if curr != self._prev:
-            prev_for_transition = self._prev
-            if self._prev == "stroke" and self._stroke_start_centroid is not None:
-                s, e = self._stroke_start_centroid, self._stroke_last_centroid
-                arrow = "→" if e > s else "←"
-                logger.info("[STROKE  ] end  %s from=%.1f to=%.1f  speed=%.1f mod/s",
-                    arrow, s, e, self._stroke_last_speed)
-                prev_for_transition = None
-            self._stroke_start_centroid = None
-            self._stroke_last_centroid = None
-            self._stroke_last_speed = 0.0
-            self._stroke_last_t = None
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
-            servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
-            torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
-            pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-            self._transition(prev_for_transition, curr,
-                f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}")
-        self._prev = curr
-
-    def _transition(self, prev: str | None, curr: str, details: str) -> None:
-        if prev is not None:
-            logger.info("[%s] end", _CONTACT_LABELS.get(prev, prev.upper()[:8]))
-        logger.info("[%s] start  %s", _CONTACT_LABELS.get(curr, curr.upper()[:8]), details)
+    @staticmethod
+    def _touch_type(touch: TouchEvent) -> str:
+        if touch.stroke is not None:
+            return "rub" if touch.stroke.is_rub else "stroke"
+        if touch.contact is not None:
+            return touch.contact.contact_type.value
+        return "none"
 
 
 class Controller:
@@ -191,7 +413,14 @@ class Controller:
         self._touch_logger: Optional[_TouchLogger] = _TouchLogger() if log_touch else None
 
         self.power_manager = PowerManager()
+        self._touch_processor = _TouchProcessor()
         self._power_reset_requested: bool = False
+
+        # Async queue of TouchSummary events, emitted on type transitions.
+        # Bounded so a slow consumer never stalls the control loop.
+        # Read from this in any async task to receive touch events for LLM or other consumers.
+        self.touch_events: asyncio.Queue[TouchSummary] = asyncio.Queue(maxsize=64)
+        self._touch_emitter = _TouchEventEmitter(self.touch_events)
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -354,6 +583,9 @@ class Controller:
 
             # 1. Get state from backend
             self._state = await self.backend.get_state()
+            self._state.servo_commanded_positions = dict(self._slew_last_sent_rad)
+            self._state.touch = self._touch_processor.update(self._state)
+            self._touch_emitter.update(self._state)
 
             # 1b. Power management — evaluate protection conditions
             pm = self.power_manager
@@ -377,6 +609,14 @@ class Controller:
                 self._power_reset_requested = False
                 if pm.operator_reset():
                     logger.info("[Controller] Power manager reset: system re-enabled.")
+                    # Re-enter MIT mode for all servos — hardware is still in exit-motor-mode
+                    # after a thermal/compliance disable. enable_motor also resets ramp state,
+                    # preventing a position snap on the first command post-recovery.
+                    for _mid in sorted(self._state.active_servo_ids):
+                        try:
+                            await self.backend.enable_motor(_mid)
+                        except Exception as e:
+                            logger.error("[Controller] enable_motor(%d) after reset error: %s", _mid, e)
                 else:
                     logger.warning("[Controller] Power manager reset denied: conditions not safe.")
 

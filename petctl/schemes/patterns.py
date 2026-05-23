@@ -25,6 +25,7 @@ import random
 import time
 from typing import TYPE_CHECKING
 
+from petctl.config import MOTOR_LIMITS
 from petctl.protocols import ControlScheme
 from petctl.types import RobotState, ServoCommand
 
@@ -349,7 +350,7 @@ class StrokeReactControlScheme(ControlScheme):
     TOUCH_THRESHOLD: float = 0.05   # mean pad activation below this = no touch
     EQUAL_DEADZONE: float = 0.2     # |net_norm| below this = treat as equal
     MAX_SPEED_DEG_PER_S: float = 60.0
-    POS_LIMIT_DEG: float = math.degrees(12.5)  # stay inside MIT encoding range
+    POS_LIMIT_DEG: float = math.degrees(MOTOR_LIMITS.pos_max)
 
     def __init__(self) -> None:
         self._angle_deg: dict[int, float] = {}
@@ -411,30 +412,26 @@ class StrokeReactControlScheme(ControlScheme):
         return cmds
 
 
-class WanderControlScheme(ControlScheme):
-    """Each joint turns until it stalls under load, then reverses direction.
+class _WanderBase(ControlScheme):
+    """Position+torque stall detection and direction reversal, shared by Wander and Drift.
 
-    Stall requires two conditions to both be true within STALL_WINDOW_S:
+    Stall requires two conditions within STALL_WINDOW_S:
       1. Position has not advanced STALL_THRESHOLD_RAD (motor is stuck).
-      2. Peak torque during the window has reached STALL_TORQUE_NM (motor is
-         actively pushing — not just drifting or coasting to a slow stop).
+      2. Peak torque during the window has reached STALL_TORQUE_NM (actively
+         pushing — not just drifting or coasting to a slow stop).
 
     On reversal, _pos_cmd syncs to actual position and the controller slew
-    filter is reset to match via take_slew_resets(), so the motor begins
-    moving in the new direction on the very next tick.
+    filter is reset via take_slew_resets(), so the motor begins moving in the
+    new direction on the very next tick.
     """
 
-    name = "wander"
-
-    SPEED_DEG_PER_S: float = 45.0
     STALL_THRESHOLD_RAD: float = 0.3   # ~17° minimum travel per window
     STALL_WINDOW_S: float = 0.8
     STALL_TORQUE_NM: float = 0.9       # peak torque that must be seen during the window
     REVERSAL_COOLDOWN_S: float = 0.5
-    MAX_POS_RAD: float = 12.4
+    MAX_POS_RAD: float = MOTOR_LIMITS.pos_max
 
-    def __init__(self, speed_deg_per_s: float = SPEED_DEG_PER_S) -> None:
-        self._speed_rad_s = math.radians(speed_deg_per_s)
+    def __init__(self) -> None:
         self._pos_cmd: dict[int, float] = {}
         self._direction: dict[int, float] = {}
         self._stall_since: dict[int, float] = {}
@@ -443,7 +440,7 @@ class WanderControlScheme(ControlScheme):
         self._reversed_at: dict[int, float] = {}
         self._pending_slew_resets: dict[int, float] = {}
 
-    def on_start(self, controller: "Controller") -> None:
+    def _init_stall_state(self) -> None:
         self._pos_cmd = {}
         self._direction = {}
         self._stall_since = {}
@@ -451,10 +448,6 @@ class WanderControlScheme(ControlScheme):
         self._stall_peak_torque = {}
         self._reversed_at = {}
         self._pending_slew_resets = {}
-        logger.info(
-            "[Wander] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
-            math.degrees(self._speed_rad_s),
-        )
 
     def take_slew_resets(self) -> dict[int, float]:
         """Called by the controller before _apply_slew_to_commands each tick."""
@@ -462,76 +455,98 @@ class WanderControlScheme(ControlScheme):
         self._pending_slew_resets = {}
         return resets
 
+    def _init_servo(self, sid: int, state: RobotState, now: float) -> None:
+        self._pos_cmd[sid] = state.servo_positions.get(sid, 0.0)
+        self._direction[sid] = random.choice([-1.0, 1.0])
+        self._stall_since[sid] = 0.0
+        self._reversed_at[sid] = now
+
+    def _check_stall(self, sid: int, state: RobotState, now: float) -> bool:
+        """Return True if stall is triggered for this servo this tick."""
+        in_cooldown = (now - self._reversed_at[sid]) < self.REVERSAL_COOLDOWN_S
+        stall_triggered = False
+        if not in_cooldown:
+            actual = state.servo_positions.get(sid)
+            torque = abs(state.motor_torques.get(sid, 0.0))
+            if actual is not None:
+                if sid not in self._stall_pos_snap:
+                    self._stall_since[sid] = now
+                    self._stall_pos_snap[sid] = actual
+                    self._stall_peak_torque[sid] = torque
+                elif abs(actual - self._stall_pos_snap[sid]) >= self.STALL_THRESHOLD_RAD:
+                    # Motor moved — slide the window forward and reset peak
+                    self._stall_since[sid] = now
+                    self._stall_pos_snap[sid] = actual
+                    self._stall_peak_torque[sid] = torque
+                else:
+                    self._stall_peak_torque[sid] = max(self._stall_peak_torque[sid], torque)
+                    if now - self._stall_since[sid] >= self.STALL_WINDOW_S:
+                        if self._stall_peak_torque[sid] >= self.STALL_TORQUE_NM:
+                            stall_triggered = True
+                        else:
+                            # Position stalled but not under load — restart window
+                            self._stall_since[sid] = now
+                            self._stall_pos_snap[sid] = actual
+                            self._stall_peak_torque[sid] = torque
+            # Fallback: always reverse at the MIT encoding ceiling.
+            if not stall_triggered and abs(self._pos_cmd[sid]) >= self.MAX_POS_RAD:
+                stall_triggered = True
+        else:
+            self._stall_since[sid] = 0.0
+            self._stall_pos_snap.pop(sid, None)
+            self._stall_peak_torque.pop(sid, None)
+        return stall_triggered
+
+    def _do_reversal(self, sid: int, state: RobotState, now: float) -> tuple[float, float]:
+        """Sync pos_cmd to actual, flip direction, reset slew. Returns (clamped_rad, peak_torque_nm)."""
+        actual = state.servo_positions.get(sid, self._pos_cmd[sid])
+        clamped = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, actual))
+        peak_t = self._stall_peak_torque.get(sid, 0.0)
+        self._pos_cmd[sid] = clamped
+        self._pending_slew_resets[sid] = clamped
+        self._direction[sid] *= -1.0
+        self._reversed_at[sid] = now
+        self._stall_since[sid] = 0.0
+        self._stall_pos_snap.pop(sid, None)
+        self._stall_peak_torque.pop(sid, None)
+        return clamped, peak_t
+
+
+class WanderControlScheme(_WanderBase):
+    """Each joint turns at a fixed speed, reversing on position+torque stall or ceiling."""
+
+    name = "wander"
+
+    SPEED_DEG_PER_S: float = 45.0
+
+    def __init__(self, speed_deg_per_s: float = SPEED_DEG_PER_S) -> None:
+        super().__init__()
+        self._speed_rad_s = math.radians(speed_deg_per_s)
+
+    def on_start(self, controller: "Controller") -> None:
+        self._init_stall_state()
+        logger.info(
+            "[Wander] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
+            math.degrees(self._speed_rad_s),
+        )
+
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = time.monotonic()
         dt = max(state.dt, 1e-4)
         cmds: list[ServoCommand] = []
-
         for sid in sorted(state.active_servo_ids):
             if sid not in self._pos_cmd:
-                self._pos_cmd[sid] = state.servo_positions.get(sid, 0.0)
-                self._direction[sid] = random.choice([-1.0, 1.0])
-                self._stall_since[sid] = 0.0
-                self._reversed_at[sid] = now
-
-            in_cooldown = (now - self._reversed_at[sid]) < self.REVERSAL_COOLDOWN_S
-
-            stall_triggered = False
-            if not in_cooldown:
-                actual = state.servo_positions.get(sid)
-                torque = abs(state.motor_torques.get(sid, 0.0))
-
-                if actual is not None:
-                    if sid not in self._stall_pos_snap:
-                        self._stall_since[sid] = now
-                        self._stall_pos_snap[sid] = actual
-                        self._stall_peak_torque[sid] = torque
-                    elif abs(actual - self._stall_pos_snap[sid]) >= self.STALL_THRESHOLD_RAD:
-                        # Motor moved — slide the window forward and reset peak
-                        self._stall_since[sid] = now
-                        self._stall_pos_snap[sid] = actual
-                        self._stall_peak_torque[sid] = torque
-                    else:
-                        self._stall_peak_torque[sid] = max(self._stall_peak_torque[sid], torque)
-                        if now - self._stall_since[sid] >= self.STALL_WINDOW_S:
-                            if self._stall_peak_torque[sid] >= self.STALL_TORQUE_NM:
-                                stall_triggered = True
-                            else:
-                                # Position stalled but not under load — restart window
-                                self._stall_since[sid] = now
-                                self._stall_pos_snap[sid] = actual
-                                self._stall_peak_torque[sid] = torque
-            else:
-                self._stall_since[sid] = 0.0
-                self._stall_pos_snap.pop(sid, None)
-                self._stall_peak_torque.pop(sid, None)
-
-            # Fallback: always reverse at the MIT encoding ceiling.
-            if not stall_triggered and not in_cooldown and abs(self._pos_cmd[sid]) >= self.MAX_POS_RAD:
-                stall_triggered = True
-
-            if stall_triggered:
-                actual = state.servo_positions.get(sid, self._pos_cmd[sid])
-                clamped = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, actual))
-                peak_t = self._stall_peak_torque.get(sid, 0.0)
-                self._pos_cmd[sid] = clamped
-                self._pending_slew_resets[sid] = clamped
-                self._direction[sid] *= -1.0
-                self._reversed_at[sid] = now
-                self._stall_since[sid] = 0.0
-                self._stall_pos_snap.pop(sid, None)
-                self._stall_peak_torque.pop(sid, None)
+                self._init_servo(sid, state, now)
+            if self._check_stall(sid, state, now):
+                clamped, peak_t = self._do_reversal(sid, state, now)
                 logger.info("[Wander] Motor %d → reversing at %.1f° (peak torque %.2f Nm)", sid, math.degrees(clamped), peak_t)
-
             self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
-
             cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
-
         return cmds
 
 
-class DriftControlScheme(ControlScheme):
+class DriftControlScheme(_WanderBase):
     """Wander variant where all joints share one speed that varies over time.
 
     Speed is driven by a sine oscillator between MIN_SPEED_DEG_PER_S and
@@ -543,42 +558,20 @@ class DriftControlScheme(ControlScheme):
     name = "drift"
 
     MIN_SPEED_DEG_PER_S: float = 15.0
-    MAX_SPEED_DEG_PER_S: float = 90.0
+    MAX_SPEED_DEG_PER_S: float = 90.0  # intentionally 2× Wander — explores a wider speed range
     SPEED_PERIOD_S: float = 12.0
-    STALL_THRESHOLD_RAD: float = 0.3
-    STALL_WINDOW_S: float = 0.8
-    STALL_TORQUE_NM: float = 0.9
-    REVERSAL_COOLDOWN_S: float = 0.5
-    MAX_POS_RAD: float = 12.4
 
     def __init__(self) -> None:
+        super().__init__()
         self._start_time: float = 0.0
-        self._pos_cmd: dict[int, float] = {}
-        self._direction: dict[int, float] = {}
-        self._stall_since: dict[int, float] = {}
-        self._stall_pos_snap: dict[int, float] = {}
-        self._stall_peak_torque: dict[int, float] = {}
-        self._reversed_at: dict[int, float] = {}
-        self._pending_slew_resets: dict[int, float] = {}
 
     def on_start(self, controller: "Controller") -> None:
         self._start_time = time.monotonic()
-        self._pos_cmd = {}
-        self._direction = {}
-        self._stall_since = {}
-        self._stall_pos_snap = {}
-        self._stall_peak_torque = {}
-        self._reversed_at = {}
-        self._pending_slew_resets = {}
+        self._init_stall_state()
         logger.info(
             "[Drift] All joints share one speed oscillating %.0f–%.0f°/s over %.0fs, reversing on stall. Ctrl-C to stop.",
             self.MIN_SPEED_DEG_PER_S, self.MAX_SPEED_DEG_PER_S, self.SPEED_PERIOD_S,
         )
-
-    def take_slew_resets(self) -> dict[int, float]:
-        resets = self._pending_slew_resets
-        self._pending_slew_resets = {}
-        return resets
 
     def _current_speed_rad_s(self, now: float) -> float:
         t = now - self._start_time
@@ -594,65 +587,15 @@ class DriftControlScheme(ControlScheme):
         dt = max(state.dt, 1e-4)
         speed_rad_s = self._current_speed_rad_s(now)
         cmds: list[ServoCommand] = []
-
         for sid in sorted(state.active_servo_ids):
             if sid not in self._pos_cmd:
-                self._pos_cmd[sid] = state.servo_positions.get(sid, 0.0)
-                self._direction[sid] = random.choice([-1.0, 1.0])
-                self._stall_since[sid] = 0.0
-                self._reversed_at[sid] = now
-
-            in_cooldown = (now - self._reversed_at[sid]) < self.REVERSAL_COOLDOWN_S
-
-            stall_triggered = False
-            if not in_cooldown:
-                actual = state.servo_positions.get(sid)
-                torque = abs(state.motor_torques.get(sid, 0.0))
-
-                if actual is not None:
-                    if sid not in self._stall_pos_snap:
-                        self._stall_since[sid] = now
-                        self._stall_pos_snap[sid] = actual
-                        self._stall_peak_torque[sid] = torque
-                    elif abs(actual - self._stall_pos_snap[sid]) >= self.STALL_THRESHOLD_RAD:
-                        self._stall_since[sid] = now
-                        self._stall_pos_snap[sid] = actual
-                        self._stall_peak_torque[sid] = torque
-                    else:
-                        self._stall_peak_torque[sid] = max(self._stall_peak_torque[sid], torque)
-                        if now - self._stall_since[sid] >= self.STALL_WINDOW_S:
-                            if self._stall_peak_torque[sid] >= self.STALL_TORQUE_NM:
-                                stall_triggered = True
-                            else:
-                                self._stall_since[sid] = now
-                                self._stall_pos_snap[sid] = actual
-                                self._stall_peak_torque[sid] = torque
-            else:
-                self._stall_since[sid] = 0.0
-                self._stall_pos_snap.pop(sid, None)
-                self._stall_peak_torque.pop(sid, None)
-
-            if not stall_triggered and not in_cooldown and abs(self._pos_cmd[sid]) >= self.MAX_POS_RAD:
-                stall_triggered = True
-
-            if stall_triggered:
-                actual = state.servo_positions.get(sid, self._pos_cmd[sid])
-                clamped = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, actual))
-                peak_t = self._stall_peak_torque.get(sid, 0.0)
-                self._pos_cmd[sid] = clamped
-                self._pending_slew_resets[sid] = clamped
-                self._direction[sid] *= -1.0
-                self._reversed_at[sid] = now
-                self._stall_since[sid] = 0.0
-                self._stall_pos_snap.pop(sid, None)
-                self._stall_peak_torque.pop(sid, None)
+                self._init_servo(sid, state, now)
+            if self._check_stall(sid, state, now):
+                clamped, peak_t = self._do_reversal(sid, state, now)
                 logger.info("[Drift] Motor %d → reversing at %.1f° (peak torque %.2f Nm, speed %.0f°/s)", sid, math.degrees(clamped), peak_t, math.degrees(speed_rad_s))
-
             self._pos_cmd[sid] += self._direction[sid] * speed_rad_s * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
-
             cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
-
         return cmds
 
 
@@ -669,7 +612,7 @@ class ExploreControlScheme(ControlScheme):
     STALL_VEL_THRESHOLD: float = 0.15
     STALL_WINDOW_S: float = 0.6
     REVERSAL_COOLDOWN_S: float = 0.4
-    MAX_POS_RAD: float = 12.4
+    MAX_POS_RAD: float = MOTOR_LIMITS.pos_max
 
     def __init__(self, speed_deg_per_s: float = SPEED_DEG_PER_S) -> None:
         self._speed_rad_s = math.radians(speed_deg_per_s)
@@ -677,16 +620,24 @@ class ExploreControlScheme(ControlScheme):
         self._direction: dict[int, float] = {}
         self._stall_since: dict[int, float] = {}
         self._reversed_at: dict[int, float] = {}
+        self._pending_slew_resets: dict[int, float] = {}
 
     def on_start(self, controller: "Controller") -> None:
         self._pos_cmd = {}
         self._direction = {}
         self._stall_since = {}
         self._reversed_at = {}
+        self._pending_slew_resets = {}
         logger.info(
             "[Explore] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
             math.degrees(self._speed_rad_s),
         )
+
+    def take_slew_resets(self) -> dict[int, float]:
+        """Called by the controller before _apply_slew_to_commands each tick."""
+        resets = self._pending_slew_resets
+        self._pending_slew_resets = {}
+        return resets
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = time.monotonic()
@@ -719,7 +670,10 @@ class ExploreControlScheme(ControlScheme):
                 stall_triggered = True
 
             if stall_triggered:
-                self._pos_cmd[sid] = state.servo_positions.get(sid, self._pos_cmd[sid])
+                actual = state.servo_positions.get(sid, self._pos_cmd[sid])
+                clamped = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, actual))
+                self._pos_cmd[sid] = clamped
+                self._pending_slew_resets[sid] = clamped
                 self._direction[sid] *= -1.0
                 self._reversed_at[sid] = now
                 self._stall_since[sid] = 0.0
@@ -775,6 +729,27 @@ class CurlControlScheme(ControlScheme):
         ]
 
 
+def _sense_face_direction(state: RobotState, pad_threshold: float, direction_threshold: float) -> float:
+    """Return +1.0 (right), -1.0 (left), or 0.0 (ambiguous) from face pad balance."""
+    total_right = total_left = 0.0
+    for sens in state.sensors.values():
+        for v in sens.touch_right_pads:
+            if v >= pad_threshold:
+                total_right += v
+        for v in sens.touch_left_pads:
+            if v >= pad_threshold:
+                total_left += v
+    total = total_right + total_left
+    if total < 1e-6:
+        return 0.0
+    balance = (total_right - total_left) / total
+    if balance > direction_threshold:
+        return 1.0
+    if balance < -direction_threshold:
+        return -1.0
+    return 0.0
+
+
 class StrokeCurlScheme(ControlScheme):
     """
     Each module curls toward the touched face while the hand is on it.
@@ -819,6 +794,7 @@ class StrokeCurlScheme(ControlScheme):
             self._curl_dir = 1.0
 
         cmds = []
+        # Invariant: module N has servo N (modules 1–7). Module 0 is head, no servo.
         for sid in sorted(state.active_servo_ids):
             sens = state.sensors.get(sid)
             touched = sens is not None and sens.touch_total >= self.MODULE_TOUCH_THRESHOLD
@@ -845,24 +821,7 @@ class StrokeCurlScheme(ControlScheme):
         return cmds
 
     def _sense_dir(self, state: RobotState) -> float:
-        """Return +1.0 (right), -1.0 (left), or 0.0 (ambiguous) from face balance."""
-        total_right = total_left = 0.0
-        for sens in state.sensors.values():
-            for v in sens.touch_right_pads:
-                if v >= self._PAD_THRESHOLD:
-                    total_right += v
-            for v in sens.touch_left_pads:
-                if v >= self._PAD_THRESHOLD:
-                    total_left += v
-        total = total_right + total_left
-        if total < 1e-6:
-            return 0.0
-        balance = (total_right - total_left) / total
-        if balance > self.DIRECTION_THRESHOLD:
-            return 1.0
-        if balance < -self.DIRECTION_THRESHOLD:
-            return -1.0
-        return 0.0
+        return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
 
 
 class StrokeRippleScheme(ControlScheme):
@@ -944,6 +903,7 @@ class StrokeRippleScheme(ControlScheme):
         any_touched = False
         cmds: list[ServoCommand] = []
 
+        # Invariant: module N has servo N (modules 1–7). Module 0 is head, no servo.
         for sid in sorted(state.active_servo_ids):
             sens = state.sensors.get(sid)
             touched = sens is not None and sens.touch_total >= self.MODULE_TOUCH_THRESHOLD
@@ -1008,251 +968,9 @@ class StrokeRippleScheme(ControlScheme):
         ]
 
     def _sense_dir(self, state: RobotState) -> float:
-        total_right = total_left = 0.0
-        for sens in state.sensors.values():
-            for v in sens.touch_right_pads:
-                if v >= self._PAD_THRESHOLD:
-                    total_right += v
-            for v in sens.touch_left_pads:
-                if v >= self._PAD_THRESHOLD:
-                    total_left += v
-        total = total_right + total_left
-        if total < 1e-6:
-            return 0.0
-        balance = (total_right - total_left) / total
-        if balance > self.DIRECTION_THRESHOLD:
-            return 1.0
-        if balance < -self.DIRECTION_THRESHOLD:
-            return -1.0
-        return 0.0
+        return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
 
 
-class StrokeWatchScheme(ControlScheme):
-    """Observer scheme: detects strokes along the body and logs them to console + Rerun.
-
-    Emits no servo commands. Run with --observe to avoid moving the robot.
-    Rerun paths logged: stroke/centroid, stroke/velocity, stroke/blob_count,
-    stroke/activation/mod_<i>.
-    """
-
-    name = "stroke-watch"
-
-    def __init__(self) -> None:
-        from petctl.perception.stroke import StrokeDetector
-        self._detector = StrokeDetector()
-        self._tick = 0
-        self._rr = None
-        try:
-            import rerun as rr
-            self._rr = rr
-        except ImportError:
-            pass
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        self._tick += 1
-
-        reading = self._detector.update(state)
-
-        rr = self._rr
-        if rr is not None:
-            # Scheme runs before RerunVisualizer.update(); set time explicitly
-            # (Rerun timeline is per-thread).
-            rr.set_time("time", duration=state.timestamp)
-            rr.log("stroke/velocity", rr.Scalars(reading.velocity if reading else 0.0))
-
-        # Console output at most every 3 ticks to keep it readable
-        if reading is not None and self._tick % 3 == 0:
-            arrow = "→" if reading.direction == "head_to_tail" else "←"
-            logger.info(
-                "[STROKE]  dir=%s %s  speed=%.1f mod/s  centroid=%.1f  side=%s  intensity=%.2f  conf=%.2f",
-                reading.direction.replace("_", " "), arrow,
-                reading.speed, reading.centroid, reading.side, reading.intensity, reading.confidence,
-            )
-
-        return []
-
-
-class HoldWatchScheme(ControlScheme):
-    """Observer scheme: detects holds and logs them to console + Rerun.
-
-    Emits no servo commands. Run with --observe to avoid moving the robot.
-    Rerun paths logged: hold/active, hold/centroid, hold/duration, hold/blob_count.
-    """
-
-    name = "hold-watch"
-
-    def __init__(self) -> None:
-        from petctl.perception.stroke import HoldDetector
-        self._detector = HoldDetector()
-        self._tick = 0
-        self._verbose = False
-        self._rr = None
-        try:
-            import rerun as rr
-            self._rr = rr
-        except ImportError:
-            pass
-
-    def on_start(self, controller: "Controller") -> None:
-        self._verbose = controller.log_touch
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        self._tick += 1
-
-        reading = self._detector.update(state)
-
-        rr = self._rr
-        if rr is not None:
-            rr.set_time("time", duration=state.timestamp)
-            rr.log("hold/active", rr.Scalars(1.0 if reading else 0.0))
-            rr.log("hold/centroid", rr.Scalars(reading.centroid if reading else 0.0))
-            rr.log("hold/duration", rr.Scalars(reading.duration if reading else 0.0))
-            rr.log("hold/blob_count", rr.Scalars(len(reading.q_blobs) if reading else 0))
-
-        if not self._verbose:
-            return []
-
-        if reading is not None and self._tick % 3 == 0:
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in reading.q_blobs)
-            logger.info(
-                "[HOLD]  blobs=%s  centroid=%.1f  dur=%.1fs  intensity=%.2f  side=%s",
-                blobs, reading.centroid, reading.duration, reading.intensity, reading.side,
-            )
-        elif reading is None and self._tick % 30 == 0:
-            logger.info("[HOLD]  --")
-
-        return []
-
-
-_CONTACT_TYPE_LABELS: dict[str, str] = {
-    "hold":     "HOLD    ",
-    "squeeze":  "SQUEEZE ",
-    "restrict": "RESTRICT",
-    "wrench":   "WRENCH  ",
-}
-
-
-class ContactWatchScheme(ControlScheme):
-    """Contact type observer: classifies STROKE / HOLD / SQUEEZE / RESTRICT / WRENCH.
-
-    Holds all joints at home (0°). Motors resist displacement, so RESTRICT and
-    WRENCH are detectable whenever the user pushes against or holds away from home.
-
-    StrokeDetector and HoldDetector are mutually exclusive by construction
-    (same VELOCITY_THRESHOLD), so exactly one fires per tick when contact is active.
-
-    Rerun paths: stroke/velocity, contact/type (enum index 0-3),
-                 contact/torque_peak, contact/pressure_peak, hold/active, hold/centroid.
-
-    To test:
-      STROKE   — move a hand along the body
-      HOLD     — grip the body without pushing or squeezing hard
-      SQUEEZE  — grip and compress firmly (FSR pressure above threshold)
-      RESTRICT — hold a joint away from home while motors try to return
-      WRENCH   — actively push a joint further away from home
-    """
-
-    name = "contact-watch"
-
-    _TYPE_ORDER = ("hold", "squeeze", "restrict", "wrench")
-
-    def __init__(self) -> None:
-        from petctl.perception.contact import ContactClassifier
-        from petctl.perception.stroke import HoldDetector, StrokeDetector
-        self._stroke = StrokeDetector()
-        self._hold = HoldDetector()
-        self._clf = ContactClassifier()
-        self._verbose = False
-        self._prev_type: str | None = None
-        self._rr = None
-        try:
-            import rerun as rr
-            self._rr = rr
-        except ImportError:
-            pass
-        logger.info(
-            "[ContactWatch] Holding all joints at home (0°).\n"
-            "  STROKE   — move hand along body\n"
-            "  HOLD     — grip without pushing or squeezing hard\n"
-            "  SQUEEZE  — grip and compress (FSR)\n"
-            "  RESTRICT — hold a joint away from home\n"
-            "  WRENCH   — push a joint further away from home\n"
-            "Pass --log-touch to log contact type to console. Ctrl-C to stop."
-        )
-
-    def on_start(self, controller: "Controller") -> None:
-        self._verbose = controller.log_touch
-
-    def _log_transition(self, prev: str | None, curr: str | None, details: str) -> None:
-        """Log a type transition. Only called when self._verbose is True."""
-        if prev is not None and curr != prev:
-            logger.info("[%s] end", _CONTACT_TYPE_LABELS.get(prev, prev.upper()[:8]))
-        if curr is not None and curr != prev:
-            label = _CONTACT_TYPE_LABELS.get(curr, curr.upper()[:8])
-            logger.info("[%s] start  %s", label, details)
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        commands = [ServoCommand(servo_id=sid, position=0.0) for sid in state.active_servo_ids]
-
-        stroke = self._stroke.update(state)
-        hold = self._hold.update(state)
-
-        rr = self._rr
-        if rr is not None:
-            rr.set_time("time", duration=state.timestamp)
-            rr.log("stroke/velocity", rr.Scalars(stroke.velocity if stroke else 0.0))
-            rr.log("hold/active", rr.Scalars(1.0 if hold else 0.0))
-            rr.log("hold/centroid", rr.Scalars(hold.centroid if hold else 0.0))
-
-        if stroke is not None:
-            curr = "stroke"
-            if self._verbose and curr != self._prev_type:
-                arrow = "→" if stroke.direction == "head_to_tail" else "←"
-                details = (
-                    f"{arrow}  speed={stroke.speed:.1f} mod/s"
-                    f"  centroid={stroke.centroid:.1f}"
-                    f"  side={stroke.side}"
-                    f"  conf={stroke.confidence:.2f}"
-                )
-                self._log_transition(self._prev_type, curr, details)
-            self._prev_type = curr
-            if rr is not None:
-                rr.log("contact/type", rr.Scalars(-1.0))
-                rr.log("contact/torque_peak", rr.Scalars(0.0))
-                rr.log("contact/pressure_peak", rr.Scalars(0.0))
-            return commands
-
-        if hold is None:
-            self._clf.reset()
-            if self._verbose and self._prev_type is not None:
-                label = _CONTACT_TYPE_LABELS.get(self._prev_type, self._prev_type.upper()[:8])
-                logger.info("[%s] end", label)
-            self._prev_type = None
-            if rr is not None:
-                rr.log("contact/type", rr.Scalars(-1.0))
-                rr.log("contact/torque_peak", rr.Scalars(0.0))
-                rr.log("contact/pressure_peak", rr.Scalars(0.0))
-            return commands
-
-        cr = self._clf.classify(hold, state)
-        curr = cr.contact_type.value
-        type_idx = float(self._TYPE_ORDER.index(curr))
-
-        if rr is not None:
-            rr.log("contact/type", rr.Scalars(type_idx))
-            rr.log("contact/torque_peak", rr.Scalars(cr.torque_peak))
-            rr.log("contact/pressure_peak", rr.Scalars(cr.pressure_peak))
-
-        if self._verbose and curr != self._prev_type:
-            blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
-            servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
-            torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
-            pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-            details = f"blobs={blobs}  dur={hold.duration:.1f}s{servos}{torque}{pressure}"
-            self._log_transition(self._prev_type, curr, details)
-        self._prev_type = curr
-
-        return commands
 
 
 class YieldStiffScheme(ControlScheme):
@@ -1442,9 +1160,6 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     WanderControlScheme,
     DriftControlScheme,
     ExploreControlScheme,
-    StrokeWatchScheme,
-    HoldWatchScheme,
-    ContactWatchScheme,
     YieldStiffScheme,
     PoseScheme,
 ]

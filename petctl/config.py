@@ -46,22 +46,22 @@ class ControlLoopLimits:
     # Maximum slew rate for the backend position ramping filter (rad/s).
     # Caps how fast p_des_commanded can move toward p_des_target each cycle.
     # Acts as a final safety net after scheme-level smoothing.
-    max_speed_rad_s: float = 8.0
+    max_speed_rad_s: float = 3.0
 
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10
-
-    # How often to send zero-torque MIT poll frames when no commands are active.
-    # Lower rates reduce Arduino WS/CAN load; at 5 Hz each motor is polled every 200 ms.
-    # During active control, MIT command frames carry position and implicitly poll state,
-    # so this only applies when the control scheme produces no output.
-    idle_motor_poll_hz: float = 5.0
 
     # Seconds after the last position command before the TX loop reverts a motor
     # to zero-torque (idle) mode.  Prevents motors from holding position indefinitely
     # after a scheme goes quiet.  Should be long enough for the slew filter to settle
     # (command_smoothing_tau_s × ~5) plus a small margin.
     idle_hold_s: float = 60.0
+
+    # Anti-windup window for the backend ramp-filter integrator (_last_mit_abs_pos).
+    # During a physical occlusion the integrator is clamped to within this distance
+    # of the motor's actual position, keeping holding torque = kp × anti_windup_rad.
+    # 0.3 rad ≈ 17° — ~5 motor-TX ticks of max_speed budget.
+    anti_windup_rad: float = 0.3
 
     # Background sensor poll rate (touch + FSR).
     sensor_poll_hz: float = 20.0
@@ -76,7 +76,13 @@ class ControlLoopLimits:
 
 @dataclass(frozen=True)
 class BehaviorLimits:
-    """Limits that behaviors must respect."""
+    """Limits for the BehaviorEngine (when implemented).
+
+    These are advisory for standalone ControlScheme subclasses — the controller
+    does not clamp direct scheme output against these values. Only LOOP_LIMITS
+    (slew rate, per-tick delta) and MOTOR_LIMITS (encoding ceiling) apply to all
+    schemes unconditionally.
+    """
 
     # Maximum angle contribution from any single behavior (degrees)
     max_behavior_angle_deg: float = 45.0

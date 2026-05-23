@@ -19,6 +19,9 @@ from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
 
+_WS_SETTLE_S: float = 0.05    # allow WS handshake + firmware ACK before first command
+_SLCAN_SETTLE_S: float = 0.05  # allow Arduino to open CAN bus before pinging again
+
 # Default connection parameters (also imported by cli.py to keep a single source of truth)
 ROBOT_DEFAULT_HOST = "pet-robot.local"
 ROBOT_DEFAULT_PORT = 8080
@@ -234,13 +237,21 @@ class RobotBackend(_BackendBase):
             if sid in self._disabled_motor_ids:
                 continue  # don't drift tracking state while motor is off
             p_target = cmd.position + self._angle_offsets.get(sid, 0.0)
-            last_p = self._last_mit_abs_pos.get(sid)
             last_t = self._last_mit_wall_s.get(sid)
-            if last_p is None:
-                # Seed from current physical position so the first command ramps
-                # from where the motor actually is rather than snapping to p_target.
-                phys = self._motor_state.get(sid)
+            phys = self._motor_state.get(sid)
+            prev_last_p = self._last_mit_abs_pos.get(sid)
+
+            if prev_last_p is None:
+                # First command: seed from physical to avoid a snap on the first move.
                 last_p = phys["pos"] if phys is not None else p_target
+            elif phys is not None:
+                # Anti-windup: clamp ramp state to within window of actual position.
+                # During normal motion phys ≈ prev_last_p so clamp never fires.
+                # During occlusion it saturates at physical ± window, bounding torque.
+                w = LOOP_LIMITS.anti_windup_rad
+                last_p = max(min(prev_last_p, phys["pos"] + w), phys["pos"] - w)
+            else:
+                last_p = prev_last_p
             if last_t is not None:
                 # Cap dt at one motor-TX period so a gap (scheme swap, slow tick,
                 # reconnect) never inflates max_step into a position snap.
@@ -333,7 +344,7 @@ class RobotBackend(_BackendBase):
 
         self._receive_task = asyncio.create_task(self._receive_loop())
         self._connected = True
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_WS_SETTLE_S)
 
         async def _numbered_ping_ok() -> bool:
             data = await self._send_text("ping", timeout=3.0)
@@ -345,7 +356,7 @@ class RobotBackend(_BackendBase):
             logger.info("[RobotBackend] Numbered ping failed; opening SLCAN (S8/O) then retrying...")
             await self._ws.send("S8")
             await self._ws.send("O")
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(_SLCAN_SETTLE_S)
             slcan_preopened = True
             ok = await _numbered_ping_ok()
         if not ok:
@@ -364,7 +375,7 @@ class RobotBackend(_BackendBase):
         if not slcan_preopened:
             await self._ws.send("S8")
             await self._ws.send("O")
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(_SLCAN_SETTLE_S)
 
         self._disabled_motor_ids.clear()
 
@@ -424,7 +435,12 @@ class RobotBackend(_BackendBase):
             self._bare_reply_fut = None
 
     def _next_req_id(self) -> int:
-        return next(self._req_id_counter) % 65536
+        val = next(self._req_id_counter)
+        if val >= 65535:
+            # Wrap back to 1 — firmware treats 0 as invalid/broadcast.
+            self._req_id_counter = itertools.count(1)
+            return 1
+        return val
 
     async def _send_text(
         self, command: str, timeout: float = 2.0

@@ -19,6 +19,7 @@ from petctl.types import RobotState
 PAD_THRESHOLD: float = 0.35     # minimum per-pad value to contribute to centroid
 TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grouping
 VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
+MIN_STROKE_TRAVEL: float = 0.35  # centroid must travel this far (body-units) over the velocity window
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
 TOUCH_GAP_GRACE_S: float = 0.25  # don't clear velocity window during brief inter-module gaps
@@ -80,6 +81,7 @@ class StrokeReading:
     confidence: float    # R² of the linear fit over the centroid window
     side: str            # which face(s) are active: "top", "left", "right", "top-left", etc.
     blobs: list[TouchBlob] = field(default_factory=list)
+    is_rub: bool = False  # True once direction has reversed within this stroke session
 
 
 @dataclass
@@ -109,6 +111,8 @@ class StrokeDetector:
     def __init__(self) -> None:
         self._window: deque[tuple[float, float]] = deque(maxlen=WINDOW_FRAMES)
         self._last_touch_t: float | None = None
+        self._initial_direction: str | None = None
+        self._is_rub: bool = False
 
     def update(self, state: RobotState) -> StrokeReading | None:
         """Process one tick of RobotState. Returns StrokeReading or None."""
@@ -119,6 +123,8 @@ class StrokeDetector:
                     state.timestamp - self._last_touch_t >= TOUCH_GAP_GRACE_S):
                 self._window.clear()
                 self._last_touch_t = None
+                self._initial_direction = None
+                self._is_rub = False
             # else: brief inter-module gap — keep window so velocity fit survives
             return None
 
@@ -133,33 +139,46 @@ class StrokeDetector:
         if abs(velocity) < VELOCITY_THRESHOLD:
             return None
 
+        # A press keeps the centroid near the contact location — the linear fit can
+        # still show a high slope from sensor noise or settling.  Require the centroid
+        # to have actually moved over the window so that presses and local oscillations
+        # are not mistaken for strokes.
+        if abs(centroid - self._window[0][1]) < MIN_STROKE_TRAVEL:
+            return None
+
         activations = {mid: s.touch_total for mid, s in state.sensors.items()}
         blobs = _find_blobs(activations)
+
+        curr_dir = "head_to_tail" if velocity > 0 else "tail_to_head"
+        if self._initial_direction is None:
+            self._initial_direction = curr_dir
+        elif not self._is_rub and curr_dir != self._initial_direction:
+            self._is_rub = True
 
         return StrokeReading(
             centroid=centroid,
             velocity=velocity,
             speed=abs(velocity),
-            direction="head_to_tail" if velocity > 0 else "tail_to_head",
+            direction=curr_dir,
             intensity=intensity,
             confidence=r_squared,
             side=_active_side(state),
             blobs=blobs,
+            is_rub=self._is_rub,
         )
 
 
 class HoldDetector:
     """
-    Detects a hold gesture: substantial static contact on the robot body.
+    Detects static contact on the robot body.
 
     Fires when the global touch centroid is not moving (velocity < VELOCITY_THRESHOLD)
-    AND the contact meets one of:
-      - ≥1 qualifying blob spanning ≥2 modules  (cradling / wide single grip)
-      - ≥2 separate qualifying blobs            (two hands at distinct locations)
+    AND there is at least one qualifying blob.  A qualifying blob is a contiguous run
+    of modules where each module has ≥2 adjacent active cap pads — this filters single
+    isolated pad taps.
 
-    A "qualifying blob" is a contiguous run of modules where each module has
-    ≥2 adjacent active cap pads (intra-face or across the module boundary with
-    its neighbour).  This filters out single isolated pad taps.
+    The ContactClassifier downstream determines the sub-type (touch / squeeze / hold /
+    twist / restrict / wrench) based on blob count and motor state.
 
     Mutually exclusive with StrokeDetector by construction.
     """
@@ -191,7 +210,7 @@ class HoldDetector:
                 return None
 
         q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
-        if not (any(b.width >= 2 for b in q_blobs) or len(q_blobs) >= 2):
+        if not q_blobs:
             self._hold_start = None
             return None
 
@@ -290,7 +309,8 @@ def _pad_centroid(state: RobotState) -> tuple[float | None, float]:
     average active-pad value.  Returns (None, 0.0) when no pad is above threshold.
     """
     weighted_sum = 0.0
-    total_weight = 0.0
+    weight_sum = 0.0
+    active_sum = 0.0
     n_active = 0
     for mod_id, sens in state.sensors.items():
         all_pads = (*sens.touch_right_pads, *sens.touch_left_pads, *sens.touch_middle_pads)
@@ -298,11 +318,12 @@ def _pad_centroid(state: RobotState) -> tuple[float | None, float]:
             if val >= PAD_THRESHOLD:
                 body_pos = mod_id + _PAD_BODY_SUB[pad_idx]
                 weighted_sum += body_pos * val
-                total_weight += val
+                weight_sum += val
+                active_sum += val
                 n_active += 1
-    if total_weight < 1e-6:
+    if weight_sum < 1e-6:
         return None, 0.0
-    return weighted_sum / total_weight, total_weight / n_active
+    return weighted_sum / weight_sum, active_sum / n_active
 
 
 def _find_blobs(activations: dict[int, float]) -> list[TouchBlob]:
@@ -360,6 +381,34 @@ def _active_side(state: RobotState) -> str:
     if has_right:
         parts.append("right")
     return "-".join(parts) if parts else "none"
+
+
+def any_contact(state: RobotState) -> tuple[float | None, float, str]:
+    """Return (centroid, intensity, side) for current pad activity.
+
+    centroid is None when no pad is above PAD_THRESHOLD (no contact).
+    """
+    centroid, intensity = _pad_centroid(state)
+    side = _active_side(state) if centroid is not None else "none"
+    return centroid, intensity, side
+
+
+def qualifying_contact(state: RobotState) -> tuple[float | None, str]:
+    """Return (centroid, side) for contact qualifying as real touch.
+
+    Requires at least one module with ≥2 physically adjacent pads above
+    PAD_THRESHOLD.  Filters single floating/noisy pads that would otherwise
+    pass any_contact.  Returns (None, "none") when no qualifying contact.
+    """
+    q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
+    if not q_blobs:
+        return None, "none"
+    total_w = sum(b.intensity * b.width for b in q_blobs)
+    centroid = (
+        sum(b.centroid * b.intensity * b.width for b in q_blobs) / total_w
+        if total_w > 0 else q_blobs[0].centroid
+    )
+    return centroid, _active_side(state)
 
 
 def _linear_fit(window: list[tuple[float, float]]) -> tuple[float, float]:
