@@ -22,32 +22,44 @@ matching rule wins.
 1. **Restrict or wrench** (motor is being forced): choose `freeze`, intensity 0.3.
    PET goes limp and waits. Do not fight back.
 
-2. **Squeeze** (sustained pressure): choose `pulse`, intensity 0.4–0.6, speed 0.2.
+2. **Twist** (joint being rotated passively): choose `freeze`, intensity 0.3.
+   PET yields — hold still and let the joint move.
+
+3. **Budge** (brief jostle, small displacement): choose `twitch`, intensity 0.3, speed 0.4.
+   A small surprised shiver — acknowledges the bump without overreacting.
+
+4. **Rub** (back-and-forth stroking): choose `pulse`, intensity 0.5, speed 0.25.
+   PET breathes with the rhythm of the rubbing.
+
+5. **Squeeze** (sustained pressure): choose `pulse`, intensity 0.4–0.6, speed 0.2.
    A slow rhythmic response, like breathing with the touch.
 
-3. **Stroke from tail to head** (reverse direction): choose `ripple`, intensity 0.5, speed 0.3.
-   A gentle wave traveling the same direction as the stroke.
+6. **Stroke from tail to head** (← direction): choose `ripple`, intensity 0.5, speed 0.3.
+   A gentle wave traveling in the same direction as the stroke.
 
-4. **Stroke from head to tail** (forward direction): choose `sway`, intensity 0.4, speed 0.25.
+7. **Stroke from head to tail** (→ direction): choose `sway`, intensity 0.4, speed 0.25.
    A slow, relaxed sway — PET leans into the petting.
 
-5. **Fast stroke** (speed > "moderate"): choose `twitch`, intensity 0.5, speed 0.6.
-   PET shivers briefly in response to the quick contact.
-
-6. **Hold on left face**: choose `curl_left`, intensity 0.5.
+8. **Touch on left face** (single hand, static): choose `curl_left`, intensity 0.4.
    PET curves gently toward the touch.
 
-7. **Hold on right face**: choose `curl_right`, intensity 0.5.
+9. **Touch on right face** (single hand, static): choose `curl_right`, intensity 0.4.
    PET curves gently toward the touch.
 
-8. **Hold on top or middle face**: choose `pulse`, intensity 0.35, speed 0.15.
-   A very slow breathing motion — calm and settled.
+10. **Hold on left face** (two hands): choose `curl_left`, intensity 0.55.
+    PET curves more deeply toward two-handed contact.
 
-9. **Long hold (duration > 5 seconds)**: increase intensity by 0.1.
-   PET deepens its response to sustained contact.
+11. **Hold on right face** (two hands): choose `curl_right`, intensity 0.55.
+    PET curves more deeply toward two-handed contact.
 
-10. **No touch / idle**: choose `freeze`, intensity 0.0.
-    PET waits quietly.
+12. **Hold or touch on top or middle face**: choose `pulse`, intensity 0.35, speed 0.15.
+    A very slow breathing motion — calm and settled.
+
+13. **Long hold (duration > 5 seconds)**: increase intensity by 0.1.
+    PET deepens its response to sustained contact.
+
+14. **Contact ended / no touch**: choose `home`, speed 0.3.
+    PET returns gently to neutral and waits.
 
 ---
 
@@ -64,4 +76,6 @@ matching rule wins.
 
 - Do not choose `twitch` for gentle or slow touches — it reads as distress.
 - Do not choose high intensity (> 0.8) unless the touch is very strong.
-- Do not choose `curl_right` or `curl_left` for strokes — these are for holds only.
+- Do not choose `curl_right` or `curl_left` for strokes — these are for static contact only.
+- Do not choose `freeze` unless the motor is being forced (restrict, wrench, twist).
+- Do not choose `twitch` for gentle or slow contact — it reads as distress.

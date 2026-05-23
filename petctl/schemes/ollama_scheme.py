@@ -1,10 +1,11 @@
 """
 OllamaControlScheme — touch-reactive control driven by a local LLM.
 
-The scheme observes touch events (stroke, hold, squeeze, restrict, wrench)
-and periodically asks a gemma3 model via Ollama which movement to perform.
-LLM calls happen in a background thread so the 30 Hz control loop stays
-non-blocking. Between calls the last commanded motion continues uninterrupted.
+The scheme reads touch events from the controller's `touch_events` queue
+(AsyncIO, emits on type transitions only) and asks a gemma3 model via Ollama
+which movement to perform.  LLM calls happen in a background thread so the
+30 Hz control loop stays non-blocking.  Between calls the last commanded
+motion continues uninterrupted.
 
 Behaviour is configured by two markdown files in petctl/prompts/:
     robot_context.md   — technical reference (auto-loaded, do not edit)
@@ -13,6 +14,7 @@ Behaviour is configured by two markdown files in petctl/prompts/:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import random
@@ -21,13 +23,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from petctl.config import BEHAVIOR_LIMITS, LOOP_LIMITS, MOTOR_LIMITS
 from petctl.llm.client import OllamaClient
-from petctl.llm.touch_formatter import format_touch_state
-from petctl.perception.contact import ContactClassifier
-from petctl.perception.stroke import HoldDetector, StrokeDetector
 from petctl.protocols import ControlScheme
-from petctl.types import RobotState, ServoCommand
+from petctl.types import RobotState, ServoCommand, TouchSummary
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
@@ -36,10 +34,10 @@ logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-# Minimum seconds between LLM calls.
-_LLM_DEBOUNCE_S = 1.2
+# Minimum seconds between LLM calls regardless of event rate.
+_LLM_MIN_INTERVAL_S = 1.0
 
-# Max angle magnitude per motion mode (degrees). Intensity (0-1) scales this.
+# Max angle magnitude per motion mode (degrees). intensity (0-1) scales this.
 _MAX_AMP: dict[str, float] = {
     "freeze":     0.0,
     "home":       0.0,
@@ -57,6 +55,10 @@ _VALID_MOVEMENTS = set(_MAX_AMP)
 class OllamaControlScheme(ControlScheme):
     """Control scheme that uses a local Ollama LLM to map touch→movement.
 
+    The controller populates state.touch each tick and emits TouchSummary
+    events on the touch_events queue on type transitions.  This scheme drains
+    that queue each tick and spawns a background LLM call for each new event.
+
     Args:
         model:    Ollama model tag (default: gemma3:4b).
         base_url: Ollama server URL (default: localhost:11434).
@@ -73,9 +75,8 @@ class OllamaControlScheme(ControlScheme):
     ) -> None:
         self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout)
 
-        self._stroke_det = StrokeDetector()
-        self._hold_det = HoldDetector()
-        self._clf = ContactClassifier()
+        # Injected in on_start() — the controller's shared touch event queue.
+        self._touch_queue: asyncio.Queue[TouchSummary] | None = None
 
         # Current motion state — written by background thread, read by update().
         self._lock = threading.Lock()
@@ -90,7 +91,7 @@ class OllamaControlScheme(ControlScheme):
         self._system_prompt: str = ""
         self._active_ids: list[int] = []
 
-        # Twitch: per-servo random targets updated periodically.
+        # Per-servo random targets for twitch mode.
         self._twitch_targets: dict[int, float] = {}
         self._twitch_next_t: float = 0.0
 
@@ -102,6 +103,8 @@ class OllamaControlScheme(ControlScheme):
         self._system_prompt = _load_system_prompt()
         self._active_ids = sorted(controller.state.active_servo_ids)
         self._motion_start_t = time.monotonic()
+        # Read from the controller's shared transition-only touch event queue.
+        self._touch_queue = controller.touch_events
 
         if not self._client.is_available():
             logger.warning(
@@ -121,42 +124,56 @@ class OllamaControlScheme(ControlScheme):
         if not self._active_ids:
             return []
 
-        # Run touch detectors.
-        stroke = self._stroke_det.update(state)
-        hold = self._hold_det.update(state)
-        contact = self._clf.classify(hold, state) if hold is not None else None
+        # Drain touch transition events and trigger LLM calls.
+        # The controller emits one event per type change (onset, upgrade, end),
+        # so no further debouncing is needed beyond the minimum interval guard.
+        if self._touch_queue is not None:
+            self._drain_touch_queue()
 
-        # Schedule an LLM call if touch state changed and debounce elapsed.
-        now = time.monotonic()
-        touch_active = stroke is not None or hold is not None
-        pending = self._pending
-        debounce_ok = (now - self._last_call_t) >= _LLM_DEBOUNCE_S
-        thread_free = pending is None or not pending.is_alive()
-
-        if touch_active and debounce_ok and thread_free:
-            touch_description = format_touch_state(stroke, hold, contact)
-            self._last_call_t = now
-            t = threading.Thread(
-                target=self._llm_call,
-                args=(touch_description,),
-                daemon=True,
-            )
-            self._pending = t
-            t.start()
-
-        # If contact just ended and enough time has elapsed, return to freeze.
-        if not touch_active and (now - self._last_call_t) > 3.0:
-            with self._lock:
-                if self._motion not in ("freeze", "home"):
-                    self._motion = "home"
-                    self._speed = 0.3
-                    self._last_call_t = now
-
-        return self._generate_commands(state, now)
+        return self._generate_commands(state, time.monotonic())
 
     def on_stop(self) -> None:
         if self._pending and self._pending.is_alive():
             self._pending.join(timeout=0.5)
+
+    # ------------------------------------------------------------------
+    # Touch queue draining
+    # ------------------------------------------------------------------
+
+    def _drain_touch_queue(self) -> None:
+        assert self._touch_queue is not None
+        while True:
+            try:
+                summary: TouchSummary = self._touch_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            now = time.monotonic()
+            pending = self._pending
+
+            # Contact ended — return to home.
+            if summary.touch_type == "none":
+                with self._lock:
+                    if self._motion not in ("freeze", "home"):
+                        self._motion = "home"
+                        self._speed = 0.3
+                        self._motion_start_t = now
+                continue
+
+            # Rate-limit LLM calls; skip if one is already in flight.
+            thread_free = pending is None or not pending.is_alive()
+            if not thread_free or (now - self._last_call_t) < _LLM_MIN_INTERVAL_S:
+                continue
+
+            self._last_call_t = now
+            description = summary.describe()
+            t = threading.Thread(
+                target=self._llm_call,
+                args=(description,),
+                daemon=True,
+            )
+            self._pending = t
+            t.start()
 
     # ------------------------------------------------------------------
     # LLM interaction (background thread)
