@@ -7,9 +7,12 @@ which movement to perform.  LLM calls happen in a background thread so the
 30 Hz control loop stays non-blocking.  Between calls the last commanded
 motion continues uninterrupted.
 
-Behaviour is configured by two markdown files in petctl/prompts/:
-    robot_context.md   — technical reference (auto-loaded, do not edit)
-    behavior_guide.md  — user-editable personality and touch→movement rules
+A persistent conversation is maintained for the session: the combined system
+prompt (robot_context.md + behavior_guide.md) is sent once on start, then
+each touch event is appended as a user turn so the model retains context.
+
+Behaviour is configured by petctl/prompts/robot_context.md — edit the
+Character, Rules, and Principles sections freely; changes take effect on restart.
 """
 
 from __future__ import annotations
@@ -103,7 +106,6 @@ class OllamaControlScheme(ControlScheme):
         self._system_prompt = _load_system_prompt()
         self._active_ids = sorted(controller.state.active_servo_ids)
         self._motion_start_t = time.monotonic()
-        # Read from the controller's shared transition-only touch event queue.
         self._touch_queue = controller.touch_events
 
         if not self._client.is_available():
@@ -113,6 +115,7 @@ class OllamaControlScheme(ControlScheme):
                 self._client._url,
             )
         else:
+            self._client.start(self._system_prompt)
             logger.info(
                 "[Ollama] connected, model=%s, %d active servos.",
                 self._client.model,
@@ -181,7 +184,7 @@ class OllamaControlScheme(ControlScheme):
 
     def _llm_call(self, touch_description: str) -> None:
         logger.debug("[Ollama] calling LLM: %s", touch_description)
-        result = self._client.chat(self._system_prompt, touch_description)
+        result = self._client.chat(touch_description)
         if result is None:
             return
         self._apply_llm_response(result)
@@ -280,12 +283,10 @@ class OllamaControlScheme(ControlScheme):
 # ------------------------------------------------------------------
 
 def _load_system_prompt() -> str:
-    """Load and concatenate robot_context.md and behavior_guide.md."""
-    parts: list[str] = []
-    for name in ("robot_context.md", "behavior_guide.md"):
-        path = _PROMPTS_DIR / name
-        try:
-            parts.append(path.read_text(encoding="utf-8").strip())
-        except FileNotFoundError:
-            logger.warning("[Ollama] prompt file not found: %s", path)
-    return "\n\n---\n\n".join(parts)
+    """Load the system prompt from robot_context.md."""
+    path = _PROMPTS_DIR / "robot_context.md"
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        logger.warning("[Ollama] prompt file not found: %s", path)
+        return ""
