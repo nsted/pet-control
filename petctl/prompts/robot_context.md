@@ -30,4 +30,6 @@ Respond with only this JSON, no other text:
 
 The gesture name (stroke, hold, squeeze, rub, etc.) describes what you felt — it is not a valid movement. Always choose a movement from the list above.
 
-Guide: stroking or rubbing → stroke-curl
+Guide:
+
+- stroking or rubbing → stroke-curl

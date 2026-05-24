@@ -202,6 +202,107 @@ pollStatus();
 """
 
 
+_CONTROL_MOVEMENTS = sorted([
+    "freeze", "home", "breathe", "pulse", "ripple", "sway", "cascade",
+    "slalom", "twitch", "coil", "curl_right", "curl_left", "wander", "drift",
+    "stroke", "stroke-curl", "stroke-ripple", "yield-stiff", "pose",
+])
+
+_CONTROL_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>petctl control</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ddd; padding: 20px; max-width: 640px; }
+  h2 { color: #aef; margin-bottom: 4px; }
+  #status { font-size: 0.85em; color: #888; margin-bottom: 16px; }
+  #active-label { color: #afa; }
+  .pattern-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; }
+  button { background: #222; color: #ccc; border: 1px solid #444; padding: 6px 12px;
+           cursor: pointer; font-family: monospace; font-size: 0.9em; border-radius: 3px; }
+  button:hover { background: #333; }
+  button.selected { background: #1a3a1a; border-color: #4a8; color: #afa; }
+  button.action { background: #1a1a3a; border-color: #48a; color: #adf; }
+  button.action:hover { background: #222a44; }
+  button.stop { background: #3a1a1a; border-color: #a44; color: #faa; }
+  button.stop:hover { background: #442222; }
+  .param-row { margin: 10px 0; display: flex; align-items: center; gap: 10px; }
+  .param-row label { width: 80px; color: #aaa; }
+  .param-row input[type=range] { flex: 1; accent-color: #4a8; }
+  .param-row .val { width: 40px; text-align: right; color: #efa; }
+  #launch-row { display: flex; gap: 10px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<h2>petctl control</h2>
+<div id="status">active: <span id="active-label">—</span></div>
+<div class="pattern-grid" id="pattern-grid"></div>
+<div class="param-row">
+  <label>intensity</label>
+  <input type="range" id="intensity" min="0" max="1" step="0.05" value="0.5"
+         oninput="document.getElementById('ival').textContent=parseFloat(this.value).toFixed(2)">
+  <span class="val" id="ival">0.50</span>
+</div>
+<div class="param-row">
+  <label>speed</label>
+  <input type="range" id="speed" min="0.05" max="1" step="0.05" value="0.4"
+         oninput="document.getElementById('sval').textContent=parseFloat(this.value).toFixed(2)">
+  <span class="val" id="sval">0.40</span>
+</div>
+<div id="launch-row">
+  <button class="action" onclick="launch()">&#9654; Launch</button>
+  <button class="stop" onclick="stop()">&#9632; Stop</button>
+</div>
+<script>
+const MOVEMENTS = """ + json.dumps(_CONTROL_MOVEMENTS) + """;
+let selected = null;
+const grid = document.getElementById("pattern-grid");
+MOVEMENTS.forEach(function(name) {
+  const btn = document.createElement("button");
+  btn.id = "btn-" + name;
+  btn.textContent = name;
+  btn.onclick = function() {
+    selected = name;
+    document.querySelectorAll(".pattern-grid button").forEach(function(b) { b.classList.remove("selected"); });
+    btn.classList.add("selected");
+  };
+  grid.appendChild(btn);
+});
+function launch() {
+  if (!selected) return;
+  fetch("/command", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      movement: selected,
+      intensity: parseFloat(document.getElementById("intensity").value),
+      speed: parseFloat(document.getElementById("speed").value)
+    })
+  }).then(function(r) { return r.json(); })
+    .then(function(d) { document.getElementById("active-label").textContent = d.scheme || d.error || "?"; })
+    .catch(console.error);
+}
+function stop() {
+  fetch("/stop", {method: "POST"})
+    .then(function(r) { return r.json(); })
+    .then(function(d) { document.getElementById("active-label").textContent = d.scheme || "?"; })
+    .catch(console.error);
+}
+function pollStatus() {
+  fetch("/status").then(function(r) { return r.json(); })
+    .then(function(d) { document.getElementById("active-label").textContent = d.scheme || "?"; })
+    .catch(function() {});
+}
+setInterval(pollStatus, 2000);
+pollStatus();
+</script>
+</body>
+</html>
+"""
+
+
 class DevUI:
     """Minimal HTTP dev UI for live pattern testing."""
 
@@ -218,6 +319,13 @@ class DevUI:
             def do_GET(self):
                 if self.path == "/":
                     body = _HTML.encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path == "/control":
+                    body = _CONTROL_HTML.encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
@@ -254,6 +362,16 @@ class DevUI:
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+                elif self.path == "/command":
+                    length = int(self.headers.get("Content-Length", 0))
+                    data = json.loads(self.rfile.read(length))
+                    response = _command(ctrl, data)
+                    body = json.dumps(response).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -283,6 +401,21 @@ def _stop(controller: "Controller") -> dict:
         except Exception:
             pass
     return {"scheme": "stopped"}
+
+
+def _command(controller: "Controller", data: dict) -> dict:
+    """Hot-swap to a pattern using normalized intensity/speed params (Ollama vocabulary)."""
+    from petctl.schemes.ollama_scheme import _make_pattern, _VALID_MOVEMENTS
+
+    motion = str(data.get("movement", "")).strip().lower()
+    if motion not in _VALID_MOVEMENTS:
+        return {"error": f"unknown movement: {motion}"}
+
+    intensity = max(0.0, min(1.0, float(data.get("intensity", 0.5))))
+    speed = max(0.05, min(1.0, float(data.get("speed", 0.4))))
+    pattern = _make_pattern(motion, intensity, speed)
+    controller.set_scheme(pattern)
+    return {"scheme": pattern.name}
 
 
 def _launch(controller: "Controller", name: str, params: dict) -> dict:
