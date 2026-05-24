@@ -219,6 +219,7 @@ class OllamaControlScheme(ControlScheme):
         self._pending: threading.Thread | None = None
         self._system_prompt: str = ""
         self._active_motion: str = ""
+        self._was_connected: bool = False
 
     # ------------------------------------------------------------------
     # ControlScheme interface
@@ -247,6 +248,11 @@ class OllamaControlScheme(ControlScheme):
             )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        if self._was_connected and not state.connected:
+            logger.info("[Ollama] WebSocket disconnected — resetting conversation history.")
+            self._client.start(self._system_prompt)
+        self._was_connected = state.connected
+
         if self._touch_queue is not None:
             self._drain_touch_queue()
 
@@ -281,9 +287,10 @@ class OllamaControlScheme(ControlScheme):
             now = summary.timestamp
             pending = self._pending
 
-            # Contact ended — return to home.
+            # "none" events (touch ended) are ignored — the active pattern manages
+            # its own touch-end behaviour (stroke-curl holds then decays; others
+            # just keep running until the LLM commands something different).
             if summary.touch_type == "none":
-                self._switch_pattern("home", 0.5, 0.3)
                 continue
 
             # Rate-limit LLM calls; skip if one is already in flight.
