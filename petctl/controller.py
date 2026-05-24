@@ -59,6 +59,10 @@ _STROKE_END_GRACE_S: float = 0.45   # don't fire end until stroke absent this lo
 _SUBTYPE_END_GRACE_S: float = 0.35  # hold a sub-type after apparent downgrade before logging the end
 _TOUCH_MIN_DUR_S: float = 0.220     # suppress any touch event shorter than this
 
+# Budge and twist are the same passive-motion gesture at different travel thresholds.
+# Transitions between them don't start a new gesture — only entry from "none" does.
+_PASSIVE_MOTION_FAMILY: frozenset[str] = frozenset({"budge", "twist"})
+
 # Downgrade hysteresis: how many consecutive frames at a lower level are required
 # before committing a downgrade.  Upgrades are always immediate.
 _DOWNGRADE_GRACE_FRAMES: int = 8  # ~265ms at 30Hz
@@ -349,6 +353,12 @@ class _TouchEventEmitter:
         now = state.timestamp
         curr = self._touch_type(touch)
         if curr == self._last_type:
+            return
+
+        # Budge→twist (or back) is the same gesture escalating/de-escalating; don't
+        # start a new event until the gesture fully ends and velocity drops to none.
+        if curr in _PASSIVE_MOTION_FAMILY and self._last_type in _PASSIVE_MOTION_FAMILY:
+            self._last_type = curr
             return
 
         if curr != "none" and self._last_type == "none":

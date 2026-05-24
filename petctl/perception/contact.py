@@ -92,6 +92,7 @@ class ContactClassifier:
     TWIST_VEL_ON: float = 0.3          # rad/s — enter twist/budge when velocity exceeds this
     TWIST_VEL_OFF: float = 0.15        # rad/s — exit twist/budge when velocity drops below this
     TWIST_TORQUE_MAX: float = 0.25     # Nm — above this the motor is actively driven, not passive
+    TWIST_POS_ERR_MIN_RAD: float = 0.12  # rad — actual must deviate from commanded to enter twist/budge
     BUDGE_MIN_TRAVEL_RAD: float = 0.1  # rad — minimum travel before BUDGE fires
     TWIST_MIN_TRAVEL_RAD: float = 0.3  # rad — cumulative travel to promote BUDGE → TWIST
 
@@ -130,7 +131,10 @@ class ContactClassifier:
 
         for sid in servo_ids:
             pos = state.servo_positions.get(sid, 0.0)
-            if sid in self._servo_last_pos:
+            cmd = state.servo_commanded_positions.get(sid, pos)
+            is_passive = abs(pos - cmd) >= self.TWIST_POS_ERR_MIN_RAD
+
+            if sid in self._servo_last_pos and is_passive:
                 self._servo_travel[sid] = self._servo_travel.get(sid, 0.0) + abs(pos - self._servo_last_pos[sid])
             self._servo_last_pos[sid] = pos
 
@@ -141,7 +145,7 @@ class ContactClassifier:
                     self._twist_active.discard(sid)
                     self._servo_travel.pop(sid, None)
             else:
-                if v >= self.TWIST_VEL_ON and t <= self.TWIST_TORQUE_MAX:
+                if v >= self.TWIST_VEL_ON and t <= self.TWIST_TORQUE_MAX and is_passive:
                     self._twist_active.add(sid)
         self._twist_active &= set(servo_ids)
 
@@ -219,7 +223,10 @@ class ContactClassifier:
         # from a brief jostle (BUDGE).
         for sid in servo_ids:
             pos = state.servo_positions.get(sid, 0.0)
-            if sid in self._servo_last_pos:
+            cmd = state.servo_commanded_positions.get(sid, pos)
+            is_passive = abs(pos - cmd) >= self.TWIST_POS_ERR_MIN_RAD
+
+            if sid in self._servo_last_pos and is_passive:
                 self._servo_travel[sid] = self._servo_travel.get(sid, 0.0) + abs(pos - self._servo_last_pos[sid])
             self._servo_last_pos[sid] = pos
 
@@ -229,7 +236,7 @@ class ContactClassifier:
                     self._twist_active.discard(sid)
                     self._servo_travel.pop(sid, None)
             else:
-                if v >= self.TWIST_VEL_ON:
+                if v >= self.TWIST_VEL_ON and is_passive:
                     self._twist_active.add(sid)
         self._twist_active &= set(servo_ids)
 
