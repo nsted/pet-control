@@ -69,7 +69,7 @@ class OllamaControlScheme(ControlScheme):
 
     def __init__(
         self,
-        model: str = "gemma3:4b",
+        model: str = "gemma3:1b",
         base_url: str = "http://localhost:11434",
         timeout: float = 12.0,
     ) -> None:
