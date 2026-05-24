@@ -37,6 +37,7 @@ from petctl.schemes.patterns import (
     CurlControlScheme,
     DriftControlScheme,
     FreezeControlScheme,
+    IdleControlScheme,
     PoseScheme,
     PulseControlScheme,
     RippleControlScheme,
@@ -65,6 +66,7 @@ _LLM_MIN_INTERVAL_S = 1.0
 # Patterns with no amplitude param use 0.0 — intensity is ignored for those.
 _AMP_MAX: dict[str, float] = {
     "freeze":        0.0,
+    "idle":          0.0,
     "home":          0.0,
     "breathe":      12.0,
     "pulse":        50.0,
@@ -107,6 +109,8 @@ def _make_pattern(motion: str, intensity: float, speed: float) -> ControlScheme:
 
     if motion in ("freeze", "home"):
         return FreezeControlScheme()
+    if motion == "idle":
+        return IdleControlScheme()
     if motion == "breathe":
         return BreatheControlScheme(amplitude_deg=amp, hz=0.05 + speed * 0.06)
     if motion == "pulse":
@@ -228,7 +232,7 @@ class OllamaControlScheme(ControlScheme):
     def on_start(self, controller: Controller) -> None:
         self._controller = controller
         self._system_prompt = _load_system_prompt()
-        initial = FreezeControlScheme()
+        initial = IdleControlScheme()
         initial.on_start(controller)
         with self._lock:
             self._active_pattern = initial
@@ -249,8 +253,9 @@ class OllamaControlScheme(ControlScheme):
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         if self._was_connected and not state.connected:
-            logger.info("[Ollama] WebSocket disconnected — resetting conversation history.")
+            logger.info("[Ollama] WebSocket disconnected — resetting conversation history and pattern.")
             self._client.start(self._system_prompt)
+            self._switch_pattern("idle", 0.0, 0.0)
         self._was_connected = state.connected
 
         if self._touch_queue is not None:

@@ -91,6 +91,7 @@ class ContactClassifier:
     # TWIST/BUDGE: joint rotating passively (any centroid count).
     TWIST_VEL_ON: float = 0.3          # rad/s — enter twist/budge when velocity exceeds this
     TWIST_VEL_OFF: float = 0.15        # rad/s — exit twist/budge when velocity drops below this
+    TWIST_TORQUE_MAX: float = 0.25     # Nm — above this the motor is actively driven, not passive
     BUDGE_MIN_TRAVEL_RAD: float = 0.1  # rad — minimum travel before BUDGE fires
     TWIST_MIN_TRAVEL_RAD: float = 0.3  # rad — cumulative travel to promote BUDGE → TWIST
 
@@ -134,12 +135,13 @@ class ContactClassifier:
             self._servo_last_pos[sid] = pos
 
             v = abs(state.motor_velocities.get(sid, 0.0))
+            t = abs(state.motor_torques.get(sid, 0.0))
             if sid in self._twist_active:
-                if v < self.TWIST_VEL_OFF:
+                if v < self.TWIST_VEL_OFF or t > self.TWIST_TORQUE_MAX:
                     self._twist_active.discard(sid)
                     self._servo_travel.pop(sid, None)
             else:
-                if v >= self.TWIST_VEL_ON:
+                if v >= self.TWIST_VEL_ON and t <= self.TWIST_TORQUE_MAX:
                     self._twist_active.add(sid)
         self._twist_active &= set(servo_ids)
 
