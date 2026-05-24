@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -143,6 +144,42 @@ def _make_pattern(motion: str, intensity: float, speed: float) -> ControlScheme:
     return FreezeControlScheme()
 
 
+def _update_pattern_params(pattern: ControlScheme, motion: str, intensity: float, speed: float) -> None:
+    """Update a running pattern's amplitude/speed without resetting its phase."""
+    amp = _AMP_MAX.get(motion, 0.0) * intensity
+
+    if motion == "breathe":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.hz = 0.05 + speed * 0.06  # type: ignore[attr-defined]
+    elif motion == "pulse":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.hz = 0.15 + speed * 0.35  # type: ignore[attr-defined]
+    elif motion == "ripple":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.hz = 0.2 + speed * 0.4  # type: ignore[attr-defined]
+    elif motion == "sway":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.hz = 0.08 + speed * 0.15  # type: ignore[attr-defined]
+    elif motion == "cascade":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.hz = 0.15 + speed * 0.25  # type: ignore[attr-defined]
+    elif motion == "slalom":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.hz = 0.1 + speed * 0.3  # type: ignore[attr-defined]
+    elif motion == "twitch":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.smoothing = 0.03 + speed * 0.08  # type: ignore[attr-defined]
+    elif motion == "coil":
+        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
+        pattern.hz = 0.1 + speed * 0.2  # type: ignore[attr-defined]
+    elif motion in ("curl_right", "curl_left"):
+        pattern.target_deg = amp  # type: ignore[attr-defined]
+    elif motion == "wander":
+        pattern._speed_rad_s = math.radians(20.0 + speed * 60.0)  # type: ignore[attr-defined]
+    # freeze, home, drift, stroke, stroke-curl, stroke-ripple, yield-stiff, pose:
+    # no tunable params — nothing to update
+
+
 class OllamaControlScheme(ControlScheme):
     """Control scheme that uses a local Ollama LLM to map touch→movement.
 
@@ -181,6 +218,7 @@ class OllamaControlScheme(ControlScheme):
         self._last_call_t: float = 0.0
         self._pending: threading.Thread | None = None
         self._system_prompt: str = ""
+        self._active_motion: str = ""
 
     # ------------------------------------------------------------------
     # ControlScheme interface
@@ -275,6 +313,7 @@ class OllamaControlScheme(ControlScheme):
             pattern.on_start(controller)
         with self._lock:
             self._active_pattern = pattern
+            self._active_motion = motion
 
     # ------------------------------------------------------------------
     # LLM interaction (background thread)
@@ -300,8 +339,16 @@ class OllamaControlScheme(ControlScheme):
         intensity = max(0.0, min(1.0, float(response.get("intensity", 0.5))))
         speed = max(0.05, min(1.0, float(response.get("speed", 0.4))))
 
-        logger.info("[Ollama] → %s (intensity=%.2f, speed=%.2f)", motion, intensity, speed)
-        self._switch_pattern(motion, intensity, speed)
+        with self._lock:
+            same_motion = self._active_motion == motion
+            pattern = self._active_pattern
+
+        if same_motion:
+            logger.info("[Ollama] → %s (intensity=%.2f, speed=%.2f) [params updated]", motion, intensity, speed)
+            _update_pattern_params(pattern, motion, intensity, speed)
+        else:
+            logger.info("[Ollama] → %s (intensity=%.2f, speed=%.2f)", motion, intensity, speed)
+            self._switch_pattern(motion, intensity, speed)
 
 
 # ------------------------------------------------------------------
