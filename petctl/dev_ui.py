@@ -240,12 +240,6 @@ _CONTROL_HTML = """\
 <div id="status">active: <span id="active-label">—</span></div>
 <div class="pattern-grid" id="pattern-grid"></div>
 <div class="param-row">
-  <label>intensity</label>
-  <input type="range" id="intensity" min="0" max="1" step="0.05" value="0.5"
-         oninput="document.getElementById('ival').textContent=parseFloat(this.value).toFixed(2)">
-  <span class="val" id="ival">0.50</span>
-</div>
-<div class="param-row">
   <label>speed</label>
   <input type="range" id="speed" min="0.05" max="1" step="0.05" value="0.4"
          oninput="document.getElementById('sval').textContent=parseFloat(this.value).toFixed(2)">
@@ -277,7 +271,6 @@ function launch() {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
       movement: selected,
-      intensity: parseFloat(document.getElementById("intensity").value),
       speed: parseFloat(document.getElementById("speed").value)
     })
   }).then(function(r) { return r.json(); })
@@ -419,17 +412,16 @@ def _reenable_motors(controller: "Controller") -> None:
 
 
 def _command(controller: "Controller", data: dict) -> dict:
-    """Hot-swap to a pattern using normalized intensity/speed params (Ollama vocabulary)."""
+    """Hot-swap to a pattern using speed param (Ollama vocabulary)."""
     from petctl.schemes.ollama_scheme import _make_pattern, _VALID_MOVEMENTS
 
     motion = str(data.get("movement", "")).strip().lower()
     if motion not in _VALID_MOVEMENTS:
         return {"error": f"unknown movement: {motion}"}
 
-    intensity = max(0.0, min(1.0, float(data.get("intensity", 0.5))))
     speed = max(0.05, min(1.0, float(data.get("speed", 0.4))))
     _reenable_motors(controller)
-    pattern = _make_pattern(motion, intensity, speed)
+    pattern = _make_pattern(motion, speed)
     controller.set_scheme(pattern)
     return {"scheme": pattern.name}
 

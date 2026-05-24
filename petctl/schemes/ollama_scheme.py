@@ -12,8 +12,8 @@ prompt (robot_context.md + behavior_guide.md) is sent once on start, then
 each touch event is appended as a user turn so the model retains context.
 
 Motion is delegated to the same ControlScheme classes used by standalone
-patterns (patterns.py).  Intensity and speed from the LLM response are
-used to scale amplitude and frequency when instantiating each pattern.
+patterns (patterns.py).  Speed from the LLM response scales frequency;
+amplitude always runs at the full _AMP_MAX value for each motion.
 
 Behaviour is configured by petctl/prompts/robot_context.md — edit the
 Character, Rules, and Principles sections freely; changes take effect on restart.
@@ -62,22 +62,22 @@ _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 # Minimum seconds between LLM calls regardless of event rate.
 _LLM_MIN_INTERVAL_S = 1.0
 
-# Max amplitude per movement (degrees). intensity (0–1) scales this linearly.
-# Patterns with no amplitude param use 0.0 — intensity is ignored for those.
+# Max amplitude per movement (degrees). Always used at full value — no intensity scaling.
+# Patterns with no amplitude param use 0.0.
 _AMP_MAX: dict[str, float] = {
     "freeze":        0.0,
     "idle":          0.0,
     "home":          0.0,
-    "breathe":      12.0,
-    "pulse":        50.0,
-    "ripple":       40.0,
-    "sway":         60.0,
-    "cascade":      60.0,
-    "slalom":       45.0,
-    "twitch":       30.0,
-    "coil":         55.0,
-    "curl_right":   70.0,
-    "curl_left":    70.0,
+    "breathe":      15.0,
+    "pulse":        60.0,
+    "ripple":       55.0,
+    "sway":         70.0,
+    "cascade":      70.0,
+    "slalom":       60.0,
+    "twitch":       40.0,
+    "coil":         65.0,
+    "curl_right":   80.0,
+    "curl_left":    80.0,
     "wander":        0.0,
     "drift":         0.0,
     "stroke":        0.0,  # touch-reactive — senses internally
@@ -103,9 +103,9 @@ class _CurlLeft(CurlControlScheme):
         return cmds
 
 
-def _make_pattern(motion: str, intensity: float, speed: float) -> ControlScheme:
-    """Instantiate a ControlScheme for the given motion, scaled by intensity and speed."""
-    amp = _AMP_MAX.get(motion, 0.0) * intensity
+def _make_pattern(motion: str, speed: float) -> ControlScheme:
+    """Instantiate a ControlScheme for the given motion, scaled by speed."""
+    amp = _AMP_MAX.get(motion, 0.0)
 
     if motion in ("freeze", "home"):
         return FreezeControlScheme()
@@ -148,9 +148,9 @@ def _make_pattern(motion: str, intensity: float, speed: float) -> ControlScheme:
     return FreezeControlScheme()
 
 
-def _update_pattern_params(pattern: ControlScheme, motion: str, intensity: float, speed: float) -> None:
+def _update_pattern_params(pattern: ControlScheme, motion: str, speed: float) -> None:
     """Update a running pattern's amplitude/speed without resetting its phase."""
-    amp = _AMP_MAX.get(motion, 0.0) * intensity
+    amp = _AMP_MAX.get(motion, 0.0)
 
     if motion == "breathe":
         pattern.amplitude_deg = amp  # type: ignore[attr-defined]
@@ -255,7 +255,7 @@ class OllamaControlScheme(ControlScheme):
         if self._was_connected and not state.connected:
             logger.info("[Ollama] WebSocket disconnected — resetting conversation history and pattern.")
             self._client.start(self._system_prompt)
-            self._switch_pattern("idle", 0.0, 0.0)
+            self._switch_pattern("idle", 0.0)
         self._was_connected = state.connected
 
         if self._touch_queue is not None:
@@ -317,9 +317,9 @@ class OllamaControlScheme(ControlScheme):
     # Pattern switching
     # ------------------------------------------------------------------
 
-    def _switch_pattern(self, motion: str, intensity: float, speed: float) -> None:
+    def _switch_pattern(self, motion: str, speed: float) -> None:
         """Instantiate and activate a new pattern. Safe to call from any thread."""
-        pattern = _make_pattern(motion, intensity, speed)
+        pattern = _make_pattern(motion, speed)
         controller = self._controller
         if controller is not None:
             pattern.on_start(controller)
@@ -348,7 +348,6 @@ class OllamaControlScheme(ControlScheme):
             )
             return
 
-        intensity = max(0.0, min(1.0, float(response.get("intensity", 0.5))))
         speed = max(0.05, min(1.0, float(response.get("speed", 0.4))))
 
         with self._lock:
@@ -356,11 +355,11 @@ class OllamaControlScheme(ControlScheme):
             pattern = self._active_pattern
 
         if same_motion:
-            logger.info("[Ollama] → %s (intensity=%.2f, speed=%.2f) [params updated]", motion, intensity, speed)
-            _update_pattern_params(pattern, motion, intensity, speed)
+            logger.info("[Ollama] → %s (speed=%.2f) [params updated]", motion, speed)
+            _update_pattern_params(pattern, motion, speed)
         else:
-            logger.info("[Ollama] → %s (intensity=%.2f, speed=%.2f)", motion, intensity, speed)
-            self._switch_pattern(motion, intensity, speed)
+            logger.info("[Ollama] → %s (speed=%.2f)", motion, speed)
+            self._switch_pattern(motion, speed)
 
 
 # ------------------------------------------------------------------
