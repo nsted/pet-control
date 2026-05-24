@@ -11,6 +11,10 @@ A persistent conversation is maintained for the session: the combined system
 prompt (robot_context.md + behavior_guide.md) is sent once on start, then
 each touch event is appended as a user turn so the model retains context.
 
+Motion is delegated to the same ControlScheme classes used by standalone
+patterns (patterns.py).  Intensity and speed from the LLM response are
+used to scale amplitude and frequency when instantiating each pattern.
+
 Behaviour is configured by petctl/prompts/robot_context.md — edit the
 Character, Rules, and Principles sections freely; changes take effect on restart.
 """
@@ -19,15 +23,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
-import random
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from petctl.llm.client import OllamaClient
 from petctl.protocols import ControlScheme
+from petctl.schemes.patterns import (
+    BreatheControlScheme,
+    CascadeControlScheme,
+    CoilControlScheme,
+    CurlControlScheme,
+    DriftControlScheme,
+    FreezeControlScheme,
+    PoseScheme,
+    PulseControlScheme,
+    RippleControlScheme,
+    SlalomControlScheme,
+    StrokeCurlScheme,
+    StrokeReactControlScheme,
+    StrokeRippleScheme,
+    SwayControlScheme,
+    TwitchControlScheme,
+    WanderControlScheme,
+    YieldStiffScheme,
+)
 from petctl.types import RobotState, ServoCommand, TouchSummary
 
 if TYPE_CHECKING:
@@ -40,19 +60,87 @@ _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 # Minimum seconds between LLM calls regardless of event rate.
 _LLM_MIN_INTERVAL_S = 1.0
 
-# Max angle magnitude per motion mode (degrees). intensity (0-1) scales this.
-_MAX_AMP: dict[str, float] = {
-    "freeze":     0.0,
-    "home":       0.0,
-    "pulse":     50.0,
-    "ripple":    40.0,
-    "sway":      25.0,
-    "curl_right": 45.0,
-    "curl_left":  45.0,
-    "twitch":    12.0,
+# Max amplitude per movement (degrees). intensity (0–1) scales this linearly.
+# Patterns with no amplitude param use 0.0 — intensity is ignored for those.
+_AMP_MAX: dict[str, float] = {
+    "freeze":        0.0,
+    "home":          0.0,
+    "breathe":      12.0,
+    "pulse":        50.0,
+    "ripple":       40.0,
+    "sway":         60.0,
+    "cascade":      60.0,
+    "slalom":       45.0,
+    "twitch":       30.0,
+    "coil":         55.0,
+    "curl_right":   70.0,
+    "curl_left":    70.0,
+    "wander":        0.0,
+    "drift":         0.0,
+    "stroke":        0.0,  # touch-reactive — senses internally
+    "stroke-curl":   0.0,
+    "stroke-ripple": 0.0,
+    "yield-stiff":   0.0,
+    "pose":          0.0,
 }
 
-_VALID_MOVEMENTS = set(_MAX_AMP)
+_VALID_MOVEMENTS = set(_AMP_MAX)
+
+
+class _CurlLeft(CurlControlScheme):
+    """CurlControlScheme with all joint signs negated → curl to the left."""
+
+    name = "curl_left"
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        cmds = super().update(state)
+        for cmd in cmds:
+            if cmd.position is not None:
+                cmd.position = -cmd.position
+        return cmds
+
+
+def _make_pattern(motion: str, intensity: float, speed: float) -> ControlScheme:
+    """Instantiate a ControlScheme for the given motion, scaled by intensity and speed."""
+    amp = _AMP_MAX.get(motion, 0.0) * intensity
+
+    if motion in ("freeze", "home"):
+        return FreezeControlScheme()
+    if motion == "breathe":
+        return BreatheControlScheme(amplitude_deg=amp, hz=0.05 + speed * 0.06)
+    if motion == "pulse":
+        return PulseControlScheme(amplitude_deg=amp, hz=0.15 + speed * 0.35)
+    if motion == "ripple":
+        return RippleControlScheme(amplitude_deg=amp, hz=0.2 + speed * 0.4)
+    if motion == "sway":
+        return SwayControlScheme(amplitude_deg=amp, hz=0.08 + speed * 0.15)
+    if motion == "cascade":
+        return CascadeControlScheme(amplitude_deg=amp, hz=0.15 + speed * 0.25)
+    if motion == "slalom":
+        return SlalomControlScheme(amplitude_deg=amp, hz=0.1 + speed * 0.3)
+    if motion == "twitch":
+        return TwitchControlScheme(amplitude_deg=amp, smoothing=0.03 + speed * 0.08)
+    if motion == "coil":
+        return CoilControlScheme(amplitude_deg=amp, hz=0.1 + speed * 0.2)
+    if motion == "curl_right":
+        return CurlControlScheme(target_deg=amp)
+    if motion == "curl_left":
+        return _CurlLeft(target_deg=amp)
+    if motion == "wander":
+        return WanderControlScheme(speed_deg_per_s=20.0 + speed * 60.0)
+    if motion == "drift":
+        return DriftControlScheme()
+    if motion == "stroke":
+        return StrokeReactControlScheme()
+    if motion == "stroke-curl":
+        return StrokeCurlScheme()
+    if motion == "stroke-ripple":
+        return StrokeRippleScheme()
+    if motion == "yield-stiff":
+        return YieldStiffScheme()
+    if motion == "pose":
+        return PoseScheme()
+    return FreezeControlScheme()
 
 
 class OllamaControlScheme(ControlScheme):
@@ -63,7 +151,7 @@ class OllamaControlScheme(ControlScheme):
     that queue each tick and spawns a background LLM call for each new event.
 
     Args:
-        model:    Ollama model tag (default: gemma3:4b).
+        model:    Ollama model tag (default: gemma3:1b).
         base_url: Ollama server URL (default: localhost:11434).
         timeout:  LLM HTTP timeout in seconds.
     """
@@ -75,37 +163,36 @@ class OllamaControlScheme(ControlScheme):
         model: str = "gemma3:1b",
         base_url: str = "http://localhost:11434",
         timeout: float = 12.0,
+        log_input: bool = False,
     ) -> None:
-        self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout)
+        self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout, log_input=log_input)
 
         # Injected in on_start() — the controller's shared touch event queue.
         self._touch_queue: asyncio.Queue[TouchSummary] | None = None
 
-        # Current motion state — written by background thread, read by update().
+        # Active delegated pattern — written by background thread (LLM response)
+        # and by update() (touch-end home), read by update(). Protected by _lock.
         self._lock = threading.Lock()
-        self._motion: str = "freeze"
-        self._intensity: float = 0.5
-        self._speed: float = 0.4
-        self._motion_start_t: float = 0.0
+        self._active_pattern: ControlScheme = FreezeControlScheme()
+
+        # Stored so background thread can call on_start() on new patterns.
+        self._controller: Controller | None = None
 
         self._last_call_t: float = 0.0
         self._pending: threading.Thread | None = None
-
         self._system_prompt: str = ""
-        self._active_ids: list[int] = []
-
-        # Per-servo random targets for twitch mode.
-        self._twitch_targets: dict[int, float] = {}
-        self._twitch_next_t: float = 0.0
 
     # ------------------------------------------------------------------
     # ControlScheme interface
     # ------------------------------------------------------------------
 
     def on_start(self, controller: Controller) -> None:
+        self._controller = controller
         self._system_prompt = _load_system_prompt()
-        self._active_ids = sorted(controller.state.active_servo_ids)
-        self._motion_start_t = time.monotonic()
+        initial = FreezeControlScheme()
+        initial.on_start(controller)
+        with self._lock:
+            self._active_pattern = initial
         self._touch_queue = controller.touch_events
 
         if not self._client.is_available():
@@ -117,23 +204,25 @@ class OllamaControlScheme(ControlScheme):
         else:
             self._client.start(self._system_prompt)
             logger.info(
-                "[Ollama] connected, model=%s, %d active servos.",
+                "[Ollama] connected, model=%s.",
                 self._client.model,
-                len(self._active_ids),
             )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        self._active_ids = sorted(state.active_servo_ids)
-        if not self._active_ids:
-            return []
-
-        # Drain touch transition events and trigger LLM calls.
-        # The controller emits one event per type change (onset, upgrade, end),
-        # so no further debouncing is needed beyond the minimum interval guard.
         if self._touch_queue is not None:
             self._drain_touch_queue()
 
-        return self._generate_commands(state, time.monotonic())
+        with self._lock:
+            pattern = self._active_pattern
+
+        return pattern.update(state)
+
+    def take_slew_resets(self) -> dict[int, float]:
+        """Forward slew reset requests from the active pattern to the controller."""
+        with self._lock:
+            pattern = self._active_pattern
+        fn = getattr(pattern, "take_slew_resets", None)
+        return fn() if fn is not None else {}
 
     def on_stop(self) -> None:
         if self._pending and self._pending.is_alive():
@@ -151,16 +240,12 @@ class OllamaControlScheme(ControlScheme):
             except asyncio.QueueEmpty:
                 break
 
-            now = time.monotonic()
+            now = summary.timestamp
             pending = self._pending
 
             # Contact ended — return to home.
             if summary.touch_type == "none":
-                with self._lock:
-                    if self._motion not in ("freeze", "home"):
-                        self._motion = "home"
-                        self._speed = 0.3
-                        self._motion_start_t = now
+                self._switch_pattern("home", 0.5, 0.3)
                 continue
 
             # Rate-limit LLM calls; skip if one is already in flight.
@@ -179,6 +264,19 @@ class OllamaControlScheme(ControlScheme):
             t.start()
 
     # ------------------------------------------------------------------
+    # Pattern switching
+    # ------------------------------------------------------------------
+
+    def _switch_pattern(self, motion: str, intensity: float, speed: float) -> None:
+        """Instantiate and activate a new pattern. Safe to call from any thread."""
+        pattern = _make_pattern(motion, intensity, speed)
+        controller = self._controller
+        if controller is not None:
+            pattern.on_start(controller)
+        with self._lock:
+            self._active_pattern = pattern
+
+    # ------------------------------------------------------------------
     # LLM interaction (background thread)
     # ------------------------------------------------------------------
 
@@ -190,92 +288,20 @@ class OllamaControlScheme(ControlScheme):
         self._apply_llm_response(result)
 
     def _apply_llm_response(self, response: dict) -> None:
-        movement = str(response.get("movement", "")).strip().lower()
-        if movement not in _VALID_MOVEMENTS:
+        motion = str(response.get("movement", "")).strip().lower()
+        if motion not in _VALID_MOVEMENTS:
             logger.warning(
                 "[Ollama] unknown movement %r — ignoring. Valid: %s",
-                movement,
+                motion,
                 sorted(_VALID_MOVEMENTS),
             )
             return
 
-        intensity = float(response.get("intensity", 0.5))
-        speed = float(response.get("speed", 0.4))
-        intensity = max(0.0, min(1.0, intensity))
-        speed = max(0.05, min(1.0, speed))
+        intensity = max(0.0, min(1.0, float(response.get("intensity", 0.5))))
+        speed = max(0.05, min(1.0, float(response.get("speed", 0.4))))
 
-        with self._lock:
-            prev = self._motion
-            self._motion = movement
-            self._intensity = intensity
-            self._speed = speed
-            if movement != prev:
-                self._motion_start_t = time.monotonic()
-
-        logger.info("[Ollama] → %s (intensity=%.2f, speed=%.2f)", movement, intensity, speed)
-
-    # ------------------------------------------------------------------
-    # Motion generation
-    # ------------------------------------------------------------------
-
-    def _generate_commands(self, state: RobotState, now: float) -> list[ServoCommand]:
-        with self._lock:
-            motion = self._motion
-            intensity = self._intensity
-            speed = self._speed
-            motion_t = now - self._motion_start_t
-
-        ids = self._active_ids
-        n = len(ids)
-        amp = _MAX_AMP.get(motion, 0.0) * intensity
-
-        if motion in ("freeze", "home"):
-            return [ServoCommand.from_angle(sid, 0.0) for sid in ids]
-
-        if motion == "pulse":
-            hz = 0.15 + speed * 0.35
-            angle = amp * math.sin(2 * math.pi * hz * motion_t)
-            return [ServoCommand.from_angle(sid, angle) for sid in ids]
-
-        if motion == "ripple":
-            hz = 0.2 + speed * 0.4
-            return [
-                ServoCommand.from_angle(
-                    sid,
-                    amp * math.sin(2 * math.pi * hz * motion_t + (i / max(n - 1, 1)) * 2 * math.pi),
-                )
-                for i, sid in enumerate(ids)
-            ]
-
-        if motion == "sway":
-            hz = 0.08 + speed * 0.15
-            angle = amp * math.sin(2 * math.pi * hz * motion_t)
-            return [ServoCommand.from_angle(sid, angle) for sid in ids]
-
-        if motion == "curl_right":
-            return [
-                ServoCommand.from_angle(sid, amp * (i + 1) / n)
-                for i, sid in enumerate(ids)
-            ]
-
-        if motion == "curl_left":
-            return [
-                ServoCommand.from_angle(sid, -amp * (i + 1) / n)
-                for i, sid in enumerate(ids)
-            ]
-
-        if motion == "twitch":
-            update_interval = 0.4 - speed * 0.3
-            if now >= self._twitch_next_t:
-                for sid in ids:
-                    self._twitch_targets[sid] = random.uniform(-amp, amp)
-                self._twitch_next_t = now + update_interval
-            return [
-                ServoCommand.from_angle(sid, self._twitch_targets.get(sid, 0.0))
-                for sid in ids
-            ]
-
-        return [ServoCommand.from_angle(sid, 0.0) for sid in ids]
+        logger.info("[Ollama] → %s (intensity=%.2f, speed=%.2f)", motion, intensity, speed)
+        self._switch_pattern(motion, intensity, speed)
 
 
 # ------------------------------------------------------------------

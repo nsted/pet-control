@@ -181,7 +181,7 @@ class TouchSummary:
         """Human-readable one-line description for LLM prompt injection."""
         if self.touch_type == "none":
             return "contact ended"
-        parts: list[str] = [self.touch_type]
+        parts: list[str] = [f"gesture={self.touch_type}"]
         if self.direction and self.velocity is not None:
             arrow = "→" if self.direction == "head_to_tail" else "←"
             parts.append(f"{arrow} {abs(self.velocity):.1f} mod/s")

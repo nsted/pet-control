@@ -118,6 +118,11 @@ def run(
         "--log-touch",
         help="Print touch/contact type logs to console",
     ),
+    log_ollama_input: bool = typer.Option(
+        False,
+        "--log-ollama-input",
+        help="Print the full JSON payload sent to Ollama on each LLM call",
+    ),
     log_loop: bool = typer.Option(
         False,
         "--log-loop",
@@ -171,7 +176,7 @@ def run(
         _scheme = CommandScheme()
     elif control == "ollama":
         from petctl.schemes.ollama_scheme import OllamaControlScheme
-        _scheme = OllamaControlScheme()
+        _scheme = OllamaControlScheme(log_input=log_ollama_input)
     elif control in ("ripple", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "stroke-ripple", "wander", "drift", "explore", "yield-stiff", "pose"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)

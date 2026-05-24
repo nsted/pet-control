@@ -33,10 +33,12 @@ class OllamaClient:
         model: str = "gemma3:1b",
         base_url: str = "http://localhost:11434",
         timeout: float = 12.0,
+        log_input: bool = False,
     ) -> None:
         self.model = model
         self._url = f"{base_url.rstrip('/')}/api/chat"
         self._timeout = timeout
+        self._log_input = log_input
         self._messages: list[dict[str, str]] = []
 
     def start(self, system: str) -> None:
@@ -61,6 +63,8 @@ class OllamaClient:
             "messages": self._messages,
         }).encode()
 
+        if self._log_input:
+            logger.info("[Ollama] sending: %s", payload.decode())
         req = urllib.request.Request(
             self._url,
             data=payload,
