@@ -403,6 +403,21 @@ def _stop(controller: "Controller") -> dict:
     return {"scheme": "stopped"}
 
 
+def _reenable_motors(controller: "Controller") -> None:
+    """Re-enable any motors disabled by a previous stop call."""
+    backend = controller.backend
+    loop = getattr(controller, "_event_loop", None)
+    if loop is not None and hasattr(backend, "enable_motor"):
+        ids = getattr(backend, "_discovered_motors", None) or list(range(1, 8))
+        for mid in ids:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    backend.enable_motor(mid), loop
+                ).result(timeout=1.0)
+            except Exception:
+                pass
+
+
 def _command(controller: "Controller", data: dict) -> dict:
     """Hot-swap to a pattern using normalized intensity/speed params (Ollama vocabulary)."""
     from petctl.schemes.ollama_scheme import _make_pattern, _VALID_MOVEMENTS
@@ -413,6 +428,7 @@ def _command(controller: "Controller", data: dict) -> dict:
 
     intensity = max(0.0, min(1.0, float(data.get("intensity", 0.5))))
     speed = max(0.05, min(1.0, float(data.get("speed", 0.4))))
+    _reenable_motors(controller)
     pattern = _make_pattern(motion, intensity, speed)
     controller.set_scheme(pattern)
     return {"scheme": pattern.name}
@@ -429,18 +445,7 @@ def _launch(controller: "Controller", name: str, params: dict) -> dict:
     if cls is None:
         return {"error": f"unknown pattern: {name}"}
 
-    # Re-enable any motors that were disabled by stop.
-    backend = controller.backend
-    loop = getattr(controller, "_event_loop", None)
-    if loop is not None and hasattr(backend, "enable_motor"):
-        ids = getattr(backend, "_discovered_motors", None) or list(range(1, 8))
-        for mid in ids:
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    backend.enable_motor(mid), loop
-                ).result(timeout=1.0)
-            except Exception:
-                pass
+    _reenable_motors(controller)
 
     valid = inspect.signature(cls).parameters
     filtered = {k: v for k, v in params.items() if k in valid and k != "self"}
