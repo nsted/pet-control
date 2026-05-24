@@ -62,7 +62,7 @@ class MockBackend(RobotBackend):
     A backend that simulates the robot locally.
 
     Args:
-        mode:        "interactive" | "file" | "sine" | "noise"
+        mode:        "interactive" | "file" | "mock-sensor-sine" | "noise"
         state_file:  Path to a JSON file (see module docstring for format).
                      In "interactive" mode the file provides sensor values;
                      servo positions come from control scheme commands.
@@ -75,7 +75,7 @@ class MockBackend(RobotBackend):
 
     def __init__(
         self,
-        mode: Literal["interactive", "file", "sine", "noise"] = "interactive",
+        mode: Literal["interactive", "file", "mock-sensor-sine", "noise"] = "interactive",
         state_file: Optional[str] = None,
         num_modules: int = 8,
         sine_hz: float = 0.2,
@@ -169,7 +169,7 @@ class MockBackend(RobotBackend):
                 pass
 
         for mod_id in module_ids:
-            if self.mode == "sine":
+            if self.mode == "mock-sensor-sine":
                 phase = (mod_id / max(1, len(module_ids))) * 2 * math.pi
                 val = (math.sin(2 * math.pi * self.sine_hz * elapsed + phase) + 1) / 2
                 sensors[mod_id] = ModuleSensors(

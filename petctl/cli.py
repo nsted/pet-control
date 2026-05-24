@@ -67,7 +67,7 @@ def run(
     # MockBackend options
     mode: str = typer.Option(
         "interactive",
-        help="Mock mode: 'interactive', 'file', 'sine', 'noise'",
+        help="Mock mode: 'interactive', 'file', 'mock-sensor-sine', 'noise'",
     ),
     state: Optional[str] = typer.Option(
         None,

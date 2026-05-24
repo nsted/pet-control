@@ -307,7 +307,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--log",  action="store_true", help="Write JSONL log")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--dry-run-mode", default="noise", choices=["noise", "sine"])
+    parser.add_argument("--dry-run-mode", default="noise", choices=["noise", "mock-sensor-sine"])
     args = parser.parse_args()
 
     module_ids = [int(m.strip()) for m in args.modules.split(",") if m.strip()]

@@ -175,7 +175,7 @@ def main() -> None:
     if args.real:
         backend = RobotBackend(host=args.host)
     else:
-        backend = MockBackend(mode="sine", num_modules=4)
+        backend = MockBackend(mode="mock-sensor-sine", num_modules=4)
 
     # Scheme
     if args.scheme == "touch":
