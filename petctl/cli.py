@@ -46,7 +46,7 @@ def run(
     control: str = typer.Option(
         "keyboard",
         help=(
-            "Control scheme: keyboard, passthrough, sine, command, "
+            "Control scheme: keyboard, passthrough, sine, command, ollama, "
             "ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, stroke, stroke-curl"
         ),
     ),
@@ -67,7 +67,7 @@ def run(
     # MockBackend options
     mode: str = typer.Option(
         "interactive",
-        help="Mock mode: 'interactive', 'file', 'sine', 'noise'",
+        help="Mock mode: 'interactive', 'file', 'mock-sensor-sine', 'noise'",
     ),
     state: Optional[str] = typer.Option(
         None,
@@ -117,6 +117,11 @@ def run(
         False,
         "--log-touch",
         help="Print touch/contact type logs to console",
+    ),
+    log_ollama_input: bool = typer.Option(
+        False,
+        "--log-ollama-input",
+        help="Print the full JSON payload sent to Ollama on each LLM call",
     ),
     log_loop: bool = typer.Option(
         False,
@@ -169,13 +174,16 @@ def run(
     elif control == "command":
         from petctl.schemes.command import CommandScheme
         _scheme = CommandScheme()
+    elif control == "ollama":
+        from petctl.schemes.ollama_scheme import OllamaControlScheme
+        _scheme = OllamaControlScheme(log_input=log_ollama_input)
     elif control in ("ripple", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "stroke-ripple", "wander", "drift", "explore", "yield-stiff", "pose"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
     else:
         typer.echo(
             f"Unknown control scheme '{control}'. "
-            "Choose: keyboard, passthrough, sine, command, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, stroke-curl, wander, drift, explore, yield-stiff, pose",
+            "Choose: keyboard, passthrough, sine, command, ollama, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, stroke-curl, wander, drift, explore, yield-stiff, pose",
             err=True,
         )
         raise typer.Exit(1)

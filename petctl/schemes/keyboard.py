@@ -9,6 +9,7 @@ Controls:
   Ctrl+Shift+H   Save current positions as EEPROM home
   Ctrl+Shift+D   Deactivate all motors (exit MIT mode)
   Ctrl+Shift+L   Toggle sensor pad labels in visualizer
+  Ctrl+Shift+V   Close/relaunch Rerun viewer (resets viewer memory)
   Ctrl-C         Quit (SIGINT only — q/Esc do not quit)
 
 Uses pynput for cross-platform keyboard capture in a background thread,
@@ -86,7 +87,7 @@ class KeyboardControlScheme(ControlScheme):
         self._start_listener()
         logger.info(
             "[Keyboard] Ready (adjustment disabled).\n"
-            "  Ctrl+Shift+K: enable/disable adjustment  |  Ctrl+Shift+R: reset  |  Ctrl+Shift+H: save home  |  Ctrl+Shift+D: deactivate motors  |  Ctrl+Shift+L: toggle sensor labels  |  Ctrl-C: quit"
+            "  Ctrl+Shift+K: enable/disable adjustment  |  Ctrl+Shift+R: reset  |  Ctrl+Shift+H: save home  |  Ctrl+Shift+D: deactivate motors  |  Ctrl+Shift+L: toggle sensor labels  |  Ctrl+Shift+V: toggle viewer  |  Ctrl-C: quit"
         )
 
     # Seconds to keep re-issuing position commands after the last key press.
@@ -205,6 +206,14 @@ class KeyboardControlScheme(ControlScheme):
             if toggle is not None:
                 toggle()
 
+    def _dispatch_toggle_viewer(self) -> None:
+        if self._controller is None:
+            return
+        for viz in self._controller.visualizers:
+            toggle = getattr(viz, "toggle_viewer", None)
+            if toggle is not None:
+                toggle()
+
     def _start_listener(self) -> None:
         try:
             from pynput import keyboard
@@ -216,6 +225,7 @@ class KeyboardControlScheme(ControlScheme):
 
         def on_press(key):
             toggle_labels = False
+            toggle_viewer = False
             msg = None
             with self._lock:
                 if key in ctrl_keys:
@@ -249,11 +259,14 @@ class KeyboardControlScheme(ControlScheme):
                     if char in ("L", "l") and self._ctrl_held:
                         toggle_labels = True
                         msg = "toggle sensor labels"
+                    if char in ("V", "v") and self._ctrl_held:
+                        toggle_viewer = True
+                        msg = "toggle viewer"
                 except AttributeError:
                     pass
 
                 # Arrow keys — only active when adjustment is enabled
-                if not self._adjustment_enabled:
+                if not self._adjustment_enabled and not toggle_labels and not toggle_viewer:
                     return
                 if key == keyboard.Key.up:
                     self._pending[self._selected] = (
@@ -273,6 +286,8 @@ class KeyboardControlScheme(ControlScheme):
                 logger.info("[Keyboard] %s", msg)
             if toggle_labels:
                 self._dispatch_toggle_labels()
+            if toggle_viewer:
+                self._dispatch_toggle_viewer()
 
         def on_release(key):
             if key in ctrl_keys:

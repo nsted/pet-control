@@ -288,12 +288,14 @@ class RerunVisualizer(Visualizer):
         self._pad_half_sizes_np: Optional[np.ndarray] = None
         self._pad_quats: list = []
         self._rr = None
+        self._viewer_active: bool = False
         self._show_pad_labels: bool = False
         self._contact_type: str = "none"      # touch | stroke | hold | squeeze | restrict | wrench | none
         self._contact_color_until: float = 0.0
         self._last_viz_time: float = -1.0
         self._prev_touch_colors: dict[int, tuple] = {}
         self._prev_pressure_colors: dict[int, tuple] = {}
+        self._kb_listener = None
 
     # ------------------------------------------------------------------
     # Visualizer interface
@@ -308,21 +310,44 @@ class RerunVisualizer(Visualizer):
             return
 
         rr.init(self.app_name)
-        rr.spawn(memory_limit="512MiB")
-        rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._load_assembly()
         self._setup_overlay_geometry(rr)
+        self._spawn_viewer()
+        self._start_kb_listener()
+
+    def _spawn_viewer(self) -> None:
+        rr = self._rr
+        if rr is None:
+            return
+        rr.spawn(memory_limit="512MiB")
+        rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._log_pad_labels_static(rr)
         self._send_blueprint()
         self._setup_motor_series()
         self._setup_battery_series()
         if self.show_3d:
             self._setup_3d_geometry()
+        self._viewer_active = True
+        logger.info("[RerunVisualizer] viewer launched")
+
+    def toggle_viewer(self) -> None:
+        """Close the Rerun viewer if open, or relaunch it fresh (bound to Ctrl+Shift+V)."""
+        import subprocess
+        rr = self._rr
+        if rr is None:
+            return
+        if self._viewer_active:
+            rr.disconnect()
+            subprocess.run(["pkill", "-x", "rerun"], check=False)
+            self._viewer_active = False
+            logger.info("[RerunVisualizer] viewer closed")
+        else:
+            self._spawn_viewer()
 
     _VIZ_PERIOD = 1.0 / 20.0
 
     def update(self, state: RobotState) -> None:
-        if self._rr is None:
+        if self._rr is None or not self._viewer_active:
             return
         if (self._last_viz_time >= 0
                 and state.timestamp - self._last_viz_time < self._VIZ_PERIOD):
@@ -353,7 +378,46 @@ class RerunVisualizer(Visualizer):
             self._log_touch_blob_spheres(rr, state)
 
     def on_stop(self) -> None:
-        pass  # Rerun viewer stays open after the script exits (by design)
+        if self._kb_listener is not None:
+            self._kb_listener.stop()
+
+    # ------------------------------------------------------------------
+    # Keyboard listener (viewer controls, active with any control scheme)
+    # ------------------------------------------------------------------
+
+    def _start_kb_listener(self) -> None:
+        try:
+            from pynput import keyboard
+        except ImportError:
+            logger.warning("[RerunVisualizer] pynput not installed — Ctrl+V viewer toggle unavailable")
+            return
+
+        ctrl_keys = frozenset({keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r})
+        ctrl_held = [False]
+
+        def on_press(key):
+            if key in ctrl_keys:
+                ctrl_held[0] = True
+                return
+            if not ctrl_held[0]:
+                return
+            try:
+                ch = key.char
+                if ch in ("V", "v", "\x16"):
+                    self.toggle_viewer()
+                elif ch in ("L", "l", "\x0c"):
+                    self.toggle_pad_labels()
+            except AttributeError:
+                pass
+
+        def on_release(key):
+            if key in ctrl_keys:
+                ctrl_held[0] = False
+
+        self._kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self._kb_listener.daemon = True
+        self._kb_listener.start()
+        logger.info("[RerunVisualizer] Ctrl+V: toggle viewer  |  Ctrl+L: toggle pad labels")
 
     # ------------------------------------------------------------------
     # Sensor logging

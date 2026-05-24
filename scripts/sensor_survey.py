@@ -12,7 +12,7 @@ Usage:
     python scripts/sensor_survey.py                         # real robot, all modules
     python scripts/sensor_survey.py --modules 0,1,2         # partial hardware
     python scripts/sensor_survey.py --dry-run               # MockBackend (noise)
-    python scripts/sensor_survey.py --dry-run --dry-run-mode sine
+    python scripts/sensor_survey.py --dry-run --dry-run-mode mock-sensor-sine
 """
 
 from __future__ import annotations
@@ -550,7 +550,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run-mode",
         default="noise",
-        choices=["noise", "sine"],
+        choices=["noise", "mock-sensor-sine"],
     )
     args = parser.parse_args()
 

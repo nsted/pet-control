@@ -266,6 +266,21 @@ class FreezeControlScheme(ControlScheme):
         ]
 
 
+class IdleControlScheme(ControlScheme):
+    """Stay in MIT mode (motors on, green light) but freespin — kp=kd=0, no torque."""
+
+    name = "idle"
+
+    def on_start(self, controller: "Controller") -> None:
+        logger.info("[Idle] Motors on, freespinning.")
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        return [
+            ServoCommand(servo_id=sid, position=0.0, kp=0.0, kd=0.0, torque_ff=0.0)
+            for sid in sorted(state.active_servo_ids)
+        ]
+
+
 class CoilControlScheme(ControlScheme):
     """Quadratic spatial phase distribution — tighter curl accumulates toward the tail."""
 
@@ -764,6 +779,7 @@ class StrokeCurlScheme(ControlScheme):
     TARGET_DEG: float = 45.0
     HOLD_S: float = 2.0            # seconds to hold after hand leaves a module
     DECAY_DEG_PER_S: float = 15.0  # return-to-home speed after hold expires
+    IDLE_DELTA_RAD: float = 0.003  # rad — go freespin once per-tick travel drops below this after returning home
     DIRECTION_THRESHOLD: float = 0.15  # min right-left imbalance to commit to a side
     MODULE_TOUCH_THRESHOLD: float = 0.06  # touch_total to count as "hand present"
 
@@ -773,11 +789,13 @@ class StrokeCurlScheme(ControlScheme):
         self._curl_target: dict[int, float] = {}
         self._release_time: dict[int, float] = {}  # sid → monotonic time of last release
         self._curl_dir: float = 0.0
+        self._prev_pos: dict[int, float] = {}
 
     def on_start(self, controller: "Controller") -> None:
         self._curl_target = {}
         self._release_time = {}
         self._curl_dir = 0.0
+        self._prev_pos = {}
         logger.info(
             "[StrokeCurl] Touch right → curl right; left → curl left. "
             "Each module curls while touched and holds after release. Ctrl-C to stop."
@@ -816,7 +834,15 @@ class StrokeCurlScheme(ControlScheme):
                         else:
                             self._curl_target[sid] = cur - math.copysign(decay, cur)
 
-            cmds.append(ServoCommand.from_angle(sid, self._curl_target.get(sid, 0.0)))
+            target = self._curl_target.get(sid, 0.0)
+            pos = state.servo_positions.get(sid, 0.0)
+            delta = abs(pos - self._prev_pos.get(sid, pos))
+            self._prev_pos[sid] = pos
+            at_home = target == 0.0 and delta < self.IDLE_DELTA_RAD
+            if at_home:
+                cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=0.0, kd=0.0, torque_ff=0.0))
+            else:
+                cmds.append(ServoCommand.from_angle(sid, target))
 
         return cmds
 
