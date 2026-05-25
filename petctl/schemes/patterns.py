@@ -828,6 +828,8 @@ class StrokeCurlScheme(ControlScheme):
     IDLE_DELTA_RAD: float = 0.003  # rad — go freespin once per-tick travel drops below this after returning home
     DIRECTION_THRESHOLD: float = 0.15  # min right-left imbalance to commit to a side
     MODULE_TOUCH_THRESHOLD: float = 0.06  # touch_total to count as "hand present"
+    IDLE_BREATHE_AMP_DEG: float = 8.0   # idle breathe amplitude when no module has been touched
+    IDLE_BREATHE_HZ: float = 0.08       # ~12.5s period
 
     def __init__(self) -> None:
         from petctl.perception.stroke import PAD_THRESHOLD
@@ -837,6 +839,7 @@ class StrokeCurlScheme(ControlScheme):
         self._curl_dir: float = 0.0
         self._prev_pos: dict[int, float] = {}
         self._ever_touched: set[int] = set()
+        self._breathe_start: float = 0.0
 
     def on_start(self, controller: "Controller") -> None:
         self._curl_target = {}
@@ -844,6 +847,7 @@ class StrokeCurlScheme(ControlScheme):
         self._curl_dir = 0.0
         self._prev_pos = {}
         self._ever_touched = set()
+        self._breathe_start = time.monotonic()
         logger.info("[BEHAVIOR] StrokeCurl")
         logger.debug("[BEHAVIOR] StrokeCurl: right → curl right, left → curl left; holds on release.")
 
@@ -888,7 +892,10 @@ class StrokeCurlScheme(ControlScheme):
             untouched = sid not in self._ever_touched
             at_home = target == 0.0 and delta < self.IDLE_DELTA_RAD
             if untouched or at_home:
-                cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=0.0, kd=0.0, torque_ff=0.0))
+                breathe_angle = self.IDLE_BREATHE_AMP_DEG * math.sin(
+                    2 * math.pi * self.IDLE_BREATHE_HZ * (time.monotonic() - self._breathe_start)
+                )
+                cmds.append(ServoCommand.from_angle(sid, breathe_angle))
             else:
                 cmds.append(ServoCommand.from_angle(sid, target))
 
