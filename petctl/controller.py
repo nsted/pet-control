@@ -78,10 +78,8 @@ _CONTACT_LEVEL: dict[str, int] = {
 
 # Gesture lifecycle thresholds for the touch emitter.
 _UPDATE_INTERVAL_S: float = 0.5   # interval between "running" status updates
-_MERGE_GAP_S: float = 0.25        # merge a new gesture if the gap since last end ≤ this
 _END_HOLD_S: float = 0.40         # hold before emitting "complete" — bridges sensor gaps
 _MIN_GESTURE_DURATION_S: float = 0.22  # suppress gestures shorter than this
-_TOUCH_LOG_FLUSH_S: float = 0.35  # flush buffered "complete" as [end] after this silence
 
 
 def _event_level(event: TouchEvent) -> int:
@@ -161,39 +159,22 @@ class _TouchProcessor:
 class _TouchLogger:
     """Logs touch events to console in the same format sent to the LLM.
 
-    Offsets are time since the last WS reset (epoch_fn()).  Buffers
-    "complete" events briefly: if another touch follows within
-    _TOUCH_LOG_FLUSH_S the buffered event is emitted as [ongoing]; after
-    silence it flushes as [end].
+    Offsets are time since the last WS reset (epoch_fn()).  Events are
+    emitted immediately; end-hold in the emitter already bridges sensor
+    gaps so no buffering is needed here.
     """
 
     def __init__(self, epoch_fn: Callable[[], float]) -> None:
         self._epoch_fn = epoch_fn
-        self._pending: tuple[TouchSummary, float] | None = None  # (summary, offset)
 
-    def tick(self, now: float) -> None:
-        """Call each controller tick to flush stale pending events."""
-        if self._pending is not None and now - self._pending[0].timestamp >= _TOUCH_LOG_FLUSH_S:
-            s, offset = self._pending
-            logger.info("[TOUCH  ] +%.1fs: %s", offset, s.describe())
-            self._pending = None
+    def tick(self, now: float) -> None:  # noqa: ARG002
+        pass
 
     def on_summary(self, summary: TouchSummary) -> None:
         if summary.touch_type == "none":
             return
-
         offset = summary.timestamp - self._epoch_fn()
-
-        # New event arrived — flush pending complete as [ongoing] (it wasn't truly the end)
-        if self._pending is not None:
-            s, pending_offset = self._pending
-            logger.info("[TOUCH  ] +%.1fs: %s", pending_offset, s.describe(status_override="running"))
-            self._pending = None
-
-        if summary.status == "complete":
-            self._pending = (summary, offset)
-        else:
-            logger.info("[TOUCH  ] +%.1fs: %s", offset, summary.describe())
+        logger.info("[TOUCH  ] +%.1fs: %s", offset, summary.describe())
 
 
 class _TouchEventEmitter:
@@ -206,11 +187,8 @@ class _TouchEventEmitter:
     End-hold: when the gesture level drops (sensor gap, inter-module dead zone,
     brief velocity dip) the session is held open for _END_HOLD_S before "complete"
     is emitted.  If the gesture recovers within that window the hold is cancelled
-    and the session continues uninterrupted.  This bridges slow-stroke inter-module
-    gaps without the layer interactions of merge-after-end.
-
-    _MERGE_GAP_S still applies as a fallback: if the hold expires and a new contact
-    follows quickly, the sessions are stitched together.
+    and the session continues uninterrupted.  Each new contact after a true end
+    always starts a fresh session — no merging.
 
     Called every tick; acts on time as well as type transitions.  The queue
     is bounded — summaries are dropped (never blocking) when the consumer is slow.
@@ -226,13 +204,6 @@ class _TouchEventEmitter:
         self._sess_staged: bool = False   # True once "started" has been emitted
         self._sess_last_t: float = 0.0   # time of last staged emission
         self._end_hold_since: float | None = None  # when the end-hold timer started
-
-        # State saved when a session ends, for continuity merge checks.
-        self._prev_end_type: str = "none"
-        self._prev_end_t: float = 0.0
-        self._prev_end_start: float = 0.0
-        self._prev_end_staged: bool = False
-        self._prev_end_direction: str | None = None
 
     def set_logger(self, callback: Callable[[TouchSummary], None]) -> None:
         self._on_emit_cbs.append(callback)
@@ -250,32 +221,11 @@ class _TouchEventEmitter:
         if self._sess_type == "none":
             if curr == "none":
                 return
-            # Starting a new session — check whether to merge with the previous one.
-            # Strokes with opposite directions are never merged (direction change = new stroke).
-            curr_dir = touch.stroke.direction if touch.stroke is not None else None
-            same_dir = (
-                curr_dir is None
-                or self._prev_end_direction is None
-                or curr_dir == self._prev_end_direction
-            )
-            if (
-                self._prev_end_type != "none"
-                and now - self._prev_end_t <= _MERGE_GAP_S
-                and (
-                    _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
-                    or self._prev_end_type == "stroke"
-                )
-                and same_dir
-            ):
-                self._sess_start = self._prev_end_start
-                self._sess_staged = self._prev_end_staged
-                self._sess_last_t = self._prev_end_t
-            else:
-                self._sess_start = now
-                self._sess_staged = False
-                self._sess_last_t = now
+            # Always start a fresh session — end-hold bridges any real gaps.
+            self._sess_start = now
+            self._sess_staged = False
+            self._sess_last_t = now
             self._sess_type = curr
-            self._prev_end_type = "none"  # consume merge window
             self._end_hold_since = None
 
         elif curr in _PASSIVE_MOTION_FAMILY and self._sess_type in _PASSIVE_MOTION_FAMILY:
@@ -292,14 +242,10 @@ class _TouchEventEmitter:
                 self._end_hold_since = now
             if now - self._end_hold_since < _END_HOLD_S:
                 return  # within hold: keep session alive, don't update touch or emit
-            # Hold expired — finalize the session.
+            # Hold expired — finalize the session. Any new contact starts
+            # fresh next tick through the "none" entry path.
             self._on_contact_end(now, emit_none=(curr == "none"))
             self._end_hold_since = None
-            if curr != "none":
-                self._sess_type = curr
-                self._sess_start = now
-                self._sess_staged = False
-                self._sess_last_t = now
             return
 
         self._sess_touch = touch
@@ -332,17 +278,6 @@ class _TouchEventEmitter:
         was_staged = self._sess_staged
         if was_staged:
             self._emit(self._make_summary("complete", now, elapsed))
-        # Always update merge-window state so quick-follow gestures can rejoin
-        # even if this session produced no output.
-        self._prev_end_type = self._sess_type
-        self._prev_end_t = now
-        self._prev_end_start = self._sess_start
-        self._prev_end_staged = self._sess_staged
-        self._prev_end_direction = (
-            self._sess_touch.stroke.direction
-            if self._sess_touch is not None and self._sess_touch.stroke is not None
-            else None
-        )
         self._sess_type = "none"
         self._sess_touch = None
         self._sess_staged = False
