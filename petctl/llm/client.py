@@ -40,9 +40,11 @@ class OllamaClient:
         self._timeout = timeout
         self._log_input = log_input
         self._messages: list[dict[str, str]] = []
+        self._gen: int = 0
 
     def start(self, system: str) -> None:
         """Begin a new conversation with the given system prompt."""
+        self._gen += 1
         self._messages = [{"role": "system", "content": system}]
 
     def chat(self, user: str) -> dict[str, Any] | None:
@@ -55,6 +57,7 @@ class OllamaClient:
             Parsed dict from the LLM, or None if the call fails or the
             response cannot be parsed as JSON.
         """
+        gen = self._gen
         self._messages.append({"role": "user", "content": user})
         payload = json.dumps({
             "model": self.model,
@@ -76,11 +79,16 @@ class OllamaClient:
                 body = resp.read().decode()
         except urllib.error.URLError as exc:
             logger.warning("[Ollama] connection error: %s", exc)
-            self._messages.pop()
+            if self._gen == gen:
+                self._messages.pop()
             return None
         except TimeoutError:
             logger.warning("[Ollama] request timed out after %.1fs", self._timeout)
-            self._messages.pop()
+            if self._gen == gen:
+                self._messages.pop()
+            return None
+
+        if self._gen != gen:
             return None
 
         try:

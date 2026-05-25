@@ -44,20 +44,16 @@ import queue
 import signal
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from petctl.config import LOOP_LIMITS
-from petctl.perception.contact import CONTACT_LABELS, ContactType
+from petctl.perception.contact import ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import ControlScheme, RobotBackend, Visualizer
 from petctl.types import RobotState, ServoCommand, TouchEvent, TouchSummary
 
 logger = logging.getLogger(__name__)
 
-
-_STROKE_END_GRACE_S: float = 0.45   # don't fire end until stroke absent this long
-_SUBTYPE_END_GRACE_S: float = 0.35  # hold a sub-type after apparent downgrade before logging the end
-_TOUCH_MIN_DUR_S: float = 0.220     # suppress any touch event shorter than this
 
 # Budge and twist are the same passive-motion gesture at different travel thresholds.
 # Transitions between them don't start a new gesture — only entry from "none" does.
@@ -80,6 +76,15 @@ _CONTACT_LEVEL: dict[str, int] = {
     "stroke":   8,
     "rub":      9,
 }
+
+# Stroke and rub are the same moving-contact gesture (rub = reversing direction).
+# Transitions between them continue the session regardless of level direction.
+_STROKE_FAMILY: frozenset[str] = frozenset({"stroke", "rub"})
+
+# Gesture lifecycle thresholds for the touch emitter.
+_STAGE_THRESHOLD_S: float = 0.5   # emit "started" once a gesture reaches this age
+_UPDATE_INTERVAL_S: float = 0.5   # interval between "running" status updates
+_MERGE_GAP_S: float = 0.1         # merge a new gesture if the gap since last end ≤ this
 
 
 def _event_level(event: TouchEvent) -> int:
@@ -157,197 +162,55 @@ class _TouchProcessor:
 
 
 class _TouchLogger:
-    """Logs touch events to console.
-
-    Touch is the outer session; sub-types (hold/squeeze/restrict/wrench/stroke)
-    are logged as explicit start/end events nested within it:
-
-        [TOUCH   ] start  ...
-        [SQUEEZE ] start  ...
-        [SQUEEZE ] end  dur=X.Xs
-        [TOUCH   ] end  dur=X.Xs
-
-    Sessions shorter than _TOUCH_MIN_DUR_S are suppressed entirely.  Touch start
-    is emitted once the threshold is crossed; sub-type events are emitted in
-    real-time after the session is confirmed.
-    """
+    """Logs touch events to console in the same format sent to the LLM."""
 
     def __init__(self) -> None:
         self._session_start: float | None = None
-        self._session_logged: bool = False
-        self._session_type: str = "touch"       # outer label: "touch", "budge", or "twist"
-        self._session_start_details: str = ""
-        self._subtype: str | None = None        # currently active logged sub-type
-        self._subtype_start: float | None = None
-        self._subtype_last_t: float | None = None  # last tick the sub-type was genuinely active
-        self._stroke_start_centroid: float | None = None
-        self._stroke_last_centroid: float | None = None
-        self._stroke_last_speed: float = 0.0
-        self._stroke_last_t: float | None = None
 
-    def update(self, state: RobotState) -> None:
-        touch = state.touch
-        if touch is None:
-            return
-
-        now = state.timestamp
-        stroke = touch.stroke
-        cr = touch.contact
-        any_contact = stroke is not None or cr is not None
-
-        # Session start
-        if any_contact and self._session_start is None:
-            self._session_start = now
-            self._session_logged = False
-            self._session_start_details = self._session_details(touch)
-            ct = cr.contact_type.value if cr is not None else "touch"
-            self._session_type = ct if ct in ("budge", "twist") else "touch"
-
-        # Upgrade a pending BUDGE session to TOUCH the moment real contact appears.
-        if not self._session_logged and self._session_type == "budge":
-            ct = cr.contact_type.value if cr is not None else None
-            if stroke is not None or (ct is not None and ct not in ("budge",)):
-                self._session_type = "touch"
-                self._session_start_details = self._session_details(touch)
-
-        # Emit session start once 220ms threshold is crossed
-        if (not self._session_logged
-                and self._session_start is not None
-                and now - self._session_start >= _TOUCH_MIN_DUR_S):
-            label = CONTACT_LABELS.get(self._session_type, "TOUCH   ")
-            logger.info("[%s] start  %s", label, self._session_start_details)
-            self._session_logged = True
-
-        # Session end
-        if not any_contact and self._session_start is not None:
-            self._end_subtype(now)
-            self._end_session(now)
-            return
-
-        if self._session_start is None:
-            return
-
-        # Determine current sub-type.
-        # Stroke grace: keep "stroke"/"rub" sub-type briefly after stroke reading drops.
-        if stroke is not None:
-            self._stroke_last_t = now
-            self._stroke_last_centroid = stroke.centroid
-            self._stroke_last_speed = stroke.speed
-            if self._subtype not in ("stroke", "rub"):
-                self._stroke_start_centroid = stroke.centroid
-            curr = "rub" if stroke.is_rub else "stroke"
-        elif (self._subtype in ("stroke", "rub")
-                and self._stroke_last_t is not None
-                and now - self._stroke_last_t < _STROKE_END_GRACE_S):
-            curr = self._subtype  # grace period — keep sub-type
-        elif cr is not None and cr.contact_type.value not in ("touch", "budge"):
-            curr = cr.contact_type.value
+    def on_summary(self, summary: TouchSummary) -> None:
+        t0 = self._session_start or summary.timestamp
+        offset = summary.timestamp - t0
+        if summary.touch_type == "none":
+            logger.info("[TOUCH  ] +%.1fs: %s", offset, summary.describe())
+            self._session_start = None
         else:
-            curr = None  # plain touch baseline — no sub-type label
-
-        # Sub-type end grace: suppress logging a downgrade in sub-type level if the
-        # higher sub-type was active recently.  Consolidates SQUEEZE flicker and brief
-        # TWIST→SQUEEZE→TWIST interruptions into a single event.
-        if (curr != self._subtype
-                and self._subtype is not None
-                and self._subtype not in ("stroke", "rub")  # stroke/rub have their own grace above
-                and _CONTACT_LEVEL.get(curr or "none", 0) < _CONTACT_LEVEL.get(self._subtype, 0)
-                and self._subtype_last_t is not None
-                and now - self._subtype_last_t < _SUBTYPE_END_GRACE_S):
-            curr = self._subtype  # hold the higher sub-type
-
-        if curr == self._subtype:
-            self._subtype_last_t = now
-
-        # Log sub-type transitions once session is confirmed.
-        # Skip _begin_subtype when curr matches the session type — the outer
-        # session label already covers it (avoids duplicate "[TWIST] start" lines
-        # when the session was itself classified as twist/budge from the first tick).
-        if self._session_logged and curr != self._subtype:
-            self._end_subtype(now)
-            if curr is not None and curr != self._session_type:
-                self._begin_subtype(curr, touch, now)
-
-    def _begin_subtype(self, subtype: str, touch: TouchEvent, now: float) -> None:
-        self._subtype = subtype
-        self._subtype_start = now
-        self._subtype_last_t = now
-        details = self._subtype_details(subtype, touch)
-        logger.info("[%s] start  %s", CONTACT_LABELS.get(subtype, subtype.upper()[:8]), details)
-
-    def _end_subtype(self, now: float) -> None:
-        if self._subtype is None:
-            return
-        subtype = self._subtype
-        dur = now - (self._subtype_start or now)
-        self._subtype = None
-        self._subtype_start = None
-        self._subtype_last_t = None
-        label = CONTACT_LABELS.get(subtype, subtype.upper()[:8])
-        if subtype in ("stroke", "rub") and self._stroke_start_centroid is not None:
-            s, e = self._stroke_start_centroid, self._stroke_last_centroid
-            arrow = "↔" if subtype == "rub" else ("→" if (e or 0.0) > (s or 0.0) else "←")
-            logger.info("[%s] end  %s from=%.1f to=%.1f  speed=%.1f mod/s  dur=%.1fs",
-                label, arrow, s, e, self._stroke_last_speed, dur)
-            self._stroke_start_centroid = None
-        else:
-            logger.info("[%s] end  dur=%.1fs", label, dur)
-
-    def _session_details(self, touch: TouchEvent) -> str:
-        stroke = touch.stroke
-        cr = touch.contact
-        if stroke is not None:
-            return f"centroid={stroke.centroid:.1f}  side={stroke.side}"
-        if cr is None:
-            return ""
-        centroid = touch.hold.centroid if touch.hold is not None else cr.centroid
-        side = (touch.hold.side if touch.hold is not None else cr.side) or ""
-        centroid_str = f"centroid={centroid:.1f}  " if centroid is not None else ""
-        return (centroid_str + (f"side={side}" if side else "")).rstrip()
-
-    def _subtype_details(self, subtype: str, touch: TouchEvent) -> str:
-        if subtype in ("stroke", "rub"):
-            s = touch.stroke
-            return f"centroid={s.centroid:.1f}  side={s.side}" if s is not None else ""
-        cr = touch.contact
-        hold = touch.hold
-        if hold is None or cr is None:
-            return ""
-        blobs = " ".join(f"[{','.join(str(m) for m in b.modules)}]" for b in hold.q_blobs)
-        servos = f"  servos={cr.affected_servos}" if cr.affected_servos else ""
-        torque = f"  torque={cr.torque_peak:.2f}Nm" if cr.torque_peak else ""
-        pressure = f"  pressure={cr.pressure_peak:.2f}" if cr.pressure_peak else ""
-        return f"blobs={blobs}{servos}{torque}{pressure}"
-
-    def _end_session(self, now: float) -> None:
-        if self._session_start is None:
-            return
-        dur = now - self._session_start
-        logged = self._session_logged
-        session_type = self._session_type
-        self._session_start = None
-        self._session_logged = False
-        self._session_type = "touch"
-        self._session_start_details = ""
-        self._stroke_last_t = None
-        self._stroke_last_centroid = None
-        self._stroke_last_speed = 0.0
-        if logged:
-            label = CONTACT_LABELS.get(session_type, "TOUCH   ")
-            logger.info("[%s] end  dur=%.1fs", label, dur)
+            if self._session_start is None:
+                self._session_start = summary.timestamp
+                offset = 0.0
+            logger.info("[TOUCH  ] +%.1fs: %s", offset, summary.describe())
 
 
 class _TouchEventEmitter:
-    """Detects touch type transitions and pushes TouchSummary to a queue.
+    """Stages touch gestures for the LLM and logger with lifecycle tracking.
 
-    Emits on onset, type-change, and end — not every tick.  The queue is
-    bounded; summaries are dropped (not block) when the consumer is slow.
+    Gestures shorter than _STAGE_THRESHOLD_S are staged only on completion.
+    Longer gestures emit status="started" at the threshold, status="running"
+    every _UPDATE_INTERVAL_S, and status="complete" on end.  Consecutive
+    gestures of the same or promoted type separated by ≤ _MERGE_GAP_S are
+    treated as one continuous session.
+
+    Called every tick; acts on time as well as type transitions.  The queue
+    is bounded — summaries are dropped (never blocking) when the consumer is slow.
     """
 
     def __init__(self, queue: asyncio.Queue) -> None:
         self._queue = queue
-        self._last_type: str = "none"
-        self._session_start: float | None = None
+        self._on_emit: Callable[[TouchSummary], None] | None = None
+
+        self._sess_type: str = "none"
+        self._sess_start: float = 0.0
+        self._sess_touch: TouchEvent | None = None
+        self._sess_staged: bool = False   # True once "started" has been emitted
+        self._sess_last_t: float = 0.0   # time of last staged emission
+
+        # State saved when a session ends, for continuity merge checks.
+        self._prev_end_type: str = "none"
+        self._prev_end_t: float = 0.0
+        self._prev_end_start: float = 0.0
+        self._prev_end_staged: bool = False
+
+    def set_logger(self, callback: Callable[[TouchSummary], None]) -> None:
+        self._on_emit = callback
 
     def update(self, state: RobotState) -> None:
         touch = state.touch
@@ -355,27 +218,97 @@ class _TouchEventEmitter:
             return
         now = state.timestamp
         curr = self._touch_type(touch)
-        if curr == self._last_type:
+
+        if curr == "none":
+            self._on_contact_end(now)
             return
 
-        # Budge→twist (or back) is the same gesture escalating/de-escalating; don't
-        # start a new event until the gesture fully ends and velocity drops to none.
-        if curr in _PASSIVE_MOTION_FAMILY and self._last_type in _PASSIVE_MOTION_FAMILY:
-            self._last_type = curr
+        if self._sess_type == "none":
+            # Starting a new session — check whether to merge with the previous one.
+            if (
+                self._prev_end_type != "none"
+                and now - self._prev_end_t <= _MERGE_GAP_S
+                and _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
+            ):
+                self._sess_start = self._prev_end_start
+                self._sess_staged = self._prev_end_staged
+                self._sess_last_t = self._prev_end_t
+            else:
+                self._sess_start = now
+                self._sess_staged = False
+                self._sess_last_t = now
+            self._sess_type = curr
+            self._prev_end_type = "none"  # consume merge window
+
+        elif curr in _STROKE_FAMILY and self._sess_type in _STROKE_FAMILY:
+            self._sess_type = curr  # stroke↔rub: same gesture, direction changed
+
+        elif curr in _PASSIVE_MOTION_FAMILY and self._sess_type in _PASSIVE_MOTION_FAMILY:
+            self._sess_type = curr  # budge↔twist: same passive-motion gesture
+
+        elif _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._sess_type, 0):
+            self._sess_type = curr  # promoted (e.g. hold → squeeze): continue session
+
+        else:
+            # Demoted — end the current session and start a fresh one.
+            self._on_contact_end(now, emit_none=False)
+            self._sess_type = curr
+            self._sess_start = now
+            self._sess_staged = False
+            self._sess_last_t = now
+
+        self._sess_touch = touch
+
+        elapsed = now - self._sess_start
+        if not self._sess_staged and elapsed >= _STAGE_THRESHOLD_S:
+            self._sess_staged = True
+            self._sess_last_t = now
+            self._emit(self._make_summary("started", now, elapsed))
+        elif self._sess_staged and now - self._sess_last_t >= _UPDATE_INTERVAL_S:
+            self._sess_last_t = now
+            self._emit(self._make_summary("running", now, elapsed))
+
+    def _on_contact_end(self, now: float, *, emit_none: bool = True) -> None:
+        if self._sess_type == "none":
             return
+        elapsed = now - self._sess_start
+        self._emit(self._make_summary("complete", now, elapsed))
+        self._prev_end_type = self._sess_type
+        self._prev_end_t = now
+        self._prev_end_start = self._sess_start
+        self._prev_end_staged = self._sess_staged
+        self._sess_type = "none"
+        self._sess_touch = None
+        self._sess_staged = False
+        if emit_none:
+            self._emit_none(now)
 
-        if curr != "none" and self._last_type == "none":
-            self._session_start = now
-        elif curr == "none":
-            self._session_start = None
+    def _make_summary(self, status: str, now: float, elapsed: float) -> TouchSummary:
+        return TouchSummary.from_touch_event(self._sess_touch, now, elapsed, status=status)  # type: ignore[arg-type]
 
-        session_dur = now - self._session_start if self._session_start is not None else 0.0
-        summary = TouchSummary.from_touch_event(touch, now, session_dur)
-        self._last_type = curr
+    def _emit(self, summary: TouchSummary) -> None:
         try:
             self._queue.put_nowait(summary)
         except asyncio.QueueFull:
             pass
+        if self._on_emit is not None:
+            self._on_emit(summary)
+
+    def _emit_none(self, now: float) -> None:
+        self._emit(TouchSummary(
+            touch_type="none",
+            timestamp=now,
+            duration=0.0,
+            intensity=0.0,
+            centroid=None,
+            side="",
+            modules=[],
+            velocity=None,
+            direction=None,
+            confidence=None,
+            pressure_peak=None,
+            torque_peak=None,
+        ))
 
     @staticmethod
     def _touch_type(touch: TouchEvent) -> str:
@@ -423,8 +356,6 @@ class Controller:
         self.log_mit = log_mit
         self.log_touch = log_touch
         self.log_loop = log_loop
-        self._touch_logger: Optional[_TouchLogger] = _TouchLogger() if log_touch else None
-
         self.power_manager = PowerManager()
         self._touch_processor = _TouchProcessor()
         self._power_reset_requested: bool = False
@@ -434,6 +365,9 @@ class Controller:
         # Read from this in any async task to receive touch events for LLM or other consumers.
         self.touch_events: asyncio.Queue[TouchSummary] = asyncio.Queue(maxsize=64)
         self._touch_emitter = _TouchEventEmitter(self.touch_events)
+        if log_touch:
+            _touch_logger = _TouchLogger()
+            self._touch_emitter.set_logger(_touch_logger.on_summary)
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -639,9 +573,6 @@ class Controller:
             except Exception as e:
                 logger.error("[Controller] Scheme '%s' error: %s", self.scheme.name, e)
                 commands = []
-
-            if self._touch_logger is not None:
-                self._touch_logger.update(self._state)
 
             # Let schemes reset the slew state for specific servos before this
             # tick's filter runs — needed when a stall reversal must take effect

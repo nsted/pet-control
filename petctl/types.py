@@ -79,6 +79,7 @@ class TouchSummary:
     pressure_peak: float | None  # squeeze: peak FSR value (0–1)
     torque_peak: float | None    # restrict/wrench: peak torque in Nm
     affected_servos: list[int] = field(default_factory=list)  # restrict/wrench/twist
+    status: str = "complete"  # "started" | "running" | "complete"
 
     @classmethod
     def from_touch_event(
@@ -86,6 +87,7 @@ class TouchSummary:
         event: TouchEvent,
         timestamp: float,
         session_duration: float = 0.0,
+        status: str = "complete",
     ) -> TouchSummary:
         """Build a TouchSummary from a per-tick TouchEvent.
 
@@ -117,6 +119,7 @@ class TouchSummary:
                 confidence=stroke.confidence,
                 pressure_peak=None,
                 torque_peak=None,
+                status=status,
             )
 
         if contact is not None:
@@ -151,6 +154,7 @@ class TouchSummary:
                 pressure_peak=contact.pressure_peak or None,
                 torque_peak=contact.torque_peak or None,
                 affected_servos=list(contact.affected_servos),
+                status=status,
             )
 
         return cls(
@@ -166,6 +170,7 @@ class TouchSummary:
             confidence=None,
             pressure_peak=None,
             torque_peak=None,
+            status=status,
         )
 
     def to_dict(self) -> dict:
@@ -182,6 +187,8 @@ class TouchSummary:
         if self.touch_type == "none":
             return "contact ended"
         parts: list[str] = [f"gesture={self.touch_type}"]
+        if self.status != "complete":
+            parts.insert(0, f"[{self.status}]")
         if self.direction and self.velocity is not None:
             arrow = "→" if self.direction == "head_to_tail" else "←"
             parts.append(f"{arrow} {abs(self.velocity):.1f} mod/s")
@@ -192,8 +199,7 @@ class TouchSummary:
         if self.modules:
             lo, hi = min(self.modules), max(self.modules)
             parts.append(f"mod {lo}–{hi}" if lo != hi else f"mod {lo}")
-        if self.duration > 0:
-            parts.append(f"{self.duration:.1f}s")
+        parts.append(f"{self.duration:.1f}s")
         if self.pressure_peak:
             parts.append(f"pressure={self.pressure_peak:.2f}")
         if self.torque_peak:

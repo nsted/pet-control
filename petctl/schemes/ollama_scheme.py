@@ -266,6 +266,7 @@ class OllamaControlScheme(ControlScheme):
         if self._was_connected and not state.connected:
             logger.info("[Ollama] WebSocket disconnected — resetting conversation history and pattern.")
             self._client.start(self._system_prompt)
+            self._batch = []
             self._touch_ended_t = None
             self._switch_pattern("idle", 0.0)
         self._was_connected = state.connected
