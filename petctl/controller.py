@@ -173,7 +173,12 @@ class _TouchLogger:
         if summary.touch_type == "none":
             return
         offset = summary.timestamp - self._epoch_fn()
-        logger.info("[TOUCH  ] +%.1fs: %s", offset, summary.describe())
+        name = summary.touch_type.capitalize()
+        if summary.status == "started":
+            logger.info("[GESTURE] %s - begin @ %.1fs", name, offset)
+        elif summary.status == "complete":
+            logger.info("[GESTURE] %s - end @ %.1fs", name, offset)
+        logger.debug("[GESTURE] %s: +%.1fs %s", name, offset, summary.describe())
 
 
 class _TouchEventEmitter:

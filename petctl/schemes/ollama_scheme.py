@@ -400,7 +400,7 @@ class OllamaControlScheme(ControlScheme):
             )
             return
 
-        speed = max(0.05, min(1.0, float(response.get("speed", 0.4))))
+        speed = max(0.05, min(1.0, float(response.get("speed", 1.0))))
         feel = str(response.get("explanation", response.get("feel", ""))).strip()
 
         with self._lock:
@@ -413,16 +413,12 @@ class OllamaControlScheme(ControlScheme):
         pf = self._client.last_prefill_ms
         gn = self._client.last_gen_ms
         if same_motion:
-            logger.info(
-                "[Ollama] → %s (speed=%.2f) — %s [params updated]\n  rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms",
-                motion, speed, feel, rtt, pt, et, ld, pf, gn,
-            )
+            logger.info("[Ollama] → %s (speed=%.2f) — %s [params updated]", motion, speed, feel)
+            logger.debug("[Ollama] rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms", rtt, pt, et, ld, pf, gn)
             _update_pattern_params(pattern, motion, speed)
         else:
-            logger.info(
-                "[Ollama] → %s (speed=%.2f) — %s\n  rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms",
-                motion, speed, feel, rtt, pt, et, ld, pf, gn,
-            )
+            logger.info("[Ollama] → %s (speed=%.2f) — %s", motion, speed, feel)
+            logger.debug("[Ollama] rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms", rtt, pt, et, ld, pf, gn)
             self._switch_pattern(motion, speed)
 
 

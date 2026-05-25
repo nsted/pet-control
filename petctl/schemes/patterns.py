@@ -50,7 +50,8 @@ class SnuggleControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info("[Snuggle] ±%.0f° at %.1f Hz, 2× spatial frequency. Ctrl-C to stop.", self.amplitude_deg, self.hz)
+        logger.info("[BEHAVIOR] Snuggle")
+        logger.debug("[BEHAVIOR] Snuggle: ±%.0f° at %.1f Hz, 2× spatial frequency.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         t = time.monotonic() - self._start
@@ -84,7 +85,8 @@ class PulseControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info("[Pulse] ±%.0f° at %.1f Hz, all joints in phase. Ctrl-C to stop.", self.amplitude_deg, self.hz)
+        logger.info("[BEHAVIOR] Pulse")
+        logger.debug("[BEHAVIOR] Pulse: ±%.0f° at %.1f Hz, all joints in phase.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         t = time.monotonic() - self._start
@@ -110,7 +112,8 @@ class BreatheControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info("[Breathe] ±%.0f° at %.2f Hz (~%.0fs period). Ctrl-C to stop.", self.amplitude_deg, self.hz, 1.0 / self.hz)
+        logger.info("[BEHAVIOR] Breathe")
+        logger.debug("[BEHAVIOR] Breathe: ±%.0f° at %.2f Hz (~%.0fs period).", self.amplitude_deg, self.hz, 1.0 / self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         t = time.monotonic() - self._start
@@ -142,8 +145,9 @@ class SwayControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info(
-            "[Sway] head ±%.0f° → tail ±%.0f° at %.1f Hz. Ctrl-C to stop.",
+        logger.info("[BEHAVIOR] Sway")
+        logger.debug(
+            "[BEHAVIOR] Sway: head ±%.0f° → tail ±%.0f° at %.1f Hz.",
             self.amplitude_deg, self.amplitude_deg * self.tail_fraction, self.hz,
         )
 
@@ -184,8 +188,9 @@ class CascadeControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info(
-            "[Cascade] head ±%.0f° → tail ±%.0f° at %.1f Hz. Ctrl-C to stop.",
+        logger.info("[BEHAVIOR] Cascade")
+        logger.debug(
+            "[BEHAVIOR] Cascade: head ±%.0f° → tail ±%.0f° at %.1f Hz.",
             self.amplitude_deg * self.head_fraction, self.amplitude_deg, self.hz,
         )
 
@@ -220,7 +225,8 @@ class SlalomControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info("[Slalom] ±%.0f° S-shape rocking at %.1f Hz. Ctrl-C to stop.", self.amplitude_deg, self.hz)
+        logger.info("[BEHAVIOR] Slalom")
+        logger.debug("[BEHAVIOR] Slalom: ±%.0f° S-shape rocking at %.1f Hz.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         t = time.monotonic() - self._start
@@ -254,7 +260,8 @@ class TwitchControlScheme(ControlScheme):
     def on_start(self, controller: "Controller") -> None:
         self._current = {}
         self._target = {}
-        logger.info("[Twitch] ±%.0f° random noise per joint. Ctrl-C to stop.", self.amplitude_deg)
+        logger.info("[BEHAVIOR] Twitch")
+        logger.debug("[BEHAVIOR] Twitch: ±%.0f° random noise per joint.", self.amplitude_deg)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         ids = sorted(state.active_servo_ids)
@@ -278,7 +285,8 @@ class FreezeControlScheme(ControlScheme):
     name = "freeze"
 
     def on_start(self, controller: "Controller") -> None:
-        logger.info("[Freeze] Holding all joints at home (0°). Ctrl-C to stop.")
+        logger.info("[BEHAVIOR] Freeze")
+        logger.debug("[BEHAVIOR] Freeze: holding all joints at home (0°).")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         return [
@@ -293,7 +301,8 @@ class IdleControlScheme(ControlScheme):
     name = "idle"
 
     def on_start(self, controller: "Controller") -> None:
-        logger.info("[Idle] Motors on, freespinning.")
+        logger.info("[BEHAVIOR] Idle")
+        logger.debug("[BEHAVIOR] Idle: motors on, freespinning.")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         return [
@@ -317,7 +326,8 @@ class CoilControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info("[Coil] ±%.0f° coiling motion at %.1f Hz. Ctrl-C to stop.", self.amplitude_deg, self.hz)
+        logger.info("[BEHAVIOR] Coil")
+        logger.debug("[BEHAVIOR] Coil: ±%.0f° coiling motion at %.1f Hz.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         t = time.monotonic() - self._start
@@ -359,7 +369,8 @@ class Spin7ControlScheme(ControlScheme):
         self._pos_deg = 0.0
         self._last_t = time.monotonic()
         self._backend = controller.backend
-        logger.info("[Spin7] Joint 7 spinning at %.0f°/s. Ctrl-C to stop.", self.speed_deg_per_s)
+        logger.info("[BEHAVIOR] Spin7")
+        logger.debug("[BEHAVIOR] Spin7: joint 7 spinning at %.0f°/s.", self.speed_deg_per_s)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = time.monotonic()
@@ -403,7 +414,8 @@ class StrokeReactControlScheme(ControlScheme):
         self._angle_deg = {}
         self._rand_dir = {}
         self._was_touching = {}
-        logger.info("[StrokeReact] Touch left → spin right; right → spin left. Hand off = hold. Ctrl-C to stop.")
+        logger.info("[BEHAVIOR] StrokeReact")
+        logger.debug("[BEHAVIOR] StrokeReact: left → spin right, right → spin left; hold on release.")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         dt = max(state.dt, 1e-4)
@@ -570,10 +582,8 @@ class ExploreControlScheme(_WanderBase):
 
     def on_start(self, controller: "Controller") -> None:
         self._init_stall_state()
-        logger.info(
-            "[Explore] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
-            math.degrees(self._speed_rad_s),
-        )
+        logger.info("[BEHAVIOR] Explore")
+        logger.debug("[BEHAVIOR] Explore: each joint turns at %.0f°/s, reversing on stall.", math.degrees(self._speed_rad_s))
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = time.monotonic()
@@ -613,8 +623,9 @@ class DriftControlScheme(_WanderBase):
     def on_start(self, controller: "Controller") -> None:
         self._start_time = time.monotonic()
         self._init_stall_state()
-        logger.info(
-            "[Drift] All joints share one speed oscillating %.0f–%.0f°/s over %.0fs, reversing on stall. Ctrl-C to stop.",
+        logger.info("[BEHAVIOR] Drift")
+        logger.debug(
+            "[BEHAVIOR] Drift: shared speed %.0f–%.0f°/s over %.0fs, reversing on stall.",
             self.MIN_SPEED_DEG_PER_S, self.MAX_SPEED_DEG_PER_S, self.SPEED_PERIOD_S,
         )
 
@@ -676,10 +687,8 @@ class StruggleControlScheme(ControlScheme):
         self._stall_since = {}
         self._reversed_at = {}
         self._pending_slew_resets = {}
-        logger.info(
-            "[Struggle] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
-            math.degrees(self._speed_rad_s),
-        )
+        logger.info("[BEHAVIOR] Struggle")
+        logger.debug("[BEHAVIOR] Struggle: each joint turns at %.0f°/s, reversing on stall.", math.degrees(self._speed_rad_s))
 
     def take_slew_resets(self) -> dict[int, float]:
         """Called by the controller before _apply_slew_to_commands each tick."""
@@ -764,7 +773,8 @@ class CurlControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info("[Curl] Looping right to ±%.0f° over %.0fs, then hold. Ctrl-C to stop.", self.target_deg, self.ramp_s)
+        logger.info("[BEHAVIOR] Curl")
+        logger.debug("[BEHAVIOR] Curl: ±%.0f° over %.0fs, then hold.", self.target_deg, self.ramp_s)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         t = time.monotonic() - self._start
@@ -834,10 +844,8 @@ class StrokeCurlScheme(ControlScheme):
         self._curl_dir = 0.0
         self._prev_pos = {}
         self._ever_touched = set()
-        logger.info(
-            "[StrokeCurl] Touch right → curl right; left → curl left. "
-            "Each module curls while touched and holds after release. Ctrl-C to stop."
-        )
+        logger.info("[BEHAVIOR] StrokeCurl")
+        logger.debug("[BEHAVIOR] StrokeCurl: right → curl right, left → curl left; holds on release.")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = state.timestamp
@@ -945,8 +953,9 @@ class StrokeSnuggleScheme(ControlScheme):
         self._stroke_start = None
         self._last_touch = None
         self._snuggle_start = 0.0
-        logger.info(
-            "[StrokeSnuggle] Touch right/left to curl. Stroke for %.0fs → snuggle %.0fs → home.",
+        logger.info("[BEHAVIOR] StrokeSnuggle")
+        logger.debug(
+            "[BEHAVIOR] StrokeSnuggle: stroke for %.0fs → snuggle %.0fs → home.",
             self.STROKE_TRIGGER_S, self.RIPPLE_DURATION_S,
         )
 
@@ -1062,7 +1071,8 @@ class YieldStiffScheme(ControlScheme):
         self._commanded: dict[int, float] = {}
 
     def on_start(self, controller: "Controller") -> None:  # noqa: ARG002
-        logger.info("[YieldStiff] Push a joint to yield; setpoint holds at new position on release. Ctrl-C to stop.")
+        logger.info("[BEHAVIOR] YieldStiff")
+        logger.debug("[BEHAVIOR] YieldStiff: push to yield; setpoint holds at new position on release.")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         dt = max(state.dt, 1.0 / 60.0)
@@ -1130,10 +1140,8 @@ class PoseScheme(ControlScheme):
         self._verbose = controller.log_touch
         self._touch_ema = 0.0
         self._hand_state = False
-        logger.info(
-            "[Pose] Rotate a joint by hand — it holds that position on release.\n"
-            "Pass --log-touch to log follow/lock transitions. Ctrl-C to stop."
-        )
+        logger.info("[BEHAVIOR] Pose")
+        logger.debug("[BEHAVIOR] Pose: rotate a joint by hand — it holds that position on release.")
 
     def _update_hand(self, state: RobotState) -> bool:
         """Update EMA + hysteresis hand state. Returns True if hand is present."""
