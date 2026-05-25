@@ -241,9 +241,9 @@ _CONTROL_HTML = """\
 <div class="pattern-grid" id="pattern-grid"></div>
 <div class="param-row">
   <label>speed</label>
-  <input type="range" id="speed" min="0.05" max="1" step="0.05" value="0.4"
+  <input type="range" id="speed" min="0.05" max="1" step="0.05" value="1"
          oninput="document.getElementById('sval').textContent=parseFloat(this.value).toFixed(2)">
-  <span class="val" id="sval">0.40</span>
+  <span class="val" id="sval">1.00</span>
 </div>
 <div id="launch-row">
   <button class="action" onclick="launch()">&#9654; Launch</button>
@@ -419,7 +419,7 @@ def _command(controller: "Controller", data: dict) -> dict:
     if motion not in _VALID_MOVEMENTS:
         return {"error": f"unknown movement: {motion}"}
 
-    speed = max(0.05, min(1.0, float(data.get("speed", 0.4))))
+    speed = max(0.05, min(1.0, float(data.get("speed", 1.0))))
     _reenable_motors(controller)
     pattern = _make_pattern(motion, speed)
     controller.set_scheme(pattern)

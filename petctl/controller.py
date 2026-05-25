@@ -266,7 +266,10 @@ class _TouchEventEmitter:
     def _on_contact_end(self, now: float, *, emit_none: bool = True) -> None:
         if self._sess_type == "none":
             return
-        elapsed = now - self._sess_start
+        # Use actual contact-end time, not now, so the 400ms end-hold wait
+        # doesn't inflate elapsed and let sub-threshold strokes through.
+        contact_end = self._end_hold_since if self._end_hold_since is not None else now
+        elapsed = contact_end - self._sess_start
         if elapsed < _MIN_GESTURE_DURATION_S:
             self._sess_type = "none"
             self._sess_touch = None
@@ -276,12 +279,13 @@ class _TouchEventEmitter:
         # contact ended before the next update() call emitted "started".
         if not self._sess_staged and elapsed >= _MIN_GESTURE_DURATION_S:
             self._sess_staged = True
-            self._emit(self._make_summary("started", now, elapsed))
+            # Timestamp at the moment the threshold was crossed, not end-of-hold.
+            self._emit(self._make_summary("started", self._sess_start + _MIN_GESTURE_DURATION_S, elapsed))
         # Only emit "complete" (→ [end]) when "started" was emitted — prevents
         # orphan [end] events from short sessions that were never staged.
         was_staged = self._sess_staged
         if was_staged:
-            self._emit(self._make_summary("complete", now, elapsed))
+            self._emit(self._make_summary("complete", contact_end, elapsed))
         self._sess_type = "none"
         self._sess_touch = None
         self._sess_staged = False
