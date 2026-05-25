@@ -46,6 +46,8 @@ class OllamaClient:
         self._messages: list[dict[str, str]] = []
         self._turn_times: list[float] = []  # monotonic time when each turn completed
         self._gen: int = 0
+        self.last_prompt_tokens: int = 0
+        self.last_eval_tokens: int = 0
 
     def start(self, system: str) -> None:
         """Begin a new conversation with the given system prompt."""
@@ -134,13 +136,8 @@ class OllamaClient:
             result = json.loads(content)
             self._messages.append({"role": "assistant", "content": content})
             self._turn_times.append(time.monotonic())
-            logger.debug(
-                "[Ollama] rtt=%.2fs  prompt_tokens=%s  eval_tokens=%s  turns=%d",
-                rtt,
-                envelope.get("prompt_eval_count", "?"),
-                envelope.get("eval_count", "?"),
-                (len(self._messages) - 1) // 2,
-            )
+            self.last_prompt_tokens = envelope.get("prompt_eval_count", 0) or 0
+            self.last_eval_tokens = envelope.get("eval_count", 0) or 0
             return result
         except (KeyError, json.JSONDecodeError, ValueError) as exc:
             logger.warning("[Ollama] could not parse response after %.2fs: %s — raw: %.200s", rtt, exc, body)

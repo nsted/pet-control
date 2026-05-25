@@ -25,6 +25,7 @@ import asyncio
 import logging
 import math
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -365,12 +366,14 @@ class OllamaControlScheme(ControlScheme):
 
     def _llm_call(self, touch_description: str) -> None:
         logger.debug("[Ollama] calling LLM: %s", touch_description)
+        t0 = time.monotonic()
         result = self._client.chat(touch_description)
+        rtt = time.monotonic() - t0
         if result is None:
             return
-        self._apply_llm_response(result)
+        self._apply_llm_response(result, rtt)
 
-    def _apply_llm_response(self, response: dict) -> None:
+    def _apply_llm_response(self, response: dict, rtt: float = 0.0) -> None:
         motion = str(response.get("movement", "")).strip().lower()
         if motion not in _VALID_MOVEMENTS:
             logger.warning(
@@ -387,11 +390,13 @@ class OllamaControlScheme(ControlScheme):
             same_motion = self._active_motion == motion
             pattern = self._active_pattern
 
+        pt = self._client.last_prompt_tokens
+        et = self._client.last_eval_tokens
         if same_motion:
-            logger.info("[Ollama] → %s (speed=%.2f) — %s [params updated]", motion, speed, explanation)
+            logger.info("[Ollama] rtt=%.2fs  p=%d e=%d → %s (speed=%.2f) — %s [params updated]", rtt, pt, et, motion, speed, explanation)
             _update_pattern_params(pattern, motion, speed)
         else:
-            logger.info("[Ollama] → %s (speed=%.2f) — %s", motion, speed, explanation)
+            logger.info("[Ollama] rtt=%.2fs  p=%d e=%d → %s (speed=%.2f) — %s", rtt, pt, et, motion, speed, explanation)
             self._switch_pattern(motion, speed)
 
 
