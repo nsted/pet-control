@@ -48,6 +48,9 @@ class OllamaClient:
         self._gen: int = 0
         self.last_prompt_tokens: int = 0
         self.last_eval_tokens: int = 0
+        self.last_load_ms: int = 0       # model load time (>0 means model was evicted)
+        self.last_prefill_ms: int = 0    # prompt evaluation time
+        self.last_gen_ms: int = 0        # token generation time
 
     def start(self, system: str) -> None:
         """Begin a new conversation with the given system prompt."""
@@ -138,6 +141,11 @@ class OllamaClient:
             self._turn_times.append(time.monotonic())
             self.last_prompt_tokens = envelope.get("prompt_eval_count", 0) or 0
             self.last_eval_tokens = envelope.get("eval_count", 0) or 0
+            self.last_load_ms = int((envelope.get("load_duration") or 0) / 1e6)
+            self.last_prefill_ms = int((envelope.get("prompt_eval_duration") or 0) / 1e6)
+            self.last_gen_ms = int((envelope.get("eval_duration") or 0) / 1e6)
+            if self.last_load_ms > 500:
+                logger.warning("[Ollama] model reloaded — load took %dms (was evicted from memory)", self.last_load_ms)
             return result
         except (KeyError, json.JSONDecodeError, ValueError) as exc:
             logger.warning("[Ollama] could not parse response after %.2fs: %s — raw: %.200s", rtt, exc, body)

@@ -265,13 +265,13 @@ class OllamaControlScheme(ControlScheme):
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         if self._was_connected and not state.connected:
-            logger.info("[Ollama] WebSocket disconnected — resetting conversation history and pattern.")
+            logger.info("[System] WebSocket disconnected — resetting conversation history and pattern.")
             self._client.start(self._system_prompt)
             self._batch = []
             self._touch_ended_t = None
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
         elif not self._was_connected and state.connected:
-            logger.info("[Ollama] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
+            logger.info("[System] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
         self._was_connected = state.connected
 
@@ -284,7 +284,7 @@ class OllamaControlScheme(ControlScheme):
             and state.timestamp - ended_t >= 5.0
             and self._active_motion != _DEFAULT_MOTION
         ):
-            logger.info("[Ollama] no touch for 5s — reverting to %s.", _DEFAULT_MOTION)
+            logger.info("[System] no touch for 5s — reverting to %s.", _DEFAULT_MOTION)
             self._touch_ended_t = None
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
 
@@ -392,11 +392,20 @@ class OllamaControlScheme(ControlScheme):
 
         pt = self._client.last_prompt_tokens
         et = self._client.last_eval_tokens
+        ld = self._client.last_load_ms
+        pf = self._client.last_prefill_ms
+        gn = self._client.last_gen_ms
         if same_motion:
-            logger.info("[Ollama] rtt=%.2fs  p=%d e=%d → %s (speed=%.2f) — %s [params updated]", rtt, pt, et, motion, speed, explanation)
+            logger.info(
+                "[Ollama] → %s (speed=%.2f) — %s [params updated]\n  rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms",
+                motion, speed, explanation, rtt, pt, et, ld, pf, gn,
+            )
             _update_pattern_params(pattern, motion, speed)
         else:
-            logger.info("[Ollama] rtt=%.2fs  p=%d e=%d → %s (speed=%.2f) — %s", rtt, pt, et, motion, speed, explanation)
+            logger.info(
+                "[Ollama] → %s (speed=%.2f) — %s\n  rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms",
+                motion, speed, explanation, rtt, pt, et, ld, pf, gn,
+            )
             self._switch_pattern(motion, speed)
 
 
