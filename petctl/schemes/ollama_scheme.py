@@ -89,6 +89,9 @@ _AMP_MAX: dict[str, float] = {
 
 _VALID_MOVEMENTS = set(_AMP_MAX)
 
+# Movement to use on startup and after idle revert (no touch for _TOUCH_IDLE_S).
+_DEFAULT_MOTION = "stroke-curl"
+
 
 class _CurlLeft(CurlControlScheme):
     """CurlControlScheme with all joint signs negated → curl to the left."""
@@ -243,11 +246,8 @@ class OllamaControlScheme(ControlScheme):
     def on_start(self, controller: Controller) -> None:
         self._controller = controller
         self._system_prompt = _load_system_prompt()
-        initial = IdleControlScheme()
-        initial.on_start(controller)
-        with self._lock:
-            self._active_pattern = initial
         self._touch_queue = controller.touch_events
+        self._switch_pattern(_DEFAULT_MOTION, 0.0)
 
         if not self._client.is_available():
             logger.warning(
@@ -268,7 +268,7 @@ class OllamaControlScheme(ControlScheme):
             self._client.start(self._system_prompt)
             self._batch = []
             self._touch_ended_t = None
-            self._switch_pattern("idle", 0.0)
+            self._switch_pattern(_DEFAULT_MOTION, 0.0)
         self._was_connected = state.connected
 
         if self._touch_queue is not None:
@@ -278,11 +278,11 @@ class OllamaControlScheme(ControlScheme):
         if (
             ended_t is not None
             and state.timestamp - ended_t >= 5.0
-            and self._active_motion != "idle"
+            and self._active_motion != _DEFAULT_MOTION
         ):
-            logger.info("[Ollama] no touch for 5s — reverting to idle.")
+            logger.info("[Ollama] no touch for 5s — reverting to %s.", _DEFAULT_MOTION)
             self._touch_ended_t = None
-            self._switch_pattern("idle", 0.0)
+            self._switch_pattern(_DEFAULT_MOTION, 0.0)
 
         with self._lock:
             pattern = self._active_pattern
