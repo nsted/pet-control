@@ -182,13 +182,14 @@ class TouchSummary:
                 result[f.name] = val
         return result
 
-    def describe(self) -> str:
+    def describe(self, status_override: str | None = None) -> str:
         """Human-readable one-line description for LLM prompt injection."""
         if self.touch_type == "none":
             return "contact ended"
+        _TAG = {"started": "[start]", "running": "[ongoing]", "complete": "[end]"}
+        status = status_override if status_override is not None else self.status
         parts: list[str] = [f"gesture={self.touch_type}"]
-        if self.status != "complete":
-            parts.insert(0, f"[{self.status}]")
+        parts.insert(0, _TAG.get(status, f"[{status}]"))
         if self.direction and self.velocity is not None:
             arrow = "→" if self.direction == "head_to_tail" else "←"
             parts.append(f"{arrow} {abs(self.velocity):.1f} mod/s")

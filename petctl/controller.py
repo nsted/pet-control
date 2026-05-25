@@ -84,7 +84,9 @@ _STROKE_FAMILY: frozenset[str] = frozenset({"stroke", "rub"})
 # Gesture lifecycle thresholds for the touch emitter.
 _STAGE_THRESHOLD_S: float = 0.5   # emit "started" once a gesture reaches this age
 _UPDATE_INTERVAL_S: float = 0.5   # interval between "running" status updates
-_MERGE_GAP_S: float = 0.1         # merge a new gesture if the gap since last end ≤ this
+_MERGE_GAP_S: float = 0.25        # merge a new gesture if the gap since last end ≤ this
+_MIN_GESTURE_DURATION_S: float = 0.22  # suppress gestures shorter than this
+_TOUCH_LOG_FLUSH_S: float = 0.35  # flush buffered "complete" as [end] after this silence
 
 
 def _event_level(event: TouchEvent) -> int:
@@ -162,21 +164,50 @@ class _TouchProcessor:
 
 
 class _TouchLogger:
-    """Logs touch events to console in the same format sent to the LLM."""
+    """Logs touch events to console in the same format sent to the LLM.
+
+    Buffers "complete" events briefly: if another touch follows within
+    _TOUCH_LOG_FLUSH_S the buffered event is emitted as [ongoing]; after
+    silence it flushes as [end].  Session timer resets only on true gaps,
+    not on brief inter-fragment "none" events.
+    """
 
     def __init__(self) -> None:
         self._session_start: float | None = None
+        self._last_t: float | None = None
+        self._pending: tuple[TouchSummary, float] | None = None  # (summary, offset)
+
+    def tick(self, now: float) -> None:
+        """Call each controller tick to flush stale pending events."""
+        if self._pending is not None and now - self._pending[0].timestamp >= _TOUCH_LOG_FLUSH_S:
+            s, offset = self._pending
+            logger.info("[TOUCH  ] +%.1fs: %s", offset, s.describe())
+            self._pending = None
+            self._session_start = None
 
     def on_summary(self, summary: TouchSummary) -> None:
-        t0 = self._session_start or summary.timestamp
-        offset = summary.timestamp - t0
+        now = summary.timestamp
+
         if summary.touch_type == "none":
-            logger.info("[TOUCH  ] +%.1fs: %s", offset, summary.describe())
-            self._session_start = None
+            self._last_t = now
+            return
+
+        # New event arrived — flush pending complete as [ongoing] (it wasn't truly the end)
+        if self._pending is not None:
+            s, offset = self._pending
+            logger.info("[TOUCH  ] +%.1fs: %s", offset, s.describe(status_override="running"))
+            self._pending = None
+
+        # Start a new session timer only after a true gap
+        gap = (now - self._last_t) if self._last_t is not None else float("inf")
+        if self._session_start is None or gap > _MERGE_GAP_S:
+            self._session_start = now
+        self._last_t = now
+        offset = now - self._session_start
+
+        if summary.status == "complete":
+            self._pending = (summary, offset)
         else:
-            if self._session_start is None:
-                self._session_start = summary.timestamp
-                offset = 0.0
             logger.info("[TOUCH  ] +%.1fs: %s", offset, summary.describe())
 
 
@@ -228,7 +259,10 @@ class _TouchEventEmitter:
             if (
                 self._prev_end_type != "none"
                 and now - self._prev_end_t <= _MERGE_GAP_S
-                and _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
+                and (
+                    _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
+                    or self._prev_end_type in _STROKE_FAMILY
+                )
             ):
                 self._sess_start = self._prev_end_start
                 self._sess_staged = self._prev_end_staged
@@ -272,6 +306,11 @@ class _TouchEventEmitter:
         if self._sess_type == "none":
             return
         elapsed = now - self._sess_start
+        if elapsed < _MIN_GESTURE_DURATION_S:
+            self._sess_type = "none"
+            self._sess_touch = None
+            self._sess_staged = False
+            return
         self._emit(self._make_summary("complete", now, elapsed))
         self._prev_end_type = self._sess_type
         self._prev_end_t = now
@@ -365,9 +404,10 @@ class Controller:
         # Read from this in any async task to receive touch events for LLM or other consumers.
         self.touch_events: asyncio.Queue[TouchSummary] = asyncio.Queue(maxsize=64)
         self._touch_emitter = _TouchEventEmitter(self.touch_events)
+        self._touch_logger: _TouchLogger | None = None
         if log_touch:
-            _touch_logger = _TouchLogger()
-            self._touch_emitter.set_logger(_touch_logger.on_summary)
+            self._touch_logger = _TouchLogger()
+            self._touch_emitter.set_logger(self._touch_logger.on_summary)
 
         self._state: RobotState = RobotState.empty()
         self._running = False
@@ -533,6 +573,8 @@ class Controller:
             self._state.servo_commanded_positions = dict(self._slew_last_sent_rad)
             self._state.touch = self._touch_processor.update(self._state)
             self._touch_emitter.update(self._state)
+            if self._touch_logger is not None:
+                self._touch_logger.tick(self._state.timestamp)
 
             # 1b. Power management — evaluate protection conditions
             pm = self.power_manager
