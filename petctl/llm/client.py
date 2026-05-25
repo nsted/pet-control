@@ -16,7 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_MAX_CONV_LINES = 40    # max lines in conversation history (excluding system prompt)
+_MAX_CONV_LINES = 10    # max lines in conversation history (excluding system prompt)
 _MAX_AGE_S      = 60.0  # drop turns older than this
 
 

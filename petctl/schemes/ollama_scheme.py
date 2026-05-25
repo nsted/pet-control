@@ -80,6 +80,7 @@ _AMP_MAX: dict[str, float] = {
     "curl_right":   80.0,
     "curl_left":    80.0,
     "explore":        0.0,
+    "struggle":       0.0,
     "drift":         0.0,
     "stroke":        0.0,  # touch-reactive — senses internally
     "stroke-curl":   0.0,
@@ -137,6 +138,8 @@ def _make_pattern(motion: str, speed: float) -> ControlScheme:
         return _CurlLeft(target_deg=amp)
     if motion == "explore":
         return ExploreControlScheme(speed_deg_per_s=20.0 + speed * 60.0)
+    if motion == "struggle":
+        return ExploreControlScheme(speed_deg_per_s=50.0 + speed * 50.0)
     if motion == "drift":
         return DriftControlScheme()
     if motion == "stroke":
@@ -184,17 +187,29 @@ def _update_pattern_params(pattern: ControlScheme, motion: str, speed: float) ->
         pattern.target_deg = amp  # type: ignore[attr-defined]
     elif motion == "explore":
         pattern._speed_rad_s = math.radians(20.0 + speed * 60.0)  # type: ignore[attr-defined]
+    elif motion == "struggle":
+        pattern._speed_rad_s = math.radians(50.0 + speed * 50.0)  # type: ignore[attr-defined]
     # freeze, home, drift, stroke, stroke-curl, stroke-ripple, yield-stiff, pose:
     # no tunable params — nothing to update
 
 
 def _format_batch(batch: list[TouchSummary]) -> str:
     t0 = batch[0].timestamp
-    duration = batch[-1].timestamp - t0
-    lines = [f"Touch sequence over {duration:.1f}s:"]
-    for s in batch:
-        lines.append(f"+{s.timestamp - t0:.1f}s: {s.describe()}")
-    return "\n".join(lines)
+    pairs = ",".join(
+        f"+{s.timestamp - t0:.1f}s:{_categorize_gesture(s)}"
+        for s in batch
+    )
+    return "{" + pairs + "}"
+
+
+def _categorize_gesture(s: TouchSummary) -> str:
+    if s.touch_type == "stroke":
+        return "stroke-fast" if s.velocity is not None and abs(s.velocity) >= 2.0 else "stroke-slow"
+    if s.touch_type == "squeeze":
+        return "squeeze-hard" if (s.pressure_peak or 0.0) >= 0.5 else "squeeze-soft"
+    if s.touch_type == "hold":
+        return "hold-long" if s.duration >= 3.0 else "hold-brief"
+    return s.touch_type
 
 
 class OllamaControlScheme(ControlScheme):
@@ -384,7 +399,7 @@ class OllamaControlScheme(ControlScheme):
             return
 
         speed = max(0.05, min(1.0, float(response.get("speed", 0.4))))
-        explanation = str(response.get("explanation", "")).strip()
+        feel = str(response.get("explanation", response.get("feel", ""))).strip()
 
         with self._lock:
             same_motion = self._active_motion == motion
@@ -398,13 +413,13 @@ class OllamaControlScheme(ControlScheme):
         if same_motion:
             logger.info(
                 "[Ollama] → %s (speed=%.2f) — %s [params updated]\n  rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms",
-                motion, speed, explanation, rtt, pt, et, ld, pf, gn,
+                motion, speed, feel, rtt, pt, et, ld, pf, gn,
             )
             _update_pattern_params(pattern, motion, speed)
         else:
             logger.info(
                 "[Ollama] → %s (speed=%.2f) — %s\n  rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms",
-                motion, speed, explanation, rtt, pt, et, ld, pf, gn,
+                motion, speed, feel, rtt, pt, et, ld, pf, gn,
             )
             self._switch_pattern(motion, speed)
 
