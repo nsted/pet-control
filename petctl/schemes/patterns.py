@@ -1051,8 +1051,6 @@ class YieldStiffScheme(ControlScheme):
     holds wherever it ended up — no automatic return to home.
 
     No touch detection required: compliance is triggered purely by motor load.
-
-    Pass --log-touch to log yield start/stop per servo. Ctrl-C to stop.
     """
 
     name = "yield-stiff"
@@ -1062,22 +1060,13 @@ class YieldStiffScheme(ControlScheme):
 
     def __init__(self) -> None:
         self._commanded: dict[int, float] = {}
-        self._yielding: set[int] = set()
-        self._verbose = False
 
-    def on_start(self, controller: "Controller") -> None:
-        self._verbose = controller.log_touch
-        logger.info(
-            "[YieldStiff] Holding joints at current position.\n"
-            "  Push a joint — setpoint drifts to comply as torque drops.\n"
-            "  Setpoint holds at new position once torque reaches baseline.\n"
-            "Pass --log-touch to log yield events. Ctrl-C to stop."
-        )
+    def on_start(self, controller: "Controller") -> None:  # noqa: ARG002
+        logger.info("[YieldStiff] Push a joint to yield; setpoint holds at new position on release. Ctrl-C to stop.")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         dt = max(state.dt, 1.0 / 60.0)
         commands = []
-        yielding_now: set[int] = set()
 
         for sid in sorted(state.active_servo_ids):
             cmd = self._commanded.get(sid, 0.0)
@@ -1085,7 +1074,6 @@ class YieldStiffScheme(ControlScheme):
             torque = abs(state.motor_torques.get(sid, 0.0))
 
             if torque > self.TORQUE_BASELINE_NM:
-                yielding_now.add(sid)
                 error = actual - cmd
                 if abs(error) > 1e-6:
                     step = min(abs(error), self.YIELD_RATE_RAD_S * dt)
@@ -1093,13 +1081,6 @@ class YieldStiffScheme(ControlScheme):
 
             self._commanded[sid] = cmd
             commands.append(ServoCommand(servo_id=sid, position=cmd))
-
-        if self._verbose:
-            for sid in yielding_now - self._yielding:
-                logger.info("[YieldStiff] s%d yielding  torque=%.2fNm", sid, abs(state.motor_torques.get(sid, 0.0)))
-            for sid in self._yielding - yielding_now:
-                logger.info("[YieldStiff] s%d at baseline  pos=%.3frad", sid, self._commanded.get(sid, 0.0))
-        self._yielding = yielding_now
 
         return commands
 
