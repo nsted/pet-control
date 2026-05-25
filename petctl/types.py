@@ -301,6 +301,9 @@ class RobotState:
     # to non-existent servos (which cause protocol timeouts).
     active_servo_ids: set[int] = field(default_factory=set)
     connected: bool = False
+    # True when the active scheme is commanding autonomous motion (set by Controller
+    # each tick via scheme.is_active()). Suppresses twist detection in ContactClassifier.
+    is_behavior_active: bool = False
     # Seconds since last update — useful for time-based control schemes
     dt: float = 0.0
 

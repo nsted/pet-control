@@ -30,7 +30,7 @@ class OllamaClient:
 
     def __init__(
         self,
-        model: str = "gemma3:1b",
+        model: str = "gemma3:4b",
         base_url: str = "http://localhost:11434",
         timeout: float = 12.0,
         log_input: bool = False,

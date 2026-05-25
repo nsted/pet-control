@@ -129,6 +129,13 @@ class ContactClassifier:
         if not servo_ids:
             return None
 
+        if state.is_behavior_active:
+            self._twist_active.clear()
+            self._servo_travel.clear()
+            self._servo_last_pos.clear()
+            self._twist_promoted.clear()
+            return None
+
         for sid in servo_ids:
             pos = state.servo_positions.get(sid, 0.0)
             cmd = state.servo_commanded_positions.get(sid, pos)
@@ -221,43 +228,51 @@ class ContactClassifier:
         # WRENCH and RESTRICT already handle high-torque cases above.
         # Cumulative travel per servo distinguishes a real twist (≥ TWIST_MIN_TRAVEL_RAD)
         # from a brief jostle (BUDGE).
-        for sid in servo_ids:
-            pos = state.servo_positions.get(sid, 0.0)
-            cmd = state.servo_commanded_positions.get(sid, pos)
-            is_passive = abs(pos - cmd) >= self.TWIST_POS_ERR_MIN_RAD
+        # Suppressed during autonomous motion (is_behavior_active) so the robot's own
+        # joint movement is not misread as a human twist gesture.
+        if state.is_behavior_active:
+            self._twist_active.clear()
+            self._servo_travel.clear()
+            self._servo_last_pos.clear()
+            self._twist_promoted.clear()
+        else:
+            for sid in servo_ids:
+                pos = state.servo_positions.get(sid, 0.0)
+                cmd = state.servo_commanded_positions.get(sid, pos)
+                is_passive = abs(pos - cmd) >= self.TWIST_POS_ERR_MIN_RAD
 
-            if sid in self._servo_last_pos and is_passive:
-                self._servo_travel[sid] = self._servo_travel.get(sid, 0.0) + abs(pos - self._servo_last_pos[sid])
-            self._servo_last_pos[sid] = pos
+                if sid in self._servo_last_pos and is_passive:
+                    self._servo_travel[sid] = self._servo_travel.get(sid, 0.0) + abs(pos - self._servo_last_pos[sid])
+                self._servo_last_pos[sid] = pos
 
-            v = abs(state.motor_velocities.get(sid, 0.0))
-            if sid in self._twist_active:
-                if v < self.TWIST_VEL_OFF:
-                    self._twist_active.discard(sid)
-                    self._servo_travel.pop(sid, None)
-            else:
-                if v >= self.TWIST_VEL_ON and is_passive:
-                    self._twist_active.add(sid)
-        self._twist_active &= set(servo_ids)
+                v = abs(state.motor_velocities.get(sid, 0.0))
+                if sid in self._twist_active:
+                    if v < self.TWIST_VEL_OFF:
+                        self._twist_active.discard(sid)
+                        self._servo_travel.pop(sid, None)
+                else:
+                    if v >= self.TWIST_VEL_ON and is_passive:
+                        self._twist_active.add(sid)
+            self._twist_active &= set(servo_ids)
 
-        if self._twist_active:
-            active_servos = sorted(self._twist_active)
-            for s in active_servos:
-                if self._servo_travel.get(s, 0.0) >= self.TWIST_MIN_TRAVEL_RAD:
-                    self._twist_promoted.add(s)
-            if self._twist_promoted & set(active_servos):
-                return ContactReading(
-                    hold=hold,
-                    contact_type=ContactType.TWIST,
-                    affected_servos=active_servos,
-                )
-            max_travel = max(self._servo_travel.get(s, 0.0) for s in active_servos)
-            if max_travel >= self.BUDGE_MIN_TRAVEL_RAD:
-                return ContactReading(
-                    hold=hold,
-                    contact_type=ContactType.BUDGE,
-                    affected_servos=active_servos,
-                )
+            if self._twist_active:
+                active_servos = sorted(self._twist_active)
+                for s in active_servos:
+                    if self._servo_travel.get(s, 0.0) >= self.TWIST_MIN_TRAVEL_RAD:
+                        self._twist_promoted.add(s)
+                if self._twist_promoted & set(active_servos):
+                    return ContactReading(
+                        hold=hold,
+                        contact_type=ContactType.TWIST,
+                        affected_servos=active_servos,
+                    )
+                max_travel = max(self._servo_travel.get(s, 0.0) for s in active_servos)
+                if max_travel >= self.BUDGE_MIN_TRAVEL_RAD:
+                    return ContactReading(
+                        hold=hold,
+                        contact_type=ContactType.BUDGE,
+                        affected_servos=active_servos,
+                    )
 
         # --- SQUEEZE (any centroid count, one blob's pressure sufficient) ---
         held_modules = {m for blob in hold.q_blobs for m in blob.modules}

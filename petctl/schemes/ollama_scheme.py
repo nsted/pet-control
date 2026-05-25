@@ -204,7 +204,7 @@ class OllamaControlScheme(ControlScheme):
     that queue each tick and spawns a background LLM call for each new event.
 
     Args:
-        model:    Ollama model tag (default: gemma3:1b).
+        model:    Ollama model tag (default: gemma3:4b).
         base_url: Ollama server URL (default: localhost:11434).
         timeout:  LLM HTTP timeout in seconds.
     """
@@ -213,7 +213,7 @@ class OllamaControlScheme(ControlScheme):
 
     def __init__(
         self,
-        model: str = "gemma3:1b",
+        model: str = "gemma3:4b",
         base_url: str = "http://localhost:11434",
         timeout: float = 12.0,
         log_input: bool = False,
@@ -378,16 +378,17 @@ class OllamaControlScheme(ControlScheme):
             return
 
         speed = max(0.05, min(1.0, float(response.get("speed", 0.4))))
+        explanation = str(response.get("explanation", "")).strip()
 
         with self._lock:
             same_motion = self._active_motion == motion
             pattern = self._active_pattern
 
         if same_motion:
-            logger.info("[Ollama] → %s (speed=%.2f) [params updated]", motion, speed)
+            logger.info("[Ollama] → %s (speed=%.2f) — %s [params updated]", motion, speed, explanation)
             _update_pattern_params(pattern, motion, speed)
         else:
-            logger.info("[Ollama] → %s (speed=%.2f)", motion, speed)
+            logger.info("[Ollama] → %s (speed=%.2f) — %s", motion, speed, explanation)
             self._switch_pattern(motion, speed)
 
 

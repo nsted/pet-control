@@ -153,6 +153,18 @@ class ControlScheme(ABC):
         """Called on shutdown or when scheme is swapped out."""
         ...
 
+    def is_active(self) -> bool:
+        """True when this scheme is commanding autonomous motion.
+
+        The Controller sets RobotState.is_behavior_active from this each tick.
+        When True, ContactClassifier suppresses twist/budge detection so the
+        robot's own motion is not misread as a human gesture.
+
+        Override to return True in motion schemes (sway, ripple, wander, etc.).
+        Reactive/idle schemes (keyboard, stroke-curl, freeze) leave this False.
+        """
+        return False
+
     def take_save_home(self) -> bool:
         """Return True (and reset the flag) when a save-home should be triggered.
 

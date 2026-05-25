@@ -40,6 +40,9 @@ class RippleControlScheme(ControlScheme):
 
     name = "ripple"
 
+    def is_active(self) -> bool:
+        return True
+
     def __init__(self, amplitude_deg: float = 40.0, hz: float = 0.4) -> None:
         self.amplitude_deg = amplitude_deg
         self.hz = hz
@@ -71,6 +74,9 @@ class PulseControlScheme(ControlScheme):
 
     name = "pulse"
 
+    def is_active(self) -> bool:
+        return True
+
     def __init__(self, amplitude_deg: float = 50.0, hz: float = 0.25) -> None:
         self.amplitude_deg = amplitude_deg
         self.hz = hz
@@ -94,6 +100,9 @@ class BreatheControlScheme(ControlScheme):
 
     name = "breathe"
 
+    def is_active(self) -> bool:
+        return True
+
     def __init__(self, amplitude_deg: float = 12.0, hz: float = 0.08) -> None:
         self.amplitude_deg = amplitude_deg
         self.hz = hz
@@ -116,6 +125,9 @@ class SwayControlScheme(ControlScheme):
     """Travelling wave with amplitude tapering head→tail (head leads, tail damps)."""
 
     name = "sway"
+
+    def is_active(self) -> bool:
+        return True
 
     def __init__(
         self,
@@ -156,6 +168,9 @@ class CascadeControlScheme(ControlScheme):
 
     name = "cascade"
 
+    def is_active(self) -> bool:
+        return True
+
     def __init__(
         self,
         amplitude_deg: float = 60.0,
@@ -195,6 +210,9 @@ class SlalomControlScheme(ControlScheme):
 
     name = "slalom"
 
+    def is_active(self) -> bool:
+        return True
+
     def __init__(self, amplitude_deg: float = 45.0, hz: float = 0.2) -> None:
         self.amplitude_deg = amplitude_deg
         self.hz = hz
@@ -222,6 +240,9 @@ class TwitchControlScheme(ControlScheme):
     """Each joint wanders independently via smoothed Brownian noise."""
 
     name = "twitch"
+
+    def is_active(self) -> bool:
+        return True
 
     def __init__(self, amplitude_deg: float = 30.0, smoothing: float = 0.06) -> None:
         self.amplitude_deg = amplitude_deg
@@ -286,6 +307,9 @@ class CoilControlScheme(ControlScheme):
 
     name = "coil"
 
+    def is_active(self) -> bool:
+        return True
+
     def __init__(self, amplitude_deg: float = 55.0, hz: float = 0.15) -> None:
         self.amplitude_deg = amplitude_deg
         self.hz = hz
@@ -321,6 +345,9 @@ class Spin7ControlScheme(ControlScheme):
     """
 
     name = "spin7"
+
+    def is_active(self) -> bool:
+        return True
 
     def __init__(self, speed_deg_per_s: float = 30.0) -> None:
         self.speed_deg_per_s = speed_deg_per_s
@@ -439,6 +466,9 @@ class _WanderBase(ControlScheme):
     filter is reset via take_slew_resets(), so the motor begins moving in the
     new direction on the very next tick.
     """
+
+    def is_active(self) -> bool:
+        return True
 
     STALL_THRESHOLD_RAD: float = 0.3   # ~17° minimum travel per window
     STALL_WINDOW_S: float = 0.8
@@ -623,6 +653,9 @@ class ExploreControlScheme(ControlScheme):
 
     name = "explore"
 
+    def is_active(self) -> bool:
+        return True
+
     SPEED_DEG_PER_S: float = 45.0
     STALL_VEL_THRESHOLD: float = 0.15
     STALL_WINDOW_S: float = 0.6
@@ -711,6 +744,9 @@ class CurlControlScheme(ControlScheme):
     """
 
     name = "curl"
+
+    def is_active(self) -> bool:
+        return True
 
     # FK geometry: head/tail MODULE BODIES just touch at ~70° (joint-origin distance ≈ 7 cm = 1 module width).
     # 88° brings joint origins to 0.4 cm but the snake has spiralled 1.7 turns — deep body overlap.
@@ -882,6 +918,9 @@ class StrokeRippleScheme(ControlScheme):
     _CURL = "curl"
     _RIPPLE = "ripple"
     _HOME = "home"
+
+    def is_active(self) -> bool:
+        return self._state == self._RIPPLE
 
     def __init__(self) -> None:
         from petctl.perception.stroke import PAD_THRESHOLD

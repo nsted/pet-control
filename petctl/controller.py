@@ -301,7 +301,18 @@ class _TouchEventEmitter:
             self._sess_touch = None
             self._sess_staged = False
             return
-        self._emit(self._make_summary("complete", now, elapsed))
+        # Catch the race: gesture reached the stage threshold between ticks but
+        # contact ended before the next update() call emitted "started".
+        if not self._sess_staged and elapsed >= _STAGE_THRESHOLD_S:
+            self._sess_staged = True
+            self._emit(self._make_summary("started", now, elapsed))
+        # Only emit "complete" (→ [end]) when "started" was emitted — prevents
+        # orphan [end] events from short sessions that were never staged.
+        was_staged = self._sess_staged
+        if was_staged:
+            self._emit(self._make_summary("complete", now, elapsed))
+        # Always update merge-window state so quick-follow gestures can rejoin
+        # even if this session produced no output.
         self._prev_end_type = self._sess_type
         self._prev_end_t = now
         self._prev_end_start = self._sess_start
@@ -309,7 +320,7 @@ class _TouchEventEmitter:
         self._sess_type = "none"
         self._sess_touch = None
         self._sess_staged = False
-        if emit_none:
+        if was_staged and emit_none:
             self._emit_none(now)
 
     def _make_summary(self, status: str, now: float, elapsed: float) -> TouchSummary:
@@ -568,6 +579,7 @@ class Controller:
             if self._state.connected and not self._was_connected:
                 self._ws_epoch = self._state.timestamp
             self._was_connected = self._state.connected
+            self._state.is_behavior_active = self.scheme.is_active()
             self._state.touch = self._touch_processor.update(self._state)
             self._touch_emitter.update(self._state)
             if self._touch_logger is not None:
