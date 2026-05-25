@@ -387,6 +387,7 @@ class OllamaControlScheme(ControlScheme):
         if result is None:
             return
         self._apply_llm_response(result, rtt)
+        self._client.clear_history()
 
     def _apply_llm_response(self, response: dict, rtt: float = 0.0) -> None:
         motion = str(response.get("movement", "")).strip().lower()

@@ -152,6 +152,12 @@ class OllamaClient:
             self._messages.pop()
             return None
 
+    def clear_history(self) -> None:
+        """Reset conversation to just the system prompt, keeping the model loaded."""
+        system = self._messages[0] if self._messages else None
+        self._messages = [system] if system else []
+        self._turn_times = []
+
     def is_available(self) -> bool:
         """Return True if the Ollama server responds to a health check."""
         try:
