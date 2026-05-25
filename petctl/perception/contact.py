@@ -34,7 +34,6 @@ from petctl.types import RobotState
 CONTACT_LABELS: dict[str, str] = {
     "touch":    "TOUCH   ",
     "stroke":   "STROKE  ",
-    "rub":      "RUB     ",
     "hold":     "HOLD    ",
     "squeeze":  "SQUEEZE ",
     "restrict": "RESTRICT",

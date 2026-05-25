@@ -74,12 +74,7 @@ _CONTACT_LEVEL: dict[str, int] = {
     "twist":    6,
     "wrench":   7,
     "stroke":   8,
-    "rub":      9,
 }
-
-# Stroke and rub are the same moving-contact gesture (rub = reversing direction).
-# Transitions between them continue the session regardless of level direction.
-_STROKE_FAMILY: frozenset[str] = frozenset({"stroke", "rub"})
 
 # Gesture lifecycle thresholds for the touch emitter.
 _STAGE_THRESHOLD_S: float = 0.5   # emit "started" once a gesture reaches this age
@@ -229,6 +224,7 @@ class _TouchEventEmitter:
         self._prev_end_t: float = 0.0
         self._prev_end_start: float = 0.0
         self._prev_end_staged: bool = False
+        self._prev_end_direction: str | None = None
 
     def set_logger(self, callback: Callable[[TouchSummary], None]) -> None:
         self._on_emit = callback
@@ -246,13 +242,18 @@ class _TouchEventEmitter:
 
         if self._sess_type == "none":
             # Starting a new session — check whether to merge with the previous one.
+            # Strokes with opposite directions are never merged (direction change = new stroke).
+            curr_dir = touch.stroke.direction if touch.stroke is not None else None
+            same_dir = (
+                curr_dir is None
+                or self._prev_end_direction is None
+                or curr_dir == self._prev_end_direction
+            )
             if (
                 self._prev_end_type != "none"
                 and now - self._prev_end_t <= _MERGE_GAP_S
-                and (
-                    _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
-                    or self._prev_end_type in _STROKE_FAMILY
-                )
+                and _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
+                and same_dir
             ):
                 self._sess_start = self._prev_end_start
                 self._sess_staged = self._prev_end_staged
@@ -263,9 +264,6 @@ class _TouchEventEmitter:
                 self._sess_last_t = now
             self._sess_type = curr
             self._prev_end_type = "none"  # consume merge window
-
-        elif curr in _STROKE_FAMILY and self._sess_type in _STROKE_FAMILY:
-            self._sess_type = curr  # stroke↔rub: same gesture, direction changed
 
         elif curr in _PASSIVE_MOTION_FAMILY and self._sess_type in _PASSIVE_MOTION_FAMILY:
             self._sess_type = curr  # budge↔twist: same passive-motion gesture
@@ -317,6 +315,11 @@ class _TouchEventEmitter:
         self._prev_end_t = now
         self._prev_end_start = self._sess_start
         self._prev_end_staged = self._sess_staged
+        self._prev_end_direction = (
+            self._sess_touch.stroke.direction
+            if self._sess_touch is not None and self._sess_touch.stroke is not None
+            else None
+        )
         self._sess_type = "none"
         self._sess_touch = None
         self._sess_staged = False
@@ -353,7 +356,7 @@ class _TouchEventEmitter:
     @staticmethod
     def _touch_type(touch: TouchEvent) -> str:
         if touch.stroke is not None:
-            return "rub" if touch.stroke.is_rub else "stroke"
+            return "stroke"
         if touch.contact is not None:
             return touch.contact.contact_type.value
         return "none"

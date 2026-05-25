@@ -66,16 +66,16 @@ class TouchSummary:
     applicable to that touch type.
     """
 
-    touch_type: str            # stroke | rub | hold | squeeze | restrict | budge | twist | wrench | touch | none
+    touch_type: str            # stroke | hold | squeeze | restrict | budge | twist | wrench | touch | none
     timestamp: float
     duration: float            # seconds since contact onset; 0.0 for instantaneous / stroke start
     intensity: float           # 0.0–1.0 mean pad activation
     centroid: float | None     # body-axis position (0.0 = head, 7.0 = tail)
     side: str                  # active face(s): "top" | "left" | "right" | combinations
     modules: list[int]         # active module IDs in body order
-    velocity: float | None     # stroke/rub only: signed body-units/s (+ = head→tail)
-    direction: str | None      # stroke/rub only: "head_to_tail" | "tail_to_head"
-    confidence: float | None   # stroke/rub only: R² of linear centroid fit
+    velocity: float | None     # stroke only: signed body-units/s (+ = head→tail)
+    direction: str | None      # stroke only: "head_to_tail" | "tail_to_head"
+    confidence: float | None   # stroke only: R² of linear centroid fit
     pressure_peak: float | None  # squeeze: peak FSR value (0–1)
     torque_peak: float | None    # restrict/wrench: peak torque in Nm
     affected_servos: list[int] = field(default_factory=list)  # restrict/wrench/twist
@@ -107,7 +107,7 @@ class TouchSummary:
                     if m not in modules:
                         modules.append(m)
             return cls(
-                touch_type="rub" if stroke.is_rub else "stroke",
+                touch_type="stroke",
                 timestamp=timestamp,
                 duration=session_duration,
                 intensity=stroke.intensity,
