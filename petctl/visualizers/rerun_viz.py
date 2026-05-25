@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 
 from petctl.protocols import Visualizer
-from petctl.types import RobotState
+from petctl.types import RobotState, TouchSummary
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,6 @@ class RerunVisualizer(Visualizer):
         self._viewer_active: bool = False
         self._show_pad_labels: bool = False
         self._contact_type: str = "none"      # touch | stroke | hold | squeeze | restrict | wrench | none
-        self._contact_color_until: float = 0.0
         self._last_viz_time: float = -1.0
         self._prev_touch_colors: dict[int, tuple] = {}
         self._prev_pressure_colors: dict[int, tuple] = {}
@@ -300,6 +299,12 @@ class RerunVisualizer(Visualizer):
     # Visualizer interface
     # ------------------------------------------------------------------
 
+    def _on_touch_summary(self, summary: TouchSummary) -> None:
+        if summary.touch_type == "none" or summary.status == "complete":
+            self._contact_type = "none"
+        else:
+            self._contact_type = summary.touch_type
+
     def on_start(self, controller: "Controller") -> None:
         try:
             import rerun as rr
@@ -308,6 +313,7 @@ class RerunVisualizer(Visualizer):
             logger.error("[RerunVisualizer] rerun-sdk not installed. Run: pip install rerun-sdk")
             return
 
+        controller.register_touch_callback(self._on_touch_summary)
         rr.init(self.app_name)
         self._load_assembly()
         self._setup_overlay_geometry(rr)
@@ -354,20 +360,6 @@ class RerunVisualizer(Visualizer):
         self._last_viz_time = state.timestamp
         rr = self._rr
         rr.set_time("time", duration=state.timestamp)
-        now = state.timestamp
-        _COLOR_HOLD_S = 0.15   # minimum sphere color hold time to prevent flicker
-        touch = state.touch
-        if touch is not None and touch.stroke is not None:
-            detected = "stroke"
-        elif touch is not None and touch.contact is not None:
-            detected = touch.contact.contact_type.value   # hold | squeeze | restrict | wrench
-        else:
-            detected = "none"
-        if detected != "none":
-            self._contact_type = detected
-            self._contact_color_until = now + _COLOR_HOLD_S
-        elif now >= self._contact_color_until:
-            self._contact_type = "none"
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
         self._log_power_telemetry(rr, state)

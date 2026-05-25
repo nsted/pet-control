@@ -77,7 +77,6 @@ _CONTACT_LEVEL: dict[str, int] = {
 }
 
 # Gesture lifecycle thresholds for the touch emitter.
-_STAGE_THRESHOLD_S: float = 0.5   # emit "started" once a gesture reaches this age
 _UPDATE_INTERVAL_S: float = 0.5   # interval between "running" status updates
 _MERGE_GAP_S: float = 0.25        # merge a new gesture if the gap since last end ≤ this
 _MIN_GESTURE_DURATION_S: float = 0.22  # suppress gestures shorter than this
@@ -199,11 +198,11 @@ class _TouchLogger:
 class _TouchEventEmitter:
     """Stages touch gestures for the LLM and logger with lifecycle tracking.
 
-    Gestures shorter than _STAGE_THRESHOLD_S are staged only on completion.
-    Longer gestures emit status="started" at the threshold, status="running"
-    every _UPDATE_INTERVAL_S, and status="complete" on end.  Consecutive
-    gestures of the same or promoted type separated by ≤ _MERGE_GAP_S are
-    treated as one continuous session.
+    Gestures shorter than _MIN_GESTURE_DURATION_S are suppressed entirely.
+    Longer gestures emit status="started" once they pass that threshold,
+    status="running" every _UPDATE_INTERVAL_S, and status="complete" on end.
+    Consecutive gestures of the same or promoted type separated by ≤ _MERGE_GAP_S
+    are treated as one continuous session.
 
     Called every tick; acts on time as well as type transitions.  The queue
     is bounded — summaries are dropped (never blocking) when the consumer is slow.
@@ -211,7 +210,7 @@ class _TouchEventEmitter:
 
     def __init__(self, queue: asyncio.Queue) -> None:
         self._queue = queue
-        self._on_emit: Callable[[TouchSummary], None] | None = None
+        self._on_emit_cbs: list[Callable[[TouchSummary], None]] = []
 
         self._sess_type: str = "none"
         self._sess_start: float = 0.0
@@ -227,7 +226,10 @@ class _TouchEventEmitter:
         self._prev_end_direction: str | None = None
 
     def set_logger(self, callback: Callable[[TouchSummary], None]) -> None:
-        self._on_emit = callback
+        self._on_emit_cbs.append(callback)
+
+    def add_callback(self, callback: Callable[[TouchSummary], None]) -> None:
+        self._on_emit_cbs.append(callback)
 
     def update(self, state: RobotState) -> None:
         touch = state.touch
@@ -282,7 +284,7 @@ class _TouchEventEmitter:
         self._sess_touch = touch
 
         elapsed = now - self._sess_start
-        if not self._sess_staged and elapsed >= _STAGE_THRESHOLD_S:
+        if not self._sess_staged and elapsed >= _MIN_GESTURE_DURATION_S:
             self._sess_staged = True
             self._sess_last_t = now
             self._emit(self._make_summary("started", now, elapsed))
@@ -299,9 +301,9 @@ class _TouchEventEmitter:
             self._sess_touch = None
             self._sess_staged = False
             return
-        # Catch the race: gesture reached the stage threshold between ticks but
+        # Catch the race: gesture passed _MIN_GESTURE_DURATION_S between ticks but
         # contact ended before the next update() call emitted "started".
-        if not self._sess_staged and elapsed >= _STAGE_THRESHOLD_S:
+        if not self._sess_staged and elapsed >= _MIN_GESTURE_DURATION_S:
             self._sess_staged = True
             self._emit(self._make_summary("started", now, elapsed))
         # Only emit "complete" (→ [end]) when "started" was emitted — prevents
@@ -334,8 +336,8 @@ class _TouchEventEmitter:
             self._queue.put_nowait(summary)
         except asyncio.QueueFull:
             pass
-        if self._on_emit is not None:
-            self._on_emit(summary)
+        for cb in self._on_emit_cbs:
+            cb(summary)
 
     def _emit_none(self, now: float) -> None:
         self._emit(TouchSummary(
@@ -442,6 +444,10 @@ class Controller:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def register_touch_callback(self, callback: Callable[[TouchSummary], None]) -> None:
+        """Register a callback to receive TouchSummary events from the emitter."""
+        self._touch_emitter.add_callback(callback)
 
     @property
     def state(self) -> RobotState:
