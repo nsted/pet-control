@@ -137,10 +137,9 @@ class _TouchProcessor:
         if hold is None:
             motion = self._clf.classify_no_hold(state)
             if motion is not None:
-                # Motor motion (BUDGE or TWIST) takes priority over bare contact —
-                # incidental sensor activation from movement is not a real touch.
-                # BUDGE is suppressed only when classify() has a qualifying hold blob.
-                return TouchEvent(contact=motion)
+                # Passive joint motion detected — suppress incidental sensor activation
+                # but don't surface BUDGE/TWIST as gesture types (kept as stubs only).
+                return TouchEvent()
             centroid, side = self._qualifying_contact(state)
             if centroid is not None:
                 return TouchEvent(contact=self._ContactReading(

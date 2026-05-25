@@ -259,19 +259,6 @@ class ContactClassifier:
                 for s in active_servos:
                     if self._servo_travel.get(s, 0.0) >= self.TWIST_MIN_TRAVEL_RAD:
                         self._twist_promoted.add(s)
-                if self._twist_promoted & set(active_servos):
-                    return ContactReading(
-                        hold=hold,
-                        contact_type=ContactType.TWIST,
-                        affected_servos=active_servos,
-                    )
-                max_travel = max(self._servo_travel.get(s, 0.0) for s in active_servos)
-                if max_travel >= self.BUDGE_MIN_TRAVEL_RAD:
-                    return ContactReading(
-                        hold=hold,
-                        contact_type=ContactType.BUDGE,
-                        affected_servos=active_servos,
-                    )
 
         # --- SQUEEZE (any centroid count, one blob's pressure sufficient) ---
         held_modules = {m for blob in hold.q_blobs for m in blob.modules}
