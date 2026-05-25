@@ -288,6 +288,7 @@ class OllamaControlScheme(ControlScheme):
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
         elif not self._was_connected and state.connected:
             logger.info("[System] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
+            self._batch = []
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
         self._was_connected = state.connected
 
@@ -302,6 +303,7 @@ class OllamaControlScheme(ControlScheme):
         ):
             logger.info("[System] no touch for 5s — reverting to %s.", _DEFAULT_MOTION)
             self._touch_ended_t = None
+            self._batch = []
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
 
         with self._lock:
