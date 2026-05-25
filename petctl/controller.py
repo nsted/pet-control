@@ -259,10 +259,13 @@ class _TouchLogger:
         if curr == self._subtype:
             self._subtype_last_t = now
 
-        # Log sub-type transitions once session is confirmed
+        # Log sub-type transitions once session is confirmed.
+        # Skip _begin_subtype when curr matches the session type — the outer
+        # session label already covers it (avoids duplicate "[TWIST] start" lines
+        # when the session was itself classified as twist/budge from the first tick).
         if self._session_logged and curr != self._subtype:
             self._end_subtype(now)
-            if curr is not None:
+            if curr is not None and curr != self._session_type:
                 self._begin_subtype(curr, touch, now)
 
     def _begin_subtype(self, subtype: str, touch: TouchEvent, now: float) -> None:

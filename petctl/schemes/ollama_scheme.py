@@ -59,8 +59,8 @@ logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-# Minimum seconds between LLM calls regardless of event rate.
-_LLM_MIN_INTERVAL_S = 1.0
+# Accumulate touch events for this many seconds before sending a batch to the LLM.
+_BATCH_WINDOW_S = 5.0
 
 # Max amplitude per movement (degrees). Always used at full value — no intensity scaling.
 # Patterns with no amplitude param use 0.0.
@@ -184,6 +184,15 @@ def _update_pattern_params(pattern: ControlScheme, motion: str, speed: float) ->
     # no tunable params — nothing to update
 
 
+def _format_batch(batch: list[TouchSummary]) -> str:
+    t0 = batch[0].timestamp
+    duration = batch[-1].timestamp - t0
+    lines = [f"Touch sequence over {duration:.1f}s:"]
+    for s in batch:
+        lines.append(f"+{s.timestamp - t0:.1f}s: {s.describe()}")
+    return "\n".join(lines)
+
+
 class OllamaControlScheme(ControlScheme):
     """Control scheme that uses a local Ollama LLM to map touch→movement.
 
@@ -219,7 +228,8 @@ class OllamaControlScheme(ControlScheme):
         # Stored so background thread can call on_start() on new patterns.
         self._controller: Controller | None = None
 
-        self._last_call_t: float = 0.0
+        self._batch: list[TouchSummary] = []
+        self._batch_start_t: float = 0.0
         self._pending: threading.Thread | None = None
         self._system_prompt: str = ""
         self._active_motion: str = ""
@@ -295,6 +305,7 @@ class OllamaControlScheme(ControlScheme):
 
     def _drain_touch_queue(self) -> None:
         assert self._touch_queue is not None
+        last_ts: float = 0.0
         while True:
             try:
                 summary: TouchSummary = self._touch_queue.get_nowait()
@@ -302,7 +313,7 @@ class OllamaControlScheme(ControlScheme):
                 break
 
             now = summary.timestamp
-            pending = self._pending
+            last_ts = now
 
             # "none" events (touch ended) — record the time so update() can
             # revert to idle after 5 s of inactivity.
@@ -313,20 +324,22 @@ class OllamaControlScheme(ControlScheme):
             # Clear any pending idle-revert on new touch.
             self._touch_ended_t = None
 
-            # Rate-limit LLM calls; skip if one is already in flight.
-            thread_free = pending is None or not pending.is_alive()
-            if not thread_free or (now - self._last_call_t) < _LLM_MIN_INTERVAL_S:
-                continue
+            if not self._batch:
+                self._batch_start_t = now
+            self._batch.append(summary)
 
-            self._last_call_t = now
-            description = summary.describe()
-            t = threading.Thread(
-                target=self._llm_call,
-                args=(description,),
-                daemon=True,
-            )
-            self._pending = t
-            t.start()
+        if not self._batch or last_ts == 0.0:
+            return
+
+        elapsed = last_ts - self._batch_start_t
+        thread_free = self._pending is None or not self._pending.is_alive()
+        if elapsed < _BATCH_WINDOW_S or not thread_free:
+            return
+
+        batch, self._batch = self._batch, []
+        t = threading.Thread(target=self._llm_call, args=(_format_batch(batch),), daemon=True)
+        self._pending = t
+        t.start()
 
     # ------------------------------------------------------------------
     # Pattern switching
