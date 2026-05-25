@@ -826,12 +826,14 @@ class StrokeCurlScheme(ControlScheme):
         self._release_time: dict[int, float] = {}  # sid → monotonic time of last release
         self._curl_dir: float = 0.0
         self._prev_pos: dict[int, float] = {}
+        self._ever_touched: set[int] = set()
 
     def on_start(self, controller: "Controller") -> None:
         self._curl_target = {}
         self._release_time = {}
         self._curl_dir = 0.0
         self._prev_pos = {}
+        self._ever_touched = set()
         logger.info(
             "[StrokeCurl] Touch right → curl right; left → curl left. "
             "Each module curls while touched and holds after release. Ctrl-C to stop."
@@ -854,6 +856,7 @@ class StrokeCurlScheme(ControlScheme):
             touched = sens is not None and sens.touch_total >= self.MODULE_TOUCH_THRESHOLD
 
             if touched:
+                self._ever_touched.add(sid)
                 sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
                 self._curl_target[sid] = sign * self.TARGET_DEG
                 self._release_time.pop(sid, None)
@@ -874,8 +877,9 @@ class StrokeCurlScheme(ControlScheme):
             pos = state.servo_positions.get(sid, 0.0)
             delta = abs(pos - self._prev_pos.get(sid, pos))
             self._prev_pos[sid] = pos
+            untouched = sid not in self._ever_touched
             at_home = target == 0.0 and delta < self.IDLE_DELTA_RAD
-            if at_home:
+            if untouched or at_home:
                 cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=0.0, kd=0.0, torque_ff=0.0))
             else:
                 cmds.append(ServoCommand.from_angle(sid, target))
