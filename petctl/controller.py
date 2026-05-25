@@ -79,6 +79,7 @@ _CONTACT_LEVEL: dict[str, int] = {
 # Gesture lifecycle thresholds for the touch emitter.
 _UPDATE_INTERVAL_S: float = 0.5   # interval between "running" status updates
 _MERGE_GAP_S: float = 0.25        # merge a new gesture if the gap since last end ≤ this
+_END_HOLD_S: float = 0.40         # hold before emitting "complete" — bridges sensor gaps
 _MIN_GESTURE_DURATION_S: float = 0.22  # suppress gestures shorter than this
 _TOUCH_LOG_FLUSH_S: float = 0.35  # flush buffered "complete" as [end] after this silence
 
@@ -201,8 +202,15 @@ class _TouchEventEmitter:
     Gestures shorter than _MIN_GESTURE_DURATION_S are suppressed entirely.
     Longer gestures emit status="started" once they pass that threshold,
     status="running" every _UPDATE_INTERVAL_S, and status="complete" on end.
-    Consecutive gestures of the same or promoted type separated by ≤ _MERGE_GAP_S
-    are treated as one continuous session.
+
+    End-hold: when the gesture level drops (sensor gap, inter-module dead zone,
+    brief velocity dip) the session is held open for _END_HOLD_S before "complete"
+    is emitted.  If the gesture recovers within that window the hold is cancelled
+    and the session continues uninterrupted.  This bridges slow-stroke inter-module
+    gaps without the layer interactions of merge-after-end.
+
+    _MERGE_GAP_S still applies as a fallback: if the hold expires and a new contact
+    follows quickly, the sessions are stitched together.
 
     Called every tick; acts on time as well as type transitions.  The queue
     is bounded — summaries are dropped (never blocking) when the consumer is slow.
@@ -217,6 +225,7 @@ class _TouchEventEmitter:
         self._sess_touch: TouchEvent | None = None
         self._sess_staged: bool = False   # True once "started" has been emitted
         self._sess_last_t: float = 0.0   # time of last staged emission
+        self._end_hold_since: float | None = None  # when the end-hold timer started
 
         # State saved when a session ends, for continuity merge checks.
         self._prev_end_type: str = "none"
@@ -238,11 +247,9 @@ class _TouchEventEmitter:
         now = state.timestamp
         curr = self._touch_type(touch)
 
-        if curr == "none":
-            self._on_contact_end(now)
-            return
-
         if self._sess_type == "none":
+            if curr == "none":
+                return
             # Starting a new session — check whether to merge with the previous one.
             # Strokes with opposite directions are never merged (direction change = new stroke).
             curr_dir = touch.stroke.direction if touch.stroke is not None else None
@@ -254,7 +261,10 @@ class _TouchEventEmitter:
             if (
                 self._prev_end_type != "none"
                 and now - self._prev_end_t <= _MERGE_GAP_S
-                and _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
+                and (
+                    _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._prev_end_type, 0)
+                    or self._prev_end_type == "stroke"
+                )
                 and same_dir
             ):
                 self._sess_start = self._prev_end_start
@@ -266,20 +276,31 @@ class _TouchEventEmitter:
                 self._sess_last_t = now
             self._sess_type = curr
             self._prev_end_type = "none"  # consume merge window
+            self._end_hold_since = None
 
         elif curr in _PASSIVE_MOTION_FAMILY and self._sess_type in _PASSIVE_MOTION_FAMILY:
             self._sess_type = curr  # budge↔twist: same passive-motion gesture
+            self._end_hold_since = None
 
         elif _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._sess_type, 0):
             self._sess_type = curr  # promoted (e.g. hold → squeeze): continue session
+            self._end_hold_since = None
 
         else:
-            # Demoted — end the current session and start a fresh one.
-            self._on_contact_end(now, emit_none=False)
-            self._sess_type = curr
-            self._sess_start = now
-            self._sess_staged = False
-            self._sess_last_t = now
+            # Contact dropped below session level — hold before committing the end.
+            if self._end_hold_since is None:
+                self._end_hold_since = now
+            if now - self._end_hold_since < _END_HOLD_S:
+                return  # within hold: keep session alive, don't update touch or emit
+            # Hold expired — finalize the session.
+            self._on_contact_end(now, emit_none=(curr == "none"))
+            self._end_hold_since = None
+            if curr != "none":
+                self._sess_type = curr
+                self._sess_start = now
+                self._sess_staged = False
+                self._sess_last_t = now
+            return
 
         self._sess_touch = touch
 
