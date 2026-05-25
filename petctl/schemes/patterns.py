@@ -5,7 +5,7 @@ Each produces a distinct body movement and can be selected via:
     petctl run --control <name>
 
 Patterns:
-    ripple    — two full wave crests visible simultaneously (shorter wavelength)
+    snuggle   — two full wave crests visible simultaneously (shorter wavelength)
     pulse     — all joints in phase, whole-body flex and release
     breathe   — slow, tiny-amplitude in-phase breathing
     sway      — travelling wave with amplitude tapering head→tail
@@ -35,10 +35,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class RippleControlScheme(ControlScheme):
+class SnuggleControlScheme(ControlScheme):
     """Two full wave crests across the body simultaneously."""
 
-    name = "ripple"
+    name = "snuggle"
 
     def is_active(self) -> bool:
         return True
@@ -50,7 +50,7 @@ class RippleControlScheme(ControlScheme):
 
     def on_start(self, controller: "Controller") -> None:
         self._start = time.monotonic()
-        logger.info("[Ripple] ±%.0f° at %.1f Hz, 2× spatial frequency. Ctrl-C to stop.", self.amplitude_deg, self.hz)
+        logger.info("[Snuggle] ±%.0f° at %.1f Hz, 2× spatial frequency. Ctrl-C to stop.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         t = time.monotonic() - self._start
@@ -557,10 +557,10 @@ class _WanderBase(ControlScheme):
         return clamped, peak_t
 
 
-class WanderControlScheme(_WanderBase):
+class ExploreControlScheme(_WanderBase):
     """Each joint turns at a fixed speed, reversing on position+torque stall or ceiling."""
 
-    name = "wander"
+    name = "explore"
 
     SPEED_DEG_PER_S: float = 45.0
 
@@ -571,7 +571,7 @@ class WanderControlScheme(_WanderBase):
     def on_start(self, controller: "Controller") -> None:
         self._init_stall_state()
         logger.info(
-            "[Wander] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
+            "[Explore] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
             math.degrees(self._speed_rad_s),
         )
 
@@ -584,7 +584,7 @@ class WanderControlScheme(_WanderBase):
                 self._init_servo(sid, state, now)
             if self._check_stall(sid, state, now):
                 clamped, peak_t = self._do_reversal(sid, state, now)
-                logger.info("[Wander] Motor %d → reversing at %.1f° (peak torque %.2f Nm)", sid, math.degrees(clamped), peak_t)
+                logger.info("[Explore] Motor %d → reversing at %.1f° (peak torque %.2f Nm)", sid, math.degrees(clamped), peak_t)
             self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
             cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
@@ -597,13 +597,13 @@ class DriftControlScheme(_WanderBase):
     Speed is driven by a sine oscillator between MIN_SPEED_DEG_PER_S and
     MAX_SPEED_DEG_PER_S with period SPEED_PERIOD_S.  Every motor receives the
     same speed value each tick; stall detection and reversal are identical to
-    WanderControlScheme.
+    ExploreControlScheme.
     """
 
     name = "drift"
 
     MIN_SPEED_DEG_PER_S: float = 15.0
-    MAX_SPEED_DEG_PER_S: float = 90.0  # intentionally 2× Wander — explores a wider speed range
+    MAX_SPEED_DEG_PER_S: float = 90.0  # intentionally 2× Explore — explores a wider speed range
     SPEED_PERIOD_S: float = 12.0
 
     def __init__(self) -> None:
@@ -644,14 +644,14 @@ class DriftControlScheme(_WanderBase):
         return cmds
 
 
-class ExploreControlScheme(ControlScheme):
-    """Copy of WanderControlScheme for parameter tuning.
+class StruggleControlScheme(ControlScheme):
+    """Copy of ExploreControlScheme for parameter tuning.
 
-    Identical behaviour to wander — tweak the class constants here
+    Identical behaviour to explore — tweak the class constants here
     without disturbing the reference.
     """
 
-    name = "explore"
+    name = "struggle"
 
     def is_active(self) -> bool:
         return True
@@ -677,7 +677,7 @@ class ExploreControlScheme(ControlScheme):
         self._reversed_at = {}
         self._pending_slew_resets = {}
         logger.info(
-            "[Explore] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
+            "[Struggle] Each joint turns at %.0f°/s, reversing on stall. Ctrl-C to stop.",
             math.degrees(self._speed_rad_s),
         )
 
@@ -725,7 +725,7 @@ class ExploreControlScheme(ControlScheme):
                 self._direction[sid] *= -1.0
                 self._reversed_at[sid] = now
                 self._stall_since[sid] = 0.0
-                logger.info("[Explore] Motor %d → reversing (vel=%.3f rad/s)", sid, vel)
+                logger.info("[Struggle] Motor %d → reversing (vel=%.3f rad/s)", sid, vel)
 
             self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
@@ -890,18 +890,18 @@ class StrokeCurlScheme(ControlScheme):
         return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
 
 
-class StrokeRippleScheme(ControlScheme):
+class StrokeSnuggleScheme(ControlScheme):
     """
     Like stroke-curl, but after 10s of continuous stroking transitions to
-    ripple for 8s, then commands all joints home.
+    snuggle for 8s, then commands all joints home.
 
     States:
-      curl   — per-module touch tracking (same as stroke-curl)
-      ripple — full-body ripple wave for RIPPLE_DURATION_S
+      curl    — per-module touch tracking (same as stroke-curl)
+      snuggle — full-body snuggle wave for RIPPLE_DURATION_S
       home   — all joints commanded to 0° and held there
     """
 
-    name = "stroke-ripple"
+    name = "stroke-snuggle"
 
     # Curl phase
     TARGET_DEG: float = 45.0
@@ -910,7 +910,7 @@ class StrokeRippleScheme(ControlScheme):
     DIRECTION_THRESHOLD: float = 0.15
     MODULE_TOUCH_THRESHOLD: float = 0.06
 
-    # Curl → ripple trigger
+    # Curl → snuggle trigger
     STROKE_TRIGGER_S: float = 15.0
     TOUCH_GAP_GRACE_S: float = 1.0   # gap before resetting the stroke timer
 
@@ -920,11 +920,11 @@ class StrokeRippleScheme(ControlScheme):
     RIPPLE_DURATION_S: float = 15.0
 
     _CURL = "curl"
-    _RIPPLE = "ripple"
+    _SNUGGLE = "snuggle"
     _HOME = "home"
 
     def is_active(self) -> bool:
-        return self._state == self._RIPPLE
+        return self._state == self._SNUGGLE
 
     def __init__(self) -> None:
         from petctl.perception.stroke import PAD_THRESHOLD
@@ -935,7 +935,7 @@ class StrokeRippleScheme(ControlScheme):
         self._state: str = self._CURL
         self._stroke_start: float | None = None
         self._last_touch: float | None = None
-        self._ripple_start: float = 0.0
+        self._snuggle_start: float = 0.0
 
     def on_start(self, controller: "Controller") -> None:
         self._curl_target = {}
@@ -944,15 +944,15 @@ class StrokeRippleScheme(ControlScheme):
         self._state = self._CURL
         self._stroke_start = None
         self._last_touch = None
-        self._ripple_start = 0.0
+        self._snuggle_start = 0.0
         logger.info(
-            "[StrokeRipple] Touch right/left to curl. Stroke for %.0fs → ripple %.0fs → home.",
+            "[StrokeSnuggle] Touch right/left to curl. Stroke for %.0fs → snuggle %.0fs → home.",
             self.STROKE_TRIGGER_S, self.RIPPLE_DURATION_S,
         )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        if self._state == self._RIPPLE:
-            return self._do_ripple(state)
+        if self._state == self._SNUGGLE:
+            return self._do_snuggle(state)
         if self._state == self._HOME:
             return self._do_home(state)
         return self._do_curl(state)
@@ -1004,16 +1004,16 @@ class StrokeRippleScheme(ControlScheme):
             self._last_touch = None
 
         if self._stroke_start is not None and (now - self._stroke_start) >= self.STROKE_TRIGGER_S:
-            logger.info("[StrokeRipple] %.0fs stroke → ripple", self.STROKE_TRIGGER_S)
-            self._state = self._RIPPLE
-            self._ripple_start = now
+            logger.info("[StrokeSnuggle] %.0fs stroke → snuggle", self.STROKE_TRIGGER_S)
+            self._state = self._SNUGGLE
+            self._snuggle_start = now
 
         return cmds
 
-    def _do_ripple(self, state: RobotState) -> list[ServoCommand]:
-        t = state.timestamp - self._ripple_start
+    def _do_snuggle(self, state: RobotState) -> list[ServoCommand]:
+        t = state.timestamp - self._snuggle_start
         if t >= self.RIPPLE_DURATION_S:
-            logger.info("[StrokeRipple] ripple done → home")
+            logger.info("[StrokeSnuggle] snuggle done → home")
             self._state = self._HOME
             return self._do_home(state)
         ids = sorted(state.active_servo_ids)
@@ -1193,7 +1193,7 @@ class PoseScheme(ControlScheme):
 
 
 ALL_PATTERNS: list[type[ControlScheme]] = [
-    RippleControlScheme,
+    SnuggleControlScheme,
     PulseControlScheme,
     BreatheControlScheme,
     SwayControlScheme,
@@ -1206,10 +1206,10 @@ ALL_PATTERNS: list[type[ControlScheme]] = [
     Spin7ControlScheme,
     StrokeReactControlScheme,
     StrokeCurlScheme,
-    StrokeRippleScheme,
-    WanderControlScheme,
-    DriftControlScheme,
+    StrokeSnuggleScheme,
     ExploreControlScheme,
+    DriftControlScheme,
+    StruggleControlScheme,
     YieldStiffScheme,
     PoseScheme,
 ]

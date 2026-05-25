@@ -25,18 +25,18 @@ if TYPE_CHECKING:
 
 # Patterns exposed in the UI (observer-only schemes excluded).
 _EXPOSED = [
-    "ripple", "pulse", "breathe", "sway", "cascade", "slalom", "coil",
-    "twitch", "curl", "spin7", "wander", "explore", "drift",
-    "stroke", "stroke-curl", "stroke-ripple", "freeze", "pose",
+    "snuggle", "pulse", "breathe", "sway", "cascade", "slalom", "coil",
+    "twitch", "curl", "spin7", "explore", "struggle", "drift",
+    "stroke", "stroke-curl", "stroke-snuggle", "freeze", "pose",
 ]
 
 # Maps pattern name → param group that determines which sliders to show.
 _PARAM_GROUP: dict[str, str] = {
-    "ripple": "osc", "pulse": "osc", "breathe": "osc",
+    "snuggle": "osc", "pulse": "osc", "breathe": "osc",
     "sway": "osc", "cascade": "osc", "slalom": "osc", "coil": "osc",
     "twitch": "amp",
     "curl": "curl",
-    "spin7": "speed", "wander": "speed", "explore": "speed",
+    "spin7": "speed", "explore": "speed", "struggle": "speed",
 }  # anything not listed → "none"
 
 _HTML = """\
@@ -203,9 +203,9 @@ pollStatus();
 
 
 _CONTROL_MOVEMENTS = sorted([
-    "freeze", "home", "breathe", "pulse", "ripple", "sway", "cascade",
-    "slalom", "twitch", "coil", "curl_right", "curl_left", "wander", "drift",
-    "stroke", "stroke-curl", "stroke-ripple", "yield-stiff", "pose",
+    "freeze", "home", "breathe", "pulse", "snuggle", "sway", "cascade",
+    "slalom", "twitch", "coil", "curl_right", "curl_left", "explore", "drift",
+    "stroke", "stroke-curl", "stroke-snuggle", "yield-stiff", "pose",
 ])
 
 _CONTROL_HTML = """\

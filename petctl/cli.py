@@ -177,13 +177,13 @@ def run(
     elif control == "ollama":
         from petctl.schemes.ollama_scheme import OllamaControlScheme
         _scheme = OllamaControlScheme(log_input=log_ollama_input)
-    elif control in ("ripple", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "stroke-ripple", "wander", "drift", "explore", "yield-stiff", "pose"):
+    elif control in ("snuggle", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "stroke-snuggle", "explore", "drift", "struggle", "yield-stiff", "pose"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
     else:
         typer.echo(
             f"Unknown control scheme '{control}'. "
-            "Choose: keyboard, passthrough, sine, command, ollama, ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, stroke-curl, wander, drift, explore, yield-stiff, pose",
+            "Choose: keyboard, passthrough, sine, command, ollama, snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, stroke-curl, explore, drift, struggle, yield-stiff, pose",
             err=True,
         )
         raise typer.Exit(1)

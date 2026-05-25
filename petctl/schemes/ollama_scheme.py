@@ -40,14 +40,14 @@ from petctl.schemes.patterns import (
     IdleControlScheme,
     PoseScheme,
     PulseControlScheme,
-    RippleControlScheme,
+    SnuggleControlScheme,
     SlalomControlScheme,
     StrokeCurlScheme,
     StrokeReactControlScheme,
-    StrokeRippleScheme,
+    StrokeSnuggleScheme,
     SwayControlScheme,
     TwitchControlScheme,
-    WanderControlScheme,
+    ExploreControlScheme,
     YieldStiffScheme,
 )
 from petctl.types import RobotState, ServoCommand, TouchSummary
@@ -70,7 +70,7 @@ _AMP_MAX: dict[str, float] = {
     "home":          0.0,
     "breathe":      15.0,
     "pulse":        60.0,
-    "ripple":       55.0,
+    "snuggle":       55.0,
     "sway":         70.0,
     "cascade":      70.0,
     "slalom":       60.0,
@@ -78,11 +78,11 @@ _AMP_MAX: dict[str, float] = {
     "coil":         65.0,
     "curl_right":   80.0,
     "curl_left":    80.0,
-    "wander":        0.0,
+    "explore":        0.0,
     "drift":         0.0,
     "stroke":        0.0,  # touch-reactive — senses internally
     "stroke-curl":   0.0,
-    "stroke-ripple": 0.0,
+    "stroke-snuggle": 0.0,
     "yield-stiff":   0.0,
     "pose":          0.0,
 }
@@ -118,8 +118,8 @@ def _make_pattern(motion: str, speed: float) -> ControlScheme:
         return BreatheControlScheme(amplitude_deg=amp, hz=0.05 + speed * 0.06)
     if motion == "pulse":
         return PulseControlScheme(amplitude_deg=amp, hz=0.15 + speed * 0.35)
-    if motion == "ripple":
-        return RippleControlScheme(amplitude_deg=amp, hz=0.2 + speed * 0.4)
+    if motion == "snuggle":
+        return SnuggleControlScheme(amplitude_deg=amp, hz=0.2 + speed * 0.4)
     if motion == "sway":
         return SwayControlScheme(amplitude_deg=amp, hz=0.08 + speed * 0.15)
     if motion == "cascade":
@@ -134,16 +134,16 @@ def _make_pattern(motion: str, speed: float) -> ControlScheme:
         return CurlControlScheme(target_deg=amp)
     if motion == "curl_left":
         return _CurlLeft(target_deg=amp)
-    if motion == "wander":
-        return WanderControlScheme(speed_deg_per_s=20.0 + speed * 60.0)
+    if motion == "explore":
+        return ExploreControlScheme(speed_deg_per_s=20.0 + speed * 60.0)
     if motion == "drift":
         return DriftControlScheme()
     if motion == "stroke":
         return StrokeReactControlScheme()
     if motion == "stroke-curl":
         return StrokeCurlScheme()
-    if motion == "stroke-ripple":
-        return StrokeRippleScheme()
+    if motion == "stroke-snuggle":
+        return StrokeSnuggleScheme()
     if motion == "yield-stiff":
         return YieldStiffScheme()
     if motion == "pose":
@@ -161,7 +161,7 @@ def _update_pattern_params(pattern: ControlScheme, motion: str, speed: float) ->
     elif motion == "pulse":
         pattern.amplitude_deg = amp  # type: ignore[attr-defined]
         pattern.hz = 0.15 + speed * 0.35  # type: ignore[attr-defined]
-    elif motion == "ripple":
+    elif motion == "snuggle":
         pattern.amplitude_deg = amp  # type: ignore[attr-defined]
         pattern.hz = 0.2 + speed * 0.4  # type: ignore[attr-defined]
     elif motion == "sway":
@@ -181,7 +181,7 @@ def _update_pattern_params(pattern: ControlScheme, motion: str, speed: float) ->
         pattern.hz = 0.1 + speed * 0.2  # type: ignore[attr-defined]
     elif motion in ("curl_right", "curl_left"):
         pattern.target_deg = amp  # type: ignore[attr-defined]
-    elif motion == "wander":
+    elif motion == "explore":
         pattern._speed_rad_s = math.radians(20.0 + speed * 60.0)  # type: ignore[attr-defined]
     # freeze, home, drift, stroke, stroke-curl, stroke-ripple, yield-stiff, pose:
     # no tunable params — nothing to update
