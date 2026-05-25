@@ -111,6 +111,7 @@ class StrokeDetector:
         self._window: deque[tuple[float, float]] = deque(maxlen=WINDOW_FRAMES)
         self._last_touch_t: float | None = None
         self._current_direction: str | None = None
+        self._last_reading: StrokeReading | None = None
 
     def update(self, state: RobotState) -> StrokeReading | None:
         """Process one tick of RobotState. Returns StrokeReading or None."""
@@ -122,8 +123,11 @@ class StrokeDetector:
                 self._window.clear()
                 self._last_touch_t = None
                 self._current_direction = None
-            # else: brief inter-module gap — keep window so velocity fit survives
-            return None
+                self._last_reading = None
+                return None
+            # Within grace gap — return last valid reading so the emitter sees
+            # a continuous stroke rather than a None that triggers a downgrade.
+            return self._last_reading
 
         self._last_touch_t = state.timestamp
         self._window.append((state.timestamp, centroid))
@@ -152,12 +156,13 @@ class StrokeDetector:
             self._window.clear()
             self._window.append((state.timestamp, centroid))
             self._current_direction = None
+            self._last_reading = None
             return None
 
         activations = {mid: s.touch_total for mid, s in state.sensors.items()}
         blobs = _find_blobs(activations)
 
-        return StrokeReading(
+        self._last_reading = StrokeReading(
             centroid=centroid,
             velocity=velocity,
             speed=abs(velocity),
@@ -167,6 +172,7 @@ class StrokeDetector:
             side=_active_side(state),
             blobs=blobs,
         )
+        return self._last_reading
 
 
 class HoldDetector:
