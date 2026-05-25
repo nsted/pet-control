@@ -584,7 +584,7 @@ class ExploreControlScheme(_WanderBase):
                 self._init_servo(sid, state, now)
             if self._check_stall(sid, state, now):
                 clamped, peak_t = self._do_reversal(sid, state, now)
-                logger.info("[Explore] Motor %d → reversing at %.1f° (peak torque %.2f Nm)", sid, math.degrees(clamped), peak_t)
+                logger.debug("[Explore] Motor %d → reversing at %.1f° (peak torque %.2f Nm)", sid, math.degrees(clamped), peak_t)
             self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
             cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
@@ -637,7 +637,7 @@ class DriftControlScheme(_WanderBase):
                 self._init_servo(sid, state, now)
             if self._check_stall(sid, state, now):
                 clamped, peak_t = self._do_reversal(sid, state, now)
-                logger.info("[Drift] Motor %d → reversing at %.1f° (peak torque %.2f Nm, speed %.0f°/s)", sid, math.degrees(clamped), peak_t, math.degrees(speed_rad_s))
+                logger.debug("[Drift] Motor %d → reversing at %.1f° (peak torque %.2f Nm, speed %.0f°/s)", sid, math.degrees(clamped), peak_t, math.degrees(speed_rad_s))
             self._pos_cmd[sid] += self._direction[sid] * speed_rad_s * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
             cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
@@ -725,7 +725,7 @@ class StruggleControlScheme(ControlScheme):
                 self._direction[sid] *= -1.0
                 self._reversed_at[sid] = now
                 self._stall_since[sid] = 0.0
-                logger.info("[Struggle] Motor %d → reversing (vel=%.3f rad/s)", sid, vel)
+                logger.debug("[Struggle] Motor %d → reversing (vel=%.3f rad/s)", sid, vel)
 
             self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))

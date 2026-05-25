@@ -49,6 +49,7 @@ from petctl.schemes.patterns import (
     SwayControlScheme,
     TwitchControlScheme,
     ExploreControlScheme,
+    StruggleControlScheme,
     YieldStiffScheme,
 )
 from petctl.types import RobotState, ServoCommand, TouchSummary
@@ -139,7 +140,7 @@ def _make_pattern(motion: str, speed: float) -> ControlScheme:
     if motion == "explore":
         return ExploreControlScheme(speed_deg_per_s=20.0 + speed * 60.0)
     if motion == "struggle":
-        return ExploreControlScheme(speed_deg_per_s=50.0 + speed * 50.0)
+        return StruggleControlScheme(speed_deg_per_s=50.0 + speed * 50.0)
     if motion == "drift":
         return DriftControlScheme()
     if motion == "stroke":
