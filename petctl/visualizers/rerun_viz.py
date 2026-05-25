@@ -729,50 +729,53 @@ class RerunVisualizer(Visualizer):
             if sensors is None:
                 continue
 
-            entity_base = self._entity_path_cache[mod_id]
-            swap_lr = self._overlay_swap_lr.get(mod_id, False)
+            try:
+                entity_base = self._entity_path_cache[mod_id]
+                swap_lr = self._overlay_swap_lr.get(mod_id, False)
 
-            # Build 14-element pad value list: [right_0..3, left_0..3, middle_0..5]
-            if swap_lr:
-                right_pads = sensors.touch_left_pads
-                left_pads  = sensors.touch_right_pads
-            else:
-                right_pads = sensors.touch_right_pads
-                left_pads  = sensors.touch_left_pads
-            all_pad_vals = (*right_pads, *left_pads, *sensors.touch_middle_pads)
+                # Build 14-element pad value list: [right_0..3, left_0..3, middle_0..5]
+                if swap_lr:
+                    right_pads = sensors.touch_left_pads
+                    left_pads  = sensors.touch_right_pads
+                else:
+                    right_pads = sensors.touch_right_pads
+                    left_pads  = sensors.touch_left_pads
+                all_pad_vals = (*right_pads, *left_pads, *sensors.touch_middle_pads)
 
-            touch_colors = tuple(
-                (*_TOUCH_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, v)) * (_MAX_ALPHA - _MIN_ALPHA)))
-                for v in all_pad_vals
-            )
-            if self._prev_touch_colors.get(mod_id) != touch_colors:
-                self._prev_touch_colors[mod_id] = touch_colors
-                rr.log(f"{entity_base}/sensor_overlay/touch", rr.Ellipsoids3D(
-                    centers=self._pad_centers_np,
-                    half_sizes=self._pad_half_sizes_np,
-                    quaternions=self._pad_quats,
-                    colors=list(touch_colors),
-                    fill_mode="solid",
-                ))
+                touch_colors = tuple(
+                    (*_TOUCH_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, v)) * (_MAX_ALPHA - _MIN_ALPHA)))
+                    for v in all_pad_vals
+                )
+                if self._prev_touch_colors.get(mod_id) != touch_colors:
+                    self._prev_touch_colors[mod_id] = touch_colors
+                    rr.log(f"{entity_base}/sensor_overlay/touch", rr.Ellipsoids3D(
+                        centers=self._pad_centers_np,
+                        half_sizes=self._pad_half_sizes_np,
+                        quaternions=self._pad_quats,
+                        colors=list(touch_colors),
+                        fill_mode="solid",
+                    ))
 
-            # FSR: one face-level disc per face (left/middle/right order)
-            if swap_lr:
-                pressure_vals = (sensors.pressure_right, sensors.pressure_middle, sensors.pressure_left)
-            else:
-                pressure_vals = (sensors.pressure_left, sensors.pressure_middle, sensors.pressure_right)
-            pressure_colors = tuple(
-                (*_PRESSURE_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, p)) * (_MAX_ALPHA - _MIN_ALPHA)))
-                for p in pressure_vals
-            )
-            if self._prev_pressure_colors.get(mod_id) != pressure_colors:
-                self._prev_pressure_colors[mod_id] = pressure_colors
-                rr.log(f"{entity_base}/sensor_overlay/pressure", rr.Ellipsoids3D(
-                    centers=self._overlay_centers,
-                    half_sizes=self._overlay_pressure_hs,
-                    quaternions=self._overlay_quats,
-                    colors=list(pressure_colors),
-                    fill_mode="solid",
-                ))
+                # FSR: one face-level disc per face (left/middle/right order)
+                if swap_lr:
+                    pressure_vals = (sensors.pressure_right, sensors.pressure_middle, sensors.pressure_left)
+                else:
+                    pressure_vals = (sensors.pressure_left, sensors.pressure_middle, sensors.pressure_right)
+                pressure_colors = tuple(
+                    (*_PRESSURE_COLOR_RGB, _MIN_ALPHA + int(min(1.0, max(0.0, p)) * (_MAX_ALPHA - _MIN_ALPHA)))
+                    for p in pressure_vals
+                )
+                if self._prev_pressure_colors.get(mod_id) != pressure_colors:
+                    self._prev_pressure_colors[mod_id] = pressure_colors
+                    rr.log(f"{entity_base}/sensor_overlay/pressure", rr.Ellipsoids3D(
+                        centers=self._overlay_centers,
+                        half_sizes=self._overlay_pressure_hs,
+                        quaternions=self._overlay_quats,
+                        colors=list(pressure_colors),
+                        fill_mode="solid",
+                    ))
+            except Exception as exc:
+                logger.error("[RerunViz] overlay failed mod%d: %s", mod_id, exc)
 
     # ------------------------------------------------------------------
     # 3D setup and pose logging

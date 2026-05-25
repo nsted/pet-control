@@ -391,6 +391,7 @@ class RobotBackend(_BackendBase):
             await asyncio.sleep(0.3)
         else:
             self._discovered_modules = await self._discover_modules()
+            logger.info("[RobotBackend] Discovered modules: %s", self._discovered_modules)
 
             if self._configured_motor_ids is not None:
                 self._discovered_motors = list(self._configured_motor_ids)
