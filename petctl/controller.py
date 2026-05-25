@@ -166,15 +166,14 @@ class _TouchProcessor:
 class _TouchLogger:
     """Logs touch events to console in the same format sent to the LLM.
 
-    Buffers "complete" events briefly: if another touch follows within
+    Offsets are time since the last WS reset (epoch_fn()).  Buffers
+    "complete" events briefly: if another touch follows within
     _TOUCH_LOG_FLUSH_S the buffered event is emitted as [ongoing]; after
-    silence it flushes as [end].  Session timer resets only on true gaps,
-    not on brief inter-fragment "none" events.
+    silence it flushes as [end].
     """
 
-    def __init__(self) -> None:
-        self._session_start: float | None = None
-        self._last_t: float | None = None
+    def __init__(self, epoch_fn: Callable[[], float]) -> None:
+        self._epoch_fn = epoch_fn
         self._pending: tuple[TouchSummary, float] | None = None  # (summary, offset)
 
     def tick(self, now: float) -> None:
@@ -183,27 +182,18 @@ class _TouchLogger:
             s, offset = self._pending
             logger.info("[TOUCH  ] +%.1fs: %s", offset, s.describe())
             self._pending = None
-            self._session_start = None
 
     def on_summary(self, summary: TouchSummary) -> None:
-        now = summary.timestamp
-
         if summary.touch_type == "none":
-            self._last_t = now
             return
+
+        offset = summary.timestamp - self._epoch_fn()
 
         # New event arrived — flush pending complete as [ongoing] (it wasn't truly the end)
         if self._pending is not None:
-            s, offset = self._pending
-            logger.info("[TOUCH  ] +%.1fs: %s", offset, s.describe(status_override="running"))
+            s, pending_offset = self._pending
+            logger.info("[TOUCH  ] +%.1fs: %s", pending_offset, s.describe(status_override="running"))
             self._pending = None
-
-        # Start a new session timer only after a true gap
-        gap = (now - self._last_t) if self._last_t is not None else float("inf")
-        if self._session_start is None or gap > _MERGE_GAP_S:
-            self._session_start = now
-        self._last_t = now
-        offset = now - self._session_start
 
         if summary.status == "complete":
             self._pending = (summary, offset)
@@ -404,9 +394,11 @@ class Controller:
         # Read from this in any async task to receive touch events for LLM or other consumers.
         self.touch_events: asyncio.Queue[TouchSummary] = asyncio.Queue(maxsize=64)
         self._touch_emitter = _TouchEventEmitter(self.touch_events)
+        self._ws_epoch: float = time.monotonic()
+        self._was_connected: bool = False
         self._touch_logger: _TouchLogger | None = None
         if log_touch:
-            self._touch_logger = _TouchLogger()
+            self._touch_logger = _TouchLogger(epoch_fn=lambda: self._ws_epoch)
             self._touch_emitter.set_logger(self._touch_logger.on_summary)
 
         self._state: RobotState = RobotState.empty()
@@ -482,6 +474,8 @@ class Controller:
         if not ok:
             logger.error("[Controller] Backend failed to connect. Exiting.")
             return
+        self._ws_epoch = time.monotonic()
+        self._was_connected = True
 
         if self.limp:
             logger.info("[Controller] Limp mode: disabling torques — move joints freely by hand.")
@@ -571,6 +565,9 @@ class Controller:
             # 1. Get state from backend
             self._state = await self.backend.get_state()
             self._state.servo_commanded_positions = dict(self._slew_last_sent_rad)
+            if self._state.connected and not self._was_connected:
+                self._ws_epoch = self._state.timestamp
+            self._was_connected = self._state.connected
             self._state.touch = self._touch_processor.update(self._state)
             self._touch_emitter.update(self._state)
             if self._touch_logger is not None:
