@@ -224,6 +224,7 @@ class OllamaControlScheme(ControlScheme):
         self._system_prompt: str = ""
         self._active_motion: str = ""
         self._was_connected: bool = False
+        self._touch_ended_t: float | None = None  # wall time of last "none" event
 
     # ------------------------------------------------------------------
     # ControlScheme interface
@@ -255,11 +256,22 @@ class OllamaControlScheme(ControlScheme):
         if self._was_connected and not state.connected:
             logger.info("[Ollama] WebSocket disconnected — resetting conversation history and pattern.")
             self._client.start(self._system_prompt)
+            self._touch_ended_t = None
             self._switch_pattern("idle", 0.0)
         self._was_connected = state.connected
 
         if self._touch_queue is not None:
             self._drain_touch_queue()
+
+        ended_t = self._touch_ended_t
+        if (
+            ended_t is not None
+            and state.timestamp - ended_t >= 5.0
+            and self._active_motion != "idle"
+        ):
+            logger.info("[Ollama] no touch for 5s — reverting to idle.")
+            self._touch_ended_t = None
+            self._switch_pattern("idle", 0.0)
 
         with self._lock:
             pattern = self._active_pattern
@@ -292,11 +304,14 @@ class OllamaControlScheme(ControlScheme):
             now = summary.timestamp
             pending = self._pending
 
-            # "none" events (touch ended) are ignored — the active pattern manages
-            # its own touch-end behaviour (stroke-curl holds then decays; others
-            # just keep running until the LLM commands something different).
+            # "none" events (touch ended) — record the time so update() can
+            # revert to idle after 5 s of inactivity.
             if summary.touch_type == "none":
+                self._touch_ended_t = now
                 continue
+
+            # Clear any pending idle-revert on new touch.
+            self._touch_ended_t = None
 
             # Rate-limit LLM calls; skip if one is already in flight.
             thread_free = pending is None or not pending.is_alive()
