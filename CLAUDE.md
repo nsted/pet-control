@@ -41,13 +41,17 @@ Components are swappable ABCs. Control schemes never touch the backend directly 
 
 ```bash
 pip install -e .
-petctl run                              # mock backend, keyboard control, Rerun viz
-petctl run --backend robot              # real robot
-petctl run --backend robot --limp       # limp mode for calibration
-petctl run --backend robot --calibrate  # re-zero software offsets to current pose on connect
-petctl run --backend mock --mode mock-sensor-sine   # animated mock sensor data
-petctl info                             # print robot status
+petctl run                                              # mock backend, stroke-curl, Rerun viz
+petctl run --backend robot                             # real robot, stroke-curl
+petctl run --backend robot --control ollama            # real robot with LLM-driven behavior
+petctl run --backend robot --control neighbor-assist-drift  # specific motion pattern
+petctl run --backend robot --limp                      # limp mode for calibration
+petctl run --backend robot --calibrate                 # re-zero software offsets to current pose on connect
+petctl run --backend mock --mode mock-sensor-sine      # animated mock sensor data
+petctl info                                            # print robot status
 ```
+
+`--control` selects the motion pattern; `--mode` selects the MockBackend sensor simulation mode (not related to motion).
 
 ## Safety
 

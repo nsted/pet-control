@@ -44,10 +44,12 @@ def run(
         help="Backend: 'mock' (no robot) or 'robot' (real robot)",
     ),
     control: str = typer.Option(
-        "ollama",
+        "stroke-curl",
         help=(
             "Control scheme: keyboard, passthrough, sine, command, ollama, "
-            "ripple, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, stroke, stroke-curl"
+            "snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, "
+            "stroke, stroke-curl, stroke-snuggle, explore, drift, struggle, neighbor-assist-drift, "
+            "yield-stiff, pose"
         ),
     ),
     no_viz: bool = typer.Option(
