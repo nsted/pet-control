@@ -1,20 +1,22 @@
 """
-Ten motion patterns for PET — standalone control schemes.
+Motion patterns for PET — standalone control schemes.
 
 Each produces a distinct body movement and can be selected via:
     petctl run --control <name>
 
 Patterns:
-    snuggle   — two full wave crests visible simultaneously (shorter wavelength)
-    pulse     — all joints in phase, whole-body flex and release
-    breathe   — slow, tiny-amplitude in-phase breathing
-    sway      — travelling wave with amplitude tapering head→tail
-    cascade   — travelling wave with amplitude growing head→tail
-    slalom    — alternating odd/even sign → S-shape rocking
-    twitch    — smoothed per-joint Brownian noise (jittery, organic)
-    freeze    — hold all joints at home (0°)
-    coil      — quadratic spatial phase → tighter curl toward the tail
-    curl      — ramp with slalom signs to 70°, looping head-to-tail, then hold
+    snuggle          — two full wave crests visible simultaneously (shorter wavelength)
+    pulse            — all joints in phase, whole-body flex and release
+    breathe          — slow, tiny-amplitude in-phase breathing
+    sway             — travelling wave with amplitude tapering head→tail
+    cascade          — travelling wave with amplitude growing head→tail
+    slalom           — alternating odd/even sign → S-shape rocking
+    twitch           — smoothed per-joint Brownian noise (jittery, organic)
+    freeze           — hold all joints at home (0°)
+    coil             — quadratic spatial phase → tighter curl toward the tail
+    curl             — ramp with slalom signs to 70°, looping head-to-tail, then hold
+    balanced-torque  — seek pose where all motors share equal load near a 1A target
+    purr-ripple      — kd-vibration wave propagating head→tail; speed scales ripple rate
 """
 
 from __future__ import annotations
@@ -1603,6 +1605,158 @@ class NeighborAssistDriftMotion(Motion):
         return cmds
 
 
+class BalancedTorqueMotion(Motion):
+    """Find a pose where all joints share equal load at a 1 A total-current objective.
+
+    Each tick, per-motor MIT torque feedback drives a position integrator toward
+    two simultaneous objectives:
+      1. Equalise: nudge each joint so all motors carry similar torque.
+      2. Level:    bias the cross-motor mean toward
+                   (TARGET_CURRENT_A × KT_NM_PER_AMP) / n_motors.
+
+    Under-loaded joints creep outward (slalom-curl direction); over-loaded joints
+    retreat toward home.  Starting from rest the robot slowly finds a pose where
+    gravity loads all joints equally at the combined 1 A current level.
+    """
+
+    name = "balanced-torque"
+
+    TARGET_CURRENT_A: float = 1.0     # total target Amps across all motors
+    KT_NM_PER_AMP: float = 0.3       # GL40 II torque constant estimate (Nm/A)
+    GAIN_EQ: float = 1.0             # equalization term weight
+    GAIN_LVL: float = 0.5            # level term weight
+    TORQUE_TO_POS_GAIN: float = 0.5  # rad / (Nm · s)
+    MAX_POS_RAD: float = MOTOR_LIMITS.pos_max
+    LOG_INTERVAL_S: float = 3.0
+
+    def __init__(
+        self,
+        target_current_a: float = TARGET_CURRENT_A,
+        kt_nm_per_a: float = KT_NM_PER_AMP,
+    ) -> None:
+        self._target_total_nm = target_current_a * kt_nm_per_a
+        self._pos_cmd: dict[int, float] = {}
+        self._last_log: float = 0.0
+
+    def is_active(self) -> bool:
+        return True
+
+    def on_start(self, controller: "Controller") -> None:
+        self._pos_cmd = {}
+        self._last_log = 0.0
+        logger.info(
+            "[BEHAVIOR] BalancedTorque: %.1fA total × %.3f Nm/A = %.3f Nm total target",
+            self._target_total_nm / (self.KT_NM_PER_AMP or 1e-9),
+            self.KT_NM_PER_AMP,
+            self._target_total_nm,
+        )
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
+        dt = max(state.dt, 1e-4)
+        ids = sorted(state.active_servo_ids)
+        if not ids:
+            return []
+
+        # Per-motor target scales with how many motors are active
+        target_per_motor = self._target_total_nm / len(ids)
+
+        torques = {sid: abs(state.motor_torques.get(sid, 0.0)) for sid in ids}
+        mean_torque = sum(torques.values()) / len(ids)
+
+        if now - self._last_log >= self.LOG_INTERVAL_S:
+            self._last_log = now
+            logger.debug(
+                "[BalancedTorque] mean=%.3f Nm  target/motor=%.3f Nm  %s",
+                mean_torque,
+                target_per_motor,
+                "  ".join(f"s{sid}:{torques[sid]:.2f}" for sid in ids),
+            )
+
+        cmds = []
+        for sid in ids:
+            if sid not in self._pos_cmd:
+                self._pos_cmd[sid] = state.servo_positions.get(sid, 0.0)
+
+            t_i = torques[sid]
+            e_eq = mean_torque - t_i                  # + → under-loaded vs peers
+            e_lvl = target_per_motor - mean_torque    # + → all motors under target
+            net_error = self.GAIN_EQ * e_eq + self.GAIN_LVL * e_lvl
+            step = net_error * self.TORQUE_TO_POS_GAIN * dt
+
+            pos = self._pos_cmd[sid]
+            if step > 0.0:
+                # Under-loaded: push outward in slalom-curl direction
+                dir_ = 1.0 if sid % 2 == 1 else -1.0
+                if abs(pos) > 0.05:
+                    dir_ = math.copysign(1.0, pos)
+                pos += dir_ * step
+            elif step < 0.0:
+                # Over-loaded: retreat toward home
+                retreat = min(abs(step), abs(pos))
+                if abs(pos) > 1e-6:
+                    pos -= math.copysign(retreat, pos)
+
+            self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, pos))
+            cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
+
+        return cmds
+
+
+class PurrRippleMotion(Motion):
+    """kd-vibration travelling wave propagating head to tail.
+
+    Each motor's kd is modulated by a sine wave with a spatial phase offset so
+    the peak ripples smoothly from head to tail with overlapping envelopes.
+    Multiple motors are simultaneously elevated. Position stays at 0° —
+    elevated kd resists velocity perturbations, producing a purring feel.
+    Speed controls ripple frequency (ripples per second).
+    """
+
+    name = "purr-ripple"
+
+    KD_TARGET: float = 0.08  # peak kd — causes vibration
+    BASE_HZ: float = 0.3    # ripple frequency at speed=1.0 (~3.3s per pass)
+    CREST_POWER: int = 0.5    # exponent on sin envelope; higher = narrower active crest
+
+    def __init__(self, speed: float = 1.0) -> None:
+        self.speed = max(speed, 0.01)
+        self._start: float = 0.0
+
+    def on_start(self, controller: "Controller") -> None:
+        self._start = time.monotonic()
+        hz = self.BASE_HZ * self.speed
+        logger.info("[BEHAVIOR] PurrRipple: speed=%.1f (%.2f Hz)", self.speed, hz)
+        logger.debug("[BEHAVIOR] PurrRipple: kd target=%.2f, %.2f Hz.", self.KD_TARGET, hz)
+
+    def is_active(self) -> bool:
+        return True
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        t = time.monotonic() - self._start
+        ids = sorted(sid for sid in state.active_servo_ids if sid != 7)
+        n = len(ids)
+        if n == 0:
+            return []
+
+        hz = self.BASE_HZ * self.speed
+        cmds = []
+        for i, sid in enumerate(ids):
+            # One wavelength across the body — each motor gets a unique phase offset
+            spatial_phase = (i / max(n - 1, 1)) * 2 * math.pi
+            phase = 2 * math.pi * hz * t - spatial_phase
+            if math.sin(phase) <= 0.0:
+                # Between crests: idle (freespin) until next turn
+                cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=0.0, kd=0.0, torque_ff=0.0))
+            else:
+                # Higher CREST_POWER narrows the active lobe without changing motor ordering
+                envelope = math.sin(phase) ** self.CREST_POWER
+                kd = MOTOR_LIMITS.kd_default + envelope * (self.KD_TARGET - MOTOR_LIMITS.kd_default)
+                cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=MOTOR_LIMITS.kp_default, kd=kd, torque_ff=0.0))
+
+        return cmds
+
+
 ALL_PATTERNS: list[type[Motion]] = [
     SnuggleMotion,
     PulseMotion,
@@ -1628,6 +1782,8 @@ ALL_PATTERNS: list[type[Motion]] = [
     NeighborAssistDriftMotion,
     YieldStiffMotion,
     PoseMotion,
+    BalancedTorqueMotion,
+    PurrRippleMotion,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]
