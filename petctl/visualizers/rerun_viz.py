@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 
 from petctl.protocols import Visualizer
-from petctl.types import RobotState, TouchSummary
+from petctl.types import GestureEvent, RobotState
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +299,7 @@ class RerunVisualizer(Visualizer):
     # Visualizer interface
     # ------------------------------------------------------------------
 
-    def _on_touch_summary(self, summary: TouchSummary) -> None:
+    def _on_touch_summary(self, summary: GestureEvent) -> None:
         if summary.touch_type == "none" or summary.status == "complete":
             self._contact_type = "none"
         else:

@@ -1,5 +1,5 @@
 """
-SineControlScheme — drives all servos in a staggered sine wave.
+SineMotion — drives all servos in a staggered sine wave.
 
 Oscillates each servo ±amplitude_deg around its home position (raw 0),
 with phases evenly distributed across the active servo set so the robot
@@ -22,7 +22,7 @@ import math
 import time
 from typing import TYPE_CHECKING, Optional
 
-from petctl.protocols import ControlScheme
+from petctl.protocols import Motion
 from petctl.types import RobotState, ServoCommand
 
 if TYPE_CHECKING:
@@ -52,7 +52,7 @@ def compute_sine_positions(
     }
 
 
-class SineControlScheme(ControlScheme):
+class SineMotion(Motion):
     """
     Travelling sine-wave control scheme.
 

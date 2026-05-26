@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from petctl.config import LOOP_LIMITS
 
 if TYPE_CHECKING:
-    from petctl.protocols import RobotBackend as RobotBackendProto
+    from petctl.protocols import Backend as RobotBackendProto
     from petctl.types import ModuleSensors, RobotState
 
 

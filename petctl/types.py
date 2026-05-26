@@ -40,8 +40,8 @@ class PowerTelemetry:
 
 
 @dataclass
-class TouchEvent:
-    """Processed touch classification for one tick, populated by the controller.
+class GestureFrame:
+    """Per-tick gesture classification, populated by the controller.
 
     At most one of cradle, stroke, hold is non-None when contact is detected.
     cradle takes highest priority. contact is always non-None when hold is
@@ -55,8 +55,8 @@ class TouchEvent:
 
 
 @dataclass
-class TouchSummary:
-    """Serializable summary of a touch event, emitted on type transitions.
+class GestureEvent:
+    """Lifecycle-aware gesture event, emitted on type transitions.
 
     Passed to async consumers (e.g. an LLM valence driver) via
     Controller.touch_events.  to_dict() is the primary LLM interface
@@ -84,20 +84,14 @@ class TouchSummary:
     promoted_from: str | None = None  # set when status=="promoted": the previous touch_type
 
     @classmethod
-    def from_touch_event(
+    def from_gesture_frame(
         cls,
-        event: TouchEvent,
+        event: GestureFrame,
         timestamp: float,
         session_duration: float = 0.0,
         status: str = "complete",
-    ) -> TouchSummary:
-        """Build a TouchSummary from a per-tick TouchEvent.
-
-        session_duration is the wall-clock time since first contact this
-        session; it's used for stroke types since StrokeReading doesn't
-        track its own duration.  HoldReading.duration is used directly
-        for hold-family types.
-        """
+    ) -> GestureEvent:
+        """Build a GestureEvent from a per-tick GestureFrame."""
         cradle = event.cradle
         stroke = event.stroke
         hold = event.hold
@@ -313,17 +307,17 @@ class RobotState:
     # Head-only battery telemetry raw ADC values.
     battery_current_raw: int = 0
     battery_voltage_raw: int = 0
-    # Touch classification for this tick — populated by Controller before scheme.update().
-    touch: TouchEvent | None = field(default=None)
+    # Gesture classification for this tick — populated by Controller before motion.update().
+    gesture: GestureFrame | None = field(default=None)
     # Module IDs currently detected on the robot
     active_modules: list[int] = field(default_factory=list)
-    # Servo IDs confirmed to exist — used by schemes to avoid sending commands
+    # Servo IDs confirmed to exist — used by motion sources to avoid sending commands
     # to non-existent servos (which cause protocol timeouts).
     active_servo_ids: set[int] = field(default_factory=set)
     connected: bool = False
-    # True when the active scheme is commanding autonomous motion (set by Controller
-    # each tick via scheme.is_active()). Suppresses twist detection in ContactClassifier.
-    is_behavior_active: bool = False
+    # True when the active motion source is commanding autonomous motion (set by Controller
+    # each tick via motion.is_active()). Suppresses twist detection in ContactClassifier.
+    is_motion_active: bool = False
     # Seconds since last update — useful for time-based control schemes
     dt: float = 0.0
 

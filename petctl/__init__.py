@@ -5,26 +5,26 @@ Quick start (mock robot, keyboard control, Rerun visualization):
 
     from petctl import Controller
     from petctl.backends.mock import MockBackend
-    from petctl.schemes.keyboard import KeyboardControlScheme
+    from petctl.schemes.keyboard import KeyboardMotion
     from petctl.visualizers.rerun_viz import RerunVisualizer
     import asyncio
 
     asyncio.run(
         Controller(
             backend=MockBackend(),
-            scheme=KeyboardControlScheme(),
+            motion=KeyboardMotion(),
             visualizers=[RerunVisualizer()],
         ).run()
     )
 
-Custom ML control scheme:
+Custom ML motion source:
 
-    from petctl import Controller, ControlScheme, RobotState, ServoCommand
+    from petctl import Controller, Motion, RobotState, ServoCommand
     from petctl.backends.robot import RobotBackend
     import asyncio
 
-    class MyScheme(ControlScheme):
-        name = "my_ml_scheme"
+    class MyAI(Motion):
+        name = "my_ai"
 
         def update(self, state: RobotState) -> list[ServoCommand]:
             # state.sensors[module_id].touch_left_pads etc. — per-pad tuples (4/4/6)
@@ -35,7 +35,7 @@ Custom ML control scheme:
     asyncio.run(
         Controller(
             backend=RobotBackend(),
-            scheme=MyScheme(),
+            motion=MyAI(),
         ).run()
     )
 
@@ -46,15 +46,15 @@ CLI:
 """
 
 from petctl.controller import Controller
-from petctl.protocols import ControlScheme, RobotBackend, Visualizer
+from petctl.protocols import Backend, Motion, Visualizer
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Controller",
-    "ControlScheme",
-    "RobotBackend",
+    "Motion",
+    "Backend",
     "Visualizer",
     "RobotState",
     "ModuleSensors",

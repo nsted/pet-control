@@ -1,8 +1,8 @@
 """
-ML Control Scheme Example
-=========================
+ML Motion Example
+=================
 Shows how to wrap a PyTorch model (the BiLSTM touch classifier from
-grapple_ai) into a petctl ControlScheme.
+grapple_ai) into a petctl Motion source.
 
 Run with mock backend (no robot needed):
     python examples/ml_control_example.py
@@ -31,7 +31,7 @@ _GRAPPLE_AI = os.environ.get(
 if os.path.isdir(_GRAPPLE_AI) and _GRAPPLE_AI not in sys.path:
     sys.path.insert(0, _GRAPPLE_AI)
 
-from petctl import Controller, ControlScheme, RobotState, ServoCommand  # noqa: E402
+from petctl import Controller, Motion, RobotState, ServoCommand  # noqa: E402
 from petctl.backends.mock import MockBackend
 from petctl.backends.robot import RobotBackend
 from petctl.visualizers.rerun_viz import RerunVisualizer
@@ -43,7 +43,7 @@ _SENSOR_FIELDS = (
 )
 
 
-class TouchReactiveScheme(ControlScheme):
+class TouchReactiveMotion(Motion):
     """
     Uses the BiLSTM touch classifier from grapple_ai to drive servos
     based on detected touch type and valence.
@@ -130,7 +130,7 @@ class TouchReactiveScheme(ControlScheme):
         ]
 
 
-class SineWaveScheme(ControlScheme):
+class SineWaveMotion(Motion):
     """
     Simple demonstration scheme: drives each servo with a sine wave.
     No ML required.  Useful for testing the visualizer.
@@ -159,11 +159,11 @@ class SineWaveScheme(ControlScheme):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="petctl ML control example")
-    parser.add_argument("--real", action="store_true", help="Use real robot (RobotBackend)")
+    parser.add_argument("--real", action="store_true", help="Use real robot backend")
     parser.add_argument("--host", default="pet-robot.local", help="Robot hostname")
     parser.add_argument(
         "--scheme", choices=["touch", "sine"], default="sine",
-        help="Control scheme to use (default: sine — no model needed)"
+        help="Motion source to use (default: sine — no model needed)"
     )
     parser.add_argument(
         "--model", default="grapple_ai/models/best_grapple_model.pth",
@@ -177,15 +177,15 @@ def main() -> None:
     else:
         backend = MockBackend(mode="mock-sensor-sine", num_modules=4)
 
-    # Scheme
+    # Motion source
     if args.scheme == "touch":
-        scheme = TouchReactiveScheme(model_path=args.model)
+        scheme = TouchReactiveMotion(model_path=args.model)
     else:
-        scheme = SineWaveScheme()
+        scheme = SineWaveMotion()
 
     ctrl = Controller(
         backend=backend,
-        scheme=scheme,
+        motion=scheme,
         visualizers=[RerunVisualizer()],
         dry_run=not args.real,  # safe by default when using mock
     )

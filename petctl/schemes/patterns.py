@@ -26,7 +26,7 @@ import time
 from typing import TYPE_CHECKING
 
 from petctl.config import MOTOR_LIMITS
-from petctl.protocols import ControlScheme
+from petctl.protocols import Motion
 from petctl.types import RobotState, ServoCommand
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SnuggleControlScheme(ControlScheme):
+class SnuggleMotion(Motion):
     """Two full wave crests across the body simultaneously."""
 
     name = "snuggle"
@@ -70,7 +70,7 @@ class SnuggleControlScheme(ControlScheme):
         ]
 
 
-class PulseControlScheme(ControlScheme):
+class PulseMotion(Motion):
     """All joints in phase — whole-body contraction and release."""
 
     name = "pulse"
@@ -97,7 +97,7 @@ class PulseControlScheme(ControlScheme):
         ]
 
 
-class BreatheControlScheme(ControlScheme):
+class BreatheMotion(Motion):
     """Very gentle, slow in-phase motion — aliveness at rest."""
 
     name = "breathe"
@@ -124,7 +124,7 @@ class BreatheControlScheme(ControlScheme):
         ]
 
 
-class SwayControlScheme(ControlScheme):
+class SwayMotion(Motion):
     """Travelling wave with amplitude tapering head→tail (head leads, tail damps)."""
 
     name = "sway"
@@ -167,7 +167,7 @@ class SwayControlScheme(ControlScheme):
         return cmds
 
 
-class CascadeControlScheme(ControlScheme):
+class CascadeMotion(Motion):
     """Travelling wave with amplitude growing head→tail (crack-the-whip effect)."""
 
     name = "cascade"
@@ -210,7 +210,7 @@ class CascadeControlScheme(ControlScheme):
         return cmds
 
 
-class SlalomControlScheme(ControlScheme):
+class SlalomMotion(Motion):
     """Odd/even joints get opposing phase → persistent S-shape that rocks side to side."""
 
     name = "slalom"
@@ -242,7 +242,7 @@ class SlalomControlScheme(ControlScheme):
         ]
 
 
-class TwitchControlScheme(ControlScheme):
+class TwitchMotion(Motion):
     """Each joint wanders independently via smoothed Brownian noise."""
 
     name = "twitch"
@@ -279,7 +279,7 @@ class TwitchControlScheme(ControlScheme):
         return cmds
 
 
-class FreezeControlScheme(ControlScheme):
+class FreezeMotion(Motion):
     """Command all joints to home (0°) and hold there."""
 
     name = "freeze"
@@ -295,7 +295,7 @@ class FreezeControlScheme(ControlScheme):
         ]
 
 
-class IdleControlScheme(ControlScheme):
+class IdleMotion(Motion):
     """Stay in MIT mode (motors on, green light) but freespin — kp=kd=0, no torque."""
 
     name = "idle"
@@ -311,7 +311,7 @@ class IdleControlScheme(ControlScheme):
         ]
 
 
-class CoilControlScheme(ControlScheme):
+class CoilMotion(Motion):
     """Quadratic spatial phase distribution — tighter curl accumulates toward the tail."""
 
     name = "coil"
@@ -346,7 +346,7 @@ class CoilControlScheme(ControlScheme):
         ]
 
 
-class Spin7ControlScheme(ControlScheme):
+class Spin7Motion(Motion):
     """Continuously rotate joint 7 (tail); all other joints hold at home.
 
     Every full revolution the motor's software zero is reset to its current
@@ -389,7 +389,7 @@ class Spin7ControlScheme(ControlScheme):
         return cmds
 
 
-class StrokeReactControlScheme(ControlScheme):
+class StrokeReactMotion(Motion):
     """React to lateral stroke by continuously spinning toward the touching hand.
 
     Each module drives its own servo independently from its capacitive sensors.
@@ -466,7 +466,7 @@ class StrokeReactControlScheme(ControlScheme):
         return cmds
 
 
-class _WanderBase(ControlScheme):
+class _WanderBase(Motion):
     """Position+torque stall detection and direction reversal, shared by Wander and Drift.
 
     Stall requires two conditions within STALL_WINDOW_S:
@@ -569,7 +569,7 @@ class _WanderBase(ControlScheme):
         return clamped, peak_t
 
 
-class ExploreControlScheme(_WanderBase):
+class ExploreMotion(_WanderBase):
     """Each joint turns at a fixed speed, reversing on position+torque stall or ceiling."""
 
     name = "explore"
@@ -601,13 +601,13 @@ class ExploreControlScheme(_WanderBase):
         return cmds
 
 
-class DriftControlScheme(_WanderBase):
+class DriftMotion(_WanderBase):
     """Wander variant where all joints share one speed that varies over time.
 
     Speed is driven by a sine oscillator between MIN_SPEED_DEG_PER_S and
     MAX_SPEED_DEG_PER_S with period SPEED_PERIOD_S.  Every motor receives the
     same speed value each tick; stall detection and reversal are identical to
-    ExploreControlScheme.
+    ExploreMotion.
     """
 
     name = "drift"
@@ -655,8 +655,8 @@ class DriftControlScheme(_WanderBase):
         return cmds
 
 
-class StruggleControlScheme(ControlScheme):
-    """Copy of ExploreControlScheme for parameter tuning.
+class StruggleMotion(Motion):
+    """Copy of ExploreMotion for parameter tuning.
 
     Identical behaviour to explore — tweak the class constants here
     without disturbing the reference.
@@ -744,7 +744,7 @@ class StruggleControlScheme(ControlScheme):
         return cmds
 
 
-class CurlControlScheme(ControlScheme):
+class CurlMotion(Motion):
     """Ramp joints to loop head-to-tail using slalom sign pattern, then hold.
 
     Alternating signs (odd-enumeration-index +, even −) match the slalom curl
@@ -811,7 +811,7 @@ def _sense_face_direction(state: RobotState, pad_threshold: float, direction_thr
     return 0.0
 
 
-class StrokeCurlScheme(ControlScheme):
+class StrokeCurlMotion(Motion):
     """
     Each module curls toward the touched face while the hand is on it.
 
@@ -908,7 +908,7 @@ class StrokeCurlScheme(ControlScheme):
         return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
 
 
-class StrokeSnuggleScheme(ControlScheme):
+class StrokeSnuggleMotion(Motion):
     """
     Like stroke-curl, but after 10s of continuous stroking transitions to
     snuggle for 8s, then commands all joints home.
@@ -1061,7 +1061,7 @@ class StrokeSnuggleScheme(ControlScheme):
 
 
 
-class YieldStiffScheme(ControlScheme):
+class YieldStiffMotion(Motion):
     """Yield by drifting the commanded position toward displacement while torque is high.
 
     Each tick: if |motor_torque| > TORQUE_BASELINE_NM on a servo, the commanded
@@ -1105,7 +1105,7 @@ class YieldStiffScheme(ControlScheme):
         return commands
 
 
-class PoseScheme(ControlScheme):
+class PoseMotion(Motion):
     """Track actual position while a hand is present and moving; lock on release.
 
     A joint enters following only when BOTH conditions hold:
@@ -1210,26 +1210,26 @@ class PoseScheme(ControlScheme):
         return commands
 
 
-ALL_PATTERNS: list[type[ControlScheme]] = [
-    SnuggleControlScheme,
-    PulseControlScheme,
-    BreatheControlScheme,
-    SwayControlScheme,
-    CascadeControlScheme,
-    SlalomControlScheme,
-    TwitchControlScheme,
-    FreezeControlScheme,
-    CoilControlScheme,
-    CurlControlScheme,
-    Spin7ControlScheme,
-    StrokeReactControlScheme,
-    StrokeCurlScheme,
-    StrokeSnuggleScheme,
-    ExploreControlScheme,
-    DriftControlScheme,
-    StruggleControlScheme,
-    YieldStiffScheme,
-    PoseScheme,
+ALL_PATTERNS: list[type[Motion]] = [
+    SnuggleMotion,
+    PulseMotion,
+    BreatheMotion,
+    SwayMotion,
+    CascadeMotion,
+    SlalomMotion,
+    TwitchMotion,
+    FreezeMotion,
+    CoilMotion,
+    CurlMotion,
+    Spin7Motion,
+    StrokeReactMotion,
+    StrokeCurlMotion,
+    StrokeSnuggleMotion,
+    ExploreMotion,
+    DriftMotion,
+    StruggleMotion,
+    YieldStiffMotion,
+    PoseMotion,
 ]
 
 PATTERN_NAMES: list[str] = [cls.name for cls in ALL_PATTERNS]

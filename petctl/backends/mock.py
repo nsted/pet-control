@@ -4,7 +4,7 @@ MockBackend — run petctl with no robot connected.
 Two primary modes:
 
   interactive (default)
-    Servo positions are driven by whatever ControlScheme is active
+    Servo positions are driven by whatever Motion source is active
     (keyboard, passthrough, etc.).  Sensor values come from a JSON
     file if one is given, otherwise zero.  Hot-reloads the file on
     change so you can edit sensor values while the visualizer runs.
@@ -49,7 +49,7 @@ import random
 import time
 from typing import Literal, Optional
 
-from petctl.protocols import RobotBackend
+from petctl.protocols import Backend
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 _PRESSURE_FIELDS = ("pressure_middle", "pressure_left", "pressure_right")
 
 
-class MockBackend(RobotBackend):
+class MockBackend(Backend):
     """
     A backend that simulates the robot locally.
 
@@ -99,7 +99,7 @@ class MockBackend(RobotBackend):
         self._connected = False
 
     # ------------------------------------------------------------------
-    # RobotBackend interface
+    # Backend interface
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:

@@ -78,10 +78,10 @@ class ControlLoopLimits:
 class BehaviorLimits:
     """Limits for the BehaviorEngine (when implemented).
 
-    These are advisory for standalone ControlScheme subclasses — the controller
-    does not clamp direct scheme output against these values. Only LOOP_LIMITS
+    These are advisory for standalone Motion subclasses — the controller
+    does not clamp direct motion output against these values. Only LOOP_LIMITS
     (slew rate, per-tick delta) and MOTOR_LIMITS (encoding ceiling) apply to all
-    schemes unconditionally.
+    motion sources unconditionally.
     """
 
     # Maximum angle contribution from any single behavior (degrees)

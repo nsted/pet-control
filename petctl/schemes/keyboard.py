@@ -1,5 +1,5 @@
 """
-KeyboardControlScheme — control servos with the keyboard.
+KeyboardMotion — control servos with the keyboard.
 
 Controls:
   Ctrl+Shift+K   Enable/disable module angle adjustment (disabled by default)
@@ -25,7 +25,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
-from petctl.protocols import ControlScheme
+from petctl.protocols import Motion
 from petctl.types import RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 _MAX_KEYBOARD_MODULES = 9
 
 
-class KeyboardControlScheme(ControlScheme):
+class KeyboardMotion(Motion):
     """
     Keyboard-driven servo control.
 
@@ -79,7 +79,7 @@ class KeyboardControlScheme(ControlScheme):
         self._ctrl_held: bool = False
 
     # ------------------------------------------------------------------
-    # ControlScheme interface
+    # Motion interface
     # ------------------------------------------------------------------
 
     def on_start(self, controller: "Controller") -> None:

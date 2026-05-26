@@ -1,7 +1,7 @@
 """
-OllamaControlScheme — touch-reactive control driven by a local LLM.
+OllamaMotion — touch-reactive motion driven by a local LLM.
 
-The scheme reads touch events from the controller's `touch_events` queue
+Reads gesture events from the controller's `touch_events` queue
 (AsyncIO, emits on type transitions only) and asks a gemma3 model via Ollama
 which movement to perform.  LLM calls happen in a background thread so the
 30 Hz control loop stays non-blocking.  Between calls the last commanded
@@ -9,9 +9,9 @@ motion continues uninterrupted.
 
 A persistent conversation is maintained for the session: the combined system
 prompt (robot_context.md + behavior_guide.md) is sent once on start, then
-each touch event is appended as a user turn so the model retains context.
+each gesture event is appended as a user turn so the model retains context.
 
-Motion is delegated to the same ControlScheme classes used by standalone
+Motion is delegated to the same Motion classes used by standalone
 patterns (patterns.py).  Speed from the LLM response scales frequency;
 amplitude always runs at the full _AMP_MAX value for each motion.
 
@@ -30,29 +30,29 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from petctl.llm.client import OllamaClient
-from petctl.protocols import ControlScheme
+from petctl.protocols import Motion
 from petctl.schemes.patterns import (
-    BreatheControlScheme,
-    CascadeControlScheme,
-    CoilControlScheme,
-    CurlControlScheme,
-    DriftControlScheme,
-    FreezeControlScheme,
-    IdleControlScheme,
-    PoseScheme,
-    PulseControlScheme,
-    SnuggleControlScheme,
-    SlalomControlScheme,
-    StrokeCurlScheme,
-    StrokeReactControlScheme,
-    StrokeSnuggleScheme,
-    SwayControlScheme,
-    TwitchControlScheme,
-    ExploreControlScheme,
-    StruggleControlScheme,
-    YieldStiffScheme,
+    BreatheMotion,
+    CascadeMotion,
+    CoilMotion,
+    CurlMotion,
+    DriftMotion,
+    FreezeMotion,
+    IdleMotion,
+    PoseMotion,
+    PulseMotion,
+    SnuggleMotion,
+    SlalomMotion,
+    StrokeCurlMotion,
+    StrokeReactMotion,
+    StrokeSnuggleMotion,
+    SwayMotion,
+    TwitchMotion,
+    ExploreMotion,
+    StruggleMotion,
+    YieldStiffMotion,
 )
-from petctl.types import RobotState, ServoCommand, TouchSummary
+from petctl.types import GestureEvent, RobotState, ServoCommand
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
@@ -96,8 +96,8 @@ _VALID_MOVEMENTS = set(_AMP_MAX)
 _DEFAULT_MOTION = "stroke-curl"
 
 
-class _CurlLeft(CurlControlScheme):
-    """CurlControlScheme with all joint signs negated → curl to the left."""
+class _CurlLeft(CurlMotion):
+    """CurlMotion with all joint signs negated → curl to the left."""
 
     name = "curl_left"
 
@@ -109,54 +109,54 @@ class _CurlLeft(CurlControlScheme):
         return cmds
 
 
-def _make_pattern(motion: str, speed: float) -> ControlScheme:
-    """Instantiate a ControlScheme for the given motion, scaled by speed."""
+def _make_pattern(motion: str, speed: float) -> Motion:
+    """Instantiate a Motion for the given motion name, scaled by speed."""
     amp = _AMP_MAX.get(motion, 0.0)
 
     if motion in ("freeze", "home"):
-        return FreezeControlScheme()
+        return FreezeMotion()
     if motion == "idle":
-        return IdleControlScheme()
+        return IdleMotion()
     if motion == "breathe":
-        return BreatheControlScheme(amplitude_deg=amp, hz=0.05 + speed * 0.06)
+        return BreatheMotion(amplitude_deg=amp, hz=0.05 + speed * 0.06)
     if motion == "pulse":
-        return PulseControlScheme(amplitude_deg=amp, hz=0.15 + speed * 0.35)
+        return PulseMotion(amplitude_deg=amp, hz=0.15 + speed * 0.35)
     if motion == "snuggle":
-        return SnuggleControlScheme(amplitude_deg=amp, hz=0.2 + speed * 0.4)
+        return SnuggleMotion(amplitude_deg=amp, hz=0.2 + speed * 0.4)
     if motion == "sway":
-        return SwayControlScheme(amplitude_deg=amp, hz=0.08 + speed * 0.15)
+        return SwayMotion(amplitude_deg=amp, hz=0.08 + speed * 0.15)
     if motion == "cascade":
-        return CascadeControlScheme(amplitude_deg=amp, hz=0.15 + speed * 0.25)
+        return CascadeMotion(amplitude_deg=amp, hz=0.15 + speed * 0.25)
     if motion == "slalom":
-        return SlalomControlScheme(amplitude_deg=amp, hz=0.1 + speed * 0.3)
+        return SlalomMotion(amplitude_deg=amp, hz=0.1 + speed * 0.3)
     if motion == "twitch":
-        return TwitchControlScheme(amplitude_deg=amp, smoothing=0.03 + speed * 0.08)
+        return TwitchMotion(amplitude_deg=amp, smoothing=0.03 + speed * 0.08)
     if motion == "coil":
-        return CoilControlScheme(amplitude_deg=amp, hz=0.1 + speed * 0.2)
+        return CoilMotion(amplitude_deg=amp, hz=0.1 + speed * 0.2)
     if motion == "curl_right":
-        return CurlControlScheme(target_deg=amp)
+        return CurlMotion(target_deg=amp)
     if motion == "curl_left":
         return _CurlLeft(target_deg=amp)
     if motion == "explore":
-        return ExploreControlScheme(speed_deg_per_s=20.0 + speed * 60.0)
+        return ExploreMotion(speed_deg_per_s=20.0 + speed * 60.0)
     if motion == "struggle":
-        return StruggleControlScheme(speed_deg_per_s=50.0 + speed * 50.0)
+        return StruggleMotion(speed_deg_per_s=50.0 + speed * 50.0)
     if motion == "drift":
-        return DriftControlScheme()
+        return DriftMotion()
     if motion == "stroke":
-        return StrokeReactControlScheme()
+        return StrokeReactMotion()
     if motion == "stroke-curl":
-        return StrokeCurlScheme()
+        return StrokeCurlMotion()
     if motion == "stroke-snuggle":
-        return StrokeSnuggleScheme()
+        return StrokeSnuggleMotion()
     if motion == "yield-stiff":
-        return YieldStiffScheme()
+        return YieldStiffMotion()
     if motion == "pose":
-        return PoseScheme()
-    return FreezeControlScheme()
+        return PoseMotion()
+    return FreezeMotion()
 
 
-def _update_pattern_params(pattern: ControlScheme, motion: str, speed: float) -> None:
+def _update_pattern_params(pattern: Motion, motion: str, speed: float) -> None:
     """Update a running pattern's amplitude/speed without resetting its phase."""
     amp = _AMP_MAX.get(motion, 0.0)
 
@@ -194,7 +194,7 @@ def _update_pattern_params(pattern: ControlScheme, motion: str, speed: float) ->
     # no tunable params — nothing to update
 
 
-def _format_batch(batch: list[TouchSummary]) -> str:
+def _format_batch(batch: list[GestureEvent]) -> str:
     t0 = batch[0].timestamp
     pairs = ",".join(
         f"+{s.timestamp - t0:.1f}s:{_categorize_gesture(s)}"
@@ -203,7 +203,7 @@ def _format_batch(batch: list[TouchSummary]) -> str:
     return "{" + pairs + "}"
 
 
-def _categorize_gesture(s: TouchSummary) -> str:
+def _categorize_gesture(s: GestureEvent) -> str:
     if s.touch_type == "stroke":
         return "stroke-fast" if s.velocity is not None and abs(s.velocity) >= 2.0 else "stroke-slow"
     if s.touch_type == "squeeze":
@@ -213,11 +213,11 @@ def _categorize_gesture(s: TouchSummary) -> str:
     return s.touch_type
 
 
-class OllamaControlScheme(ControlScheme):
-    """Control scheme that uses a local Ollama LLM to map touch→movement.
+class OllamaMotion(Motion):
+    """Motion source that uses a local Ollama LLM to map touch→movement.
 
-    The controller populates state.touch each tick and emits TouchSummary
-    events on the touch_events queue on type transitions.  This scheme drains
+    The controller populates state.gesture each tick and emits GestureEvent
+    events on the touch_events queue on type transitions.  This motion drains
     that queue each tick and spawns a background LLM call for each new event.
 
     Args:
@@ -237,18 +237,18 @@ class OllamaControlScheme(ControlScheme):
     ) -> None:
         self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout, log_input=log_input)
 
-        # Injected in on_start() — the controller's shared touch event queue.
-        self._touch_queue: asyncio.Queue[TouchSummary] | None = None
+        # Injected in on_start() — the controller's shared gesture event queue.
+        self._touch_queue: asyncio.Queue[GestureEvent] | None = None
 
         # Active delegated pattern — written by background thread (LLM response)
         # and by update() (touch-end home), read by update(). Protected by _lock.
         self._lock = threading.Lock()
-        self._active_pattern: ControlScheme = FreezeControlScheme()
+        self._active_pattern: Motion = FreezeMotion()
 
         # Stored so background thread can call on_start() on new patterns.
         self._controller: Controller | None = None
 
-        self._batch: list[TouchSummary] = []
+        self._batch: list[GestureEvent] = []
         self._batch_start_t: float = 0.0
         self._pending: threading.Thread | None = None
         self._system_prompt: str = ""
@@ -257,7 +257,7 @@ class OllamaControlScheme(ControlScheme):
         self._touch_ended_t: float | None = None  # wall time of last "none" event
 
     # ------------------------------------------------------------------
-    # ControlScheme interface
+    # Motion interface
     # ------------------------------------------------------------------
 
     def on_start(self, controller: Controller) -> None:
@@ -330,7 +330,7 @@ class OllamaControlScheme(ControlScheme):
         assert self._touch_queue is not None
         while True:
             try:
-                summary: TouchSummary = self._touch_queue.get_nowait()
+                summary: GestureEvent = self._touch_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
 

@@ -1,13 +1,13 @@
 """
 Abstract base classes (plugin protocols) for petctl.
 
-Implement these to add new backends, control schemes, or visualizers:
+Implement these to add new backends, motion sources, or visualizers:
 
-  class MyScheme(ControlScheme):
+  class MyMotion(Motion):
       def update(self, state: RobotState) -> List[ServoCommand]:
           ...
 
-  class MyBackend(RobotBackend):
+  class MyBackend(Backend):
       async def get_state(self) -> RobotState: ...
       async def send_commands(self, cmds): ...
       ...
@@ -24,16 +24,16 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# RobotBackend
+# Backend
 # ---------------------------------------------------------------------------
 
-class RobotBackend(ABC):
+class Backend(ABC):
     """
     Abstraction over a physical robot or a simulator.
 
     The Controller talks exclusively through this interface, so swapping
     RobotBackend for MockBackend or a future MuJoCoBackend requires
-    zero changes to control schemes or visualizers.
+    zero changes to motion sources or visualizers.
     """
 
     @abstractmethod
@@ -102,23 +102,23 @@ class RobotBackend(ABC):
 
 
 # ---------------------------------------------------------------------------
-# ControlScheme
+# Motion
 # ---------------------------------------------------------------------------
 
-class ControlScheme(ABC):
+class Motion(ABC):
     """
-    Base class for all control schemes.
+    Base class for all motion sources.
 
-    A ControlScheme receives RobotState every tick and returns a list of
+    A Motion receives RobotState every tick and returns a list of
     ServoCommands to send. Empty list = no movement this tick.
 
     Lifecycle:
-        on_start(controller)  — called once when scheme becomes active
+        on_start(controller)  — called once when motion source becomes active
         update(state)         — called every tick; return commands
-        on_stop()             — called on shutdown or scheme swap
+        on_stop()             — called on shutdown or motion swap
 
-    Example (ML scheme):
-        class MyAI(ControlScheme):
+    Example (ML motion source):
+        class MyAI(Motion):
             name = "my_ai"
 
             def on_start(self, controller):
@@ -133,7 +133,7 @@ class ControlScheme(ABC):
     name: ClassVar[str] = "unnamed"
 
     def on_start(self, controller: "Controller") -> None:
-        """Called once when this scheme is activated."""
+        """Called once when this motion source is activated."""
         ...
 
     @abstractmethod
@@ -150,25 +150,25 @@ class ControlScheme(ABC):
         ...
 
     def on_stop(self) -> None:
-        """Called on shutdown or when scheme is swapped out."""
+        """Called on shutdown or when motion source is swapped out."""
         ...
 
     def is_active(self) -> bool:
-        """True when this scheme is commanding autonomous motion.
+        """True when this motion source is commanding autonomous motion.
 
-        The Controller sets RobotState.is_behavior_active from this each tick.
+        The Controller sets RobotState.is_motion_active from this each tick.
         When True, ContactClassifier suppresses twist/budge detection so the
         robot's own motion is not misread as a human gesture.
 
-        Override to return True in motion schemes (sway, ripple, wander, etc.).
-        Reactive/idle schemes (keyboard, stroke-curl, freeze) leave this False.
+        Override to return True in autonomous motion sources (sway, ripple, wander, etc.).
+        Reactive/idle sources (keyboard, stroke-curl, freeze) leave this False.
         """
         return False
 
     def take_save_home(self) -> bool:
         """Return True (and reset the flag) when a save-home should be triggered.
 
-        Override in schemes that support user-triggered EEPROM home-saving.
+        Override in motion sources that support user-triggered EEPROM home-saving.
         The default always returns False.
         """
         return False

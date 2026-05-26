@@ -97,13 +97,13 @@ def run(
         "--motors",
         help="Comma-separated MIT motor IDs to use (e.g. 1). Skips CAN feedback discovery; use for partial hardware.",
     ),
-    # SineControlScheme options
+    # SineMotion options
     servo_id: Optional[int] = typer.Option(
         None,
         "--servo-id",
         help="Servo ID to target with sine control (default: all active servos)",
     ),
-    # KeyboardControlScheme options
+    # KeyboardMotion options
     step: float = typer.Option(
         4.0,
         help="Degrees per keypress for keyboard control",
@@ -161,22 +161,22 @@ def run(
         typer.echo(f"Unknown backend '{backend}'. Choose: mock, robot", err=True)
         raise typer.Exit(1)
 
-    # --- Build control scheme ---
+    # --- Build motion source ---
     if control == "keyboard":
-        from petctl.schemes.keyboard import KeyboardControlScheme
-        _scheme = KeyboardControlScheme(step_deg=step)
+        from petctl.schemes.keyboard import KeyboardMotion
+        _scheme = KeyboardMotion(step_deg=step)
     elif control == "passthrough":
-        from petctl.schemes.passthrough import PassthroughControlScheme
-        _scheme = PassthroughControlScheme()
+        from petctl.schemes.passthrough import PassthroughMotion
+        _scheme = PassthroughMotion()
     elif control == "sine":
-        from petctl.schemes.sine import SineControlScheme
-        _scheme = SineControlScheme(servo_id=servo_id)
+        from petctl.schemes.sine import SineMotion
+        _scheme = SineMotion(servo_id=servo_id)
     elif control == "command":
-        from petctl.schemes.command import CommandScheme
-        _scheme = CommandScheme()
+        from petctl.schemes.command import CommandMotion
+        _scheme = CommandMotion()
     elif control == "ollama":
-        from petctl.schemes.ollama_scheme import OllamaControlScheme
-        _scheme = OllamaControlScheme(log_input=log_ollama_input)
+        from petctl.schemes.ollama_scheme import OllamaMotion
+        _scheme = OllamaMotion(log_input=log_ollama_input)
     elif control in ("snuggle", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "stroke-snuggle", "explore", "drift", "struggle", "yield-stiff", "pose"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
@@ -200,7 +200,7 @@ def run(
     async def _run() -> None:
         ctrl = Controller(
             backend=_backend,
-            scheme=_scheme,
+            motion=_scheme,
             visualizers=_visualizers,
             dry_run=dry_run,
             limp=limp,

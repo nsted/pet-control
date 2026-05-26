@@ -14,7 +14,7 @@ from typing import Optional, Sequence
 import websockets
 
 from petctl.config import LOOP_LIMITS, MOTOR_LIMITS, SENSOR_LIMITS
-from petctl.protocols import RobotBackend as _BackendBase
+from petctl.protocols import Backend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,7 @@ class RobotBackend(_BackendBase):
         self._ws_send_lock: asyncio.Lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
-    # RobotBackend interface
+    # Backend interface
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:

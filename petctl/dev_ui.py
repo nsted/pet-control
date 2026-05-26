@@ -325,7 +325,7 @@ class DevUI:
                     self.end_headers()
                     self.wfile.write(body)
                 elif self.path == "/status":
-                    body = json.dumps({"scheme": ctrl.scheme.name}).encode()
+                    body = json.dumps({"scheme": ctrl.motion.name}).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -422,7 +422,7 @@ def _command(controller: "Controller", data: dict) -> dict:
     speed = max(0.05, min(1.0, float(data.get("speed", 1.0))))
     _reenable_motors(controller)
     pattern = _make_pattern(motion, speed)
-    controller.set_scheme(pattern)
+    controller.set_motion(pattern)
     return {"scheme": pattern.name}
 
 
@@ -442,7 +442,7 @@ def _launch(controller: "Controller", name: str, params: dict) -> dict:
     valid = inspect.signature(cls).parameters
     filtered = {k: v for k, v in params.items() if k in valid and k != "self"}
     try:
-        controller.set_scheme(cls(**filtered))
+        controller.set_motion(cls(**filtered))
     except Exception as e:
         return {"error": str(e)}
-    return {"scheme": controller.scheme.name}
+    return {"scheme": controller.motion.name}

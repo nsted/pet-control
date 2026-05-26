@@ -1,10 +1,10 @@
-"""Tests for YieldStiffScheme: torque-driven position drift compliance."""
+"""Tests for YieldStiffMotion: torque-driven position drift compliance."""
 
 from __future__ import annotations
 
 import pytest
 
-from petctl.schemes.patterns import YieldStiffScheme
+from petctl.schemes.patterns import YieldStiffMotion
 from petctl.types import RobotState
 
 
@@ -23,52 +23,52 @@ def _state(
     )
 
 
-ABOVE = YieldStiffScheme.TORQUE_BASELINE_NM * 3  # clearly above baseline
-BELOW = YieldStiffScheme.TORQUE_BASELINE_NM * 0.4  # clearly below baseline
+ABOVE = YieldStiffMotion.TORQUE_BASELINE_NM * 3  # clearly above baseline
+BELOW = YieldStiffMotion.TORQUE_BASELINE_NM * 0.4  # clearly below baseline
 
 
-class TestYieldStiffScheme:
+class TestYieldStiffMotion:
 
     def test_no_torque_no_drift(self):
         """Zero torque → commanded stays at 0."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         cmds = scheme.update(_state({1: 0.3}, {1: 0.0}))
         assert cmds[0].position == pytest.approx(0.0)
 
     def test_torque_below_baseline_no_drift(self):
         """Torque below baseline → no drift."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         cmds = scheme.update(_state({1: 0.3}, {1: BELOW}))
         assert cmds[0].position == pytest.approx(0.0)
 
     def test_torque_above_baseline_drifts_toward_actual(self):
         """Torque above baseline → commanded moves toward actual."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         cmds = scheme.update(_state({1: 0.5}, {1: ABOVE}, dt=0.1))
         assert 0.0 < cmds[0].position <= 0.5
 
     def test_drift_direction_positive(self):
         """Positive displacement → commanded drifts positive."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         cmds = scheme.update(_state({1: 0.5}, {1: ABOVE}, dt=0.1))
         assert cmds[0].position > 0.0
 
     def test_drift_direction_negative(self):
         """Negative displacement → commanded drifts negative."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         cmds = scheme.update(_state({1: -0.5}, {1: ABOVE}, dt=0.1))
         assert cmds[0].position < 0.0
 
     def test_does_not_overshoot_actual(self):
         """Step is capped so commanded never goes past actual position."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         # Large dt → large step budget, but actual is only 0.1 rad away
         cmds = scheme.update(_state({1: 0.1}, {1: ABOVE}, dt=100.0))
         assert cmds[0].position == pytest.approx(0.1)
 
     def test_torque_drop_stops_drift(self):
         """Once torque drops below baseline, commanded holds at current value."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         scheme.update(_state({1: 0.5}, {1: ABOVE}, dt=0.1))
         held = scheme._commanded[1]
         assert held > 0.0
@@ -78,7 +78,7 @@ class TestYieldStiffScheme:
 
     def test_holds_new_position_no_return_to_home(self):
         """After yield, position is held — no automatic return to home."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         # Drive setpoint all the way to actual
         for _ in range(30):
             scheme.update(_state({1: 0.3}, {1: ABOVE}, dt=0.1))
@@ -88,7 +88,7 @@ class TestYieldStiffScheme:
 
     def test_multiple_servos_yield_independently(self):
         """Each servo yields based on its own torque; others are unaffected."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         cmds = scheme.update(_state(
             {1: 0.5, 2: 0.3},
             {1: ABOVE, 2: BELOW},
@@ -100,7 +100,7 @@ class TestYieldStiffScheme:
 
     def test_successive_pushes_accumulate(self):
         """A second push after torque drops accumulates from the new resting position."""
-        scheme = YieldStiffScheme()
+        scheme = YieldStiffMotion()
         # First push to ~0.3
         for _ in range(30):
             scheme.update(_state({1: 0.3}, {1: ABOVE}, dt=0.1))

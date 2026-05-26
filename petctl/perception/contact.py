@@ -130,7 +130,7 @@ class ContactClassifier:
         if not servo_ids:
             return None
 
-        if state.is_behavior_active:
+        if state.is_motion_active:
             self._twist_active.clear()
             self._servo_travel.clear()
             self._servo_last_pos.clear()
@@ -229,9 +229,9 @@ class ContactClassifier:
         # WRENCH and RESTRICT already handle high-torque cases above.
         # Cumulative travel per servo distinguishes a real twist (≥ TWIST_MIN_TRAVEL_RAD)
         # from a brief jostle (BUDGE).
-        # Suppressed during autonomous motion (is_behavior_active) so the robot's own
+        # Suppressed during autonomous motion (is_motion_active) so the robot's own
         # joint movement is not misread as a human twist gesture.
-        if state.is_behavior_active:
+        if state.is_motion_active:
             self._twist_active.clear()
             self._servo_travel.clear()
             self._servo_last_pos.clear()

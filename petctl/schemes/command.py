@@ -1,5 +1,5 @@
 """
-CommandScheme — imperative movement API with touch-type callbacks.
+CommandMotion — imperative movement API with touch-type callbacks.
 
 Lets you command individual servos or all servos to target angles with
 configurable speed and stiffness, and register callbacks that fire when
@@ -7,19 +7,19 @@ touch type transitions occur (stroke, hold, squeeze, restrict, wrench, idle).
 
 Typical usage::
 
-    from petctl.schemes.command import CommandScheme
+    from petctl.schemes.command import CommandMotion
 
-    scheme = CommandScheme()
+    motion = CommandMotion()
 
-    @scheme.on_contact("stroke")
+    @motion.on_contact("stroke")
     def on_stroke(reading):
-        scheme.move_all(30, speed=0.7)
+        motion.move_all(30, speed=0.7)
 
-    @scheme.on_contact("idle")
+    @motion.on_contact("idle")
     def on_idle(_):
-        scheme.home()
+        motion.home()
 
-    # Pass scheme to Controller as normal.
+    # Pass motion to Controller as normal.
 """
 
 from __future__ import annotations
@@ -30,14 +30,14 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Callable
 
 from petctl.config import LOOP_LIMITS, MOTOR_LIMITS
-from petctl.protocols import ControlScheme
+from petctl.protocols import Motion
 from petctl.types import RobotState, ServoCommand
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
 
 
-class CommandScheme(ControlScheme):
+class CommandMotion(Motion):
     """
     A control scheme that exposes an imperative movement API.
 
@@ -149,17 +149,17 @@ class CommandScheme(ControlScheme):
         self._callbacks[contact_type].append(callback)
 
     # ------------------------------------------------------------------
-    # ControlScheme interface
+    # Motion interface
     # ------------------------------------------------------------------
 
     def on_start(self, controller: "Controller") -> None:
         self._active_ids = set(controller.state.active_servo_ids)
         print(
-            "[CommandScheme] Ready.\n"
-            "  Call scheme.move(servo_id, angle_deg, speed=..., kp=...) to move.\n"
-            "  Call scheme.move_all(angle_deg) to move all servos.\n"
-            "  Call scheme.home() to return to neutral.\n"
-            "  Use scheme.on_contact(type, callback) to respond to touch."
+            "[CommandMotion] Ready.\n"
+            "  Call motion.move(servo_id, angle_deg, speed=..., kp=...) to move.\n"
+            "  Call motion.move_all(angle_deg) to move all servos.\n"
+            "  Call motion.home() to return to neutral.\n"
+            "  Use motion.on_contact(type, callback) to respond to touch."
         )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
@@ -236,4 +236,4 @@ class CommandScheme(ControlScheme):
             try:
                 cb(reading)
             except Exception as e:
-                print(f"[CommandScheme] Callback error ({contact_type}): {e}")
+                print(f"[CommandMotion] Callback error ({contact_type}): {e}")

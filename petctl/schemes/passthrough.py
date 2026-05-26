@@ -1,16 +1,16 @@
 """
-PassthroughControlScheme — programmatic servo control.
+PassthroughMotion — programmatic servo control.
 
 Set servo positions or angles from outside the control loop, e.g.:
-  scheme = PassthroughControlScheme()
-  scheme.set_angle(1, 30.0)
-  scheme.set_angle(2, -15.0)
+  motion = PassthroughMotion()
+  motion.set_angle(1, 30.0)
+  motion.set_angle(2, -15.0)
   # On the next tick, Controller will send those commands
 
 Useful for:
   - Scripted sequences
   - Jupyter notebook interactive control
-  - As a base class for more complex schemes
+  - As a base class for more complex motion sources
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ import threading
 from collections import deque
 
 from petctl.config import MOTOR_LIMITS
-from petctl.protocols import ControlScheme
+from petctl.protocols import Motion
 from petctl.types import RobotState, ServoCommand
 
 
-class PassthroughControlScheme(ControlScheme):
+class PassthroughMotion(Motion):
     """
     Queues commands set externally and emits them on the next tick.
 
@@ -61,7 +61,7 @@ class PassthroughControlScheme(ControlScheme):
             self._queue.clear()
 
     # ------------------------------------------------------------------
-    # ControlScheme interface
+    # Motion interface
     # ------------------------------------------------------------------
 
     def update(self, state: RobotState) -> list[ServoCommand]:
