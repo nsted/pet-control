@@ -823,11 +823,12 @@ class StrokeCurlScheme(ControlScheme):
     name = "stroke-curl"
 
     TARGET_DEG: float = 45.0
-    HOLD_S: float = 2.0            # seconds to hold after hand leaves a module
-    DECAY_DEG_PER_S: float = 15.0  # return-to-home speed after hold expires
-    IDLE_DELTA_RAD: float = 0.003  # rad — go freespin once per-tick travel drops below this after returning home
+    HOLD_S: float = 2.0             # seconds to hold after hand leaves a module
+    DECAY_DEG_PER_S: float = 15.0   # return-to-home speed after hold expires
     DIRECTION_THRESHOLD: float = 0.15  # min right-left imbalance to commit to a side
     MODULE_TOUCH_THRESHOLD: float = 0.06  # touch_total to count as "hand present"
+    PROGRESS_THRESHOLD_RAD: float = 0.05  # must move this much toward home per window
+    PROGRESS_WINDOW_S: float = 0.5        # idle immediately if no progress within this window
 
     def __init__(self) -> None:
         from petctl.perception.stroke import PAD_THRESHOLD
@@ -835,15 +836,13 @@ class StrokeCurlScheme(ControlScheme):
         self._curl_target: dict[int, float] = {}
         self._release_time: dict[int, float] = {}  # sid → monotonic time of last release
         self._curl_dir: float = 0.0
-        self._prev_pos: dict[int, float] = {}
-        self._ever_touched: set[int] = set()
+        self._progress_snap: dict[int, tuple[float, float]] = {}  # sid → (abs_pos, time)
 
     def on_start(self, controller: "Controller") -> None:
         self._curl_target = {}
         self._release_time = {}
         self._curl_dir = 0.0
-        self._prev_pos = {}
-        self._ever_touched = set()
+        self._progress_snap = {}
         logger.info("[BEHAVIOR] StrokeCurl")
         logger.debug("[BEHAVIOR] StrokeCurl: right → curl right, left → curl left; holds on release.")
 
@@ -864,30 +863,41 @@ class StrokeCurlScheme(ControlScheme):
             touched = sens is not None and sens.touch_total >= self.MODULE_TOUCH_THRESHOLD
 
             if touched:
-                self._ever_touched.add(sid)
                 sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
                 self._curl_target[sid] = sign * self.TARGET_DEG
                 self._release_time.pop(sid, None)
+                self._progress_snap.pop(sid, None)
             else:
                 cur = self._curl_target.get(sid, 0.0)
                 if cur != 0.0:
                     if sid not in self._release_time:
                         self._release_time[sid] = now
                     elif now - self._release_time[sid] > self.HOLD_S:
-                        decay = self.DECAY_DEG_PER_S * dt
-                        if abs(cur) <= decay:
-                            self._curl_target[sid] = 0.0
-                            self._release_time.pop(sid, None)
+                        # Decay phase: idle immediately if motor stops making progress toward home.
+                        abs_pos = abs(state.servo_positions.get(sid, 0.0))
+                        if sid not in self._progress_snap:
+                            self._progress_snap[sid] = (abs_pos, now)
                         else:
-                            self._curl_target[sid] = cur - math.copysign(decay, cur)
+                            snap_pos, snap_t = self._progress_snap[sid]
+                            if snap_pos - abs_pos >= self.PROGRESS_THRESHOLD_RAD:
+                                self._progress_snap[sid] = (abs_pos, now)
+                            elif now - snap_t >= self.PROGRESS_WINDOW_S:
+                                self._curl_target[sid] = 0.0
+                                self._release_time.pop(sid, None)
+                                self._progress_snap.pop(sid, None)
+                                cur = 0.0
+
+                        if cur != 0.0:
+                            decay = self.DECAY_DEG_PER_S * dt
+                            if abs(cur) <= decay:
+                                self._curl_target[sid] = 0.0
+                                self._release_time.pop(sid, None)
+                                self._progress_snap.pop(sid, None)
+                            else:
+                                self._curl_target[sid] = cur - math.copysign(decay, cur)
 
             target = self._curl_target.get(sid, 0.0)
-            pos = state.servo_positions.get(sid, 0.0)
-            delta = abs(pos - self._prev_pos.get(sid, pos))
-            self._prev_pos[sid] = pos
-            untouched = sid not in self._ever_touched
-            at_home = target == 0.0 and delta < self.IDLE_DELTA_RAD
-            if untouched or at_home:
+            if target == 0.0:
                 cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=0.0, kd=0.0, torque_ff=0.0))
             else:
                 cmds.append(ServoCommand.from_angle(sid, target))
