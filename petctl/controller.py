@@ -74,6 +74,7 @@ _CONTACT_LEVEL: dict[str, int] = {
     "twist":    6,
     "wrench":   7,
     "stroke":   8,
+    "cradle":   9,
 }
 
 # Gesture lifecycle thresholds for the touch emitter.
@@ -83,6 +84,8 @@ _MIN_GESTURE_DURATION_S: float = 0.22  # suppress gestures shorter than this
 
 
 def _event_level(event: TouchEvent) -> int:
+    if event.cradle is not None:
+        return _CONTACT_LEVEL["cradle"]
     if event.stroke is not None:
         return _CONTACT_LEVEL["stroke"]
     if event.contact is not None:
@@ -105,7 +108,8 @@ class _TouchProcessor:
 
     def __init__(self) -> None:
         from petctl.perception.contact import ContactClassifier, ContactReading
-        from petctl.perception.stroke import HoldDetector, StrokeDetector, qualifying_contact
+        from petctl.perception.stroke import CradleDetector, HoldDetector, StrokeDetector, qualifying_contact
+        self._cradle = CradleDetector()
         self._stroke = StrokeDetector()
         self._hold = HoldDetector()
         self._clf = ContactClassifier()
@@ -126,6 +130,10 @@ class _TouchProcessor:
         return self._committed
 
     def _detect(self, state: RobotState) -> TouchEvent:
+        cradle = self._cradle.update(state)
+        if cradle is not None:
+            return TouchEvent(cradle=cradle)
+
         stroke = self._stroke.update(state)
         if stroke is not None:
             # Flush hold velocity window so hold fires promptly after stroke ends.
@@ -321,6 +329,8 @@ class _TouchEventEmitter:
 
     @staticmethod
     def _touch_type(touch: TouchEvent) -> str:
+        if touch.cradle is not None:
+            return "cradle"
         if touch.stroke is not None:
             return "stroke"
         if touch.contact is not None:

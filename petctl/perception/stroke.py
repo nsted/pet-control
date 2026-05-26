@@ -99,6 +99,16 @@ class HoldReading:
     side: str                  # which face(s) are active
 
 
+@dataclass
+class CradleReading:
+    """Output of CradleDetector when ≥4 modules are simultaneously touched."""
+    modules: list[int]   # qualifying module IDs in body order
+    centroid: float      # weighted centroid across active modules
+    intensity: float     # mean per-module peak activation
+    duration: float      # seconds since cradle onset
+    side: str            # active face(s)
+
+
 class StrokeDetector:
     """
     Detects a stroking gesture along the robot body.
@@ -230,6 +240,60 @@ class HoldDetector:
             centroid=centroid,
             duration=now - self._hold_start,
             intensity=intensity,
+            side=_active_side(state),
+        )
+
+
+CRADLE_MODULE_COUNT: int = 4   # minimum simultaneous qualifying modules to detect cradle
+
+
+class CradleDetector:
+    """
+    Detects when ≥4 modules are simultaneously touched.
+
+    Fires when _find_qualifying_modules returns at least CRADLE_MODULE_COUNT IDs.
+    Returns a CradleReading each tick while the condition holds, or None.
+    Has highest gesture priority — checked before stroke and hold.
+    """
+
+    def __init__(self) -> None:
+        self._start: float | None = None
+
+    def reset(self) -> None:
+        self._start = None
+
+    def update(self, state: RobotState) -> CradleReading | None:
+        """Process one tick. Returns CradleReading or None."""
+        q_mods = _find_qualifying_modules(state, PAD_THRESHOLD)
+        if len(q_mods) < CRADLE_MODULE_COUNT:
+            self._start = None
+            return None
+
+        now = state.timestamp
+        if self._start is None:
+            self._start = now
+
+        activations: dict[int, float] = {}
+        for mid in q_mods:
+            sens = state.sensors.get(mid)
+            if sens is None:
+                continue
+            all_pads = (*sens.touch_right_pads, *sens.touch_left_pads, *sens.touch_middle_pads)
+            activations[mid] = max(all_pads)
+
+        sorted_mods = sorted(q_mods)
+        total_w = sum(activations.values())
+        centroid = (
+            sum(m * activations.get(m, 0.0) for m in sorted_mods) / total_w
+            if total_w > 0 else float(sorted_mods[len(sorted_mods) // 2])
+        )
+        intensity = total_w / len(sorted_mods) if sorted_mods else 0.0
+
+        return CradleReading(
+            modules=sorted_mods,
+            centroid=centroid,
+            intensity=intensity,
+            duration=now - self._start,
             side=_active_side(state),
         )
 

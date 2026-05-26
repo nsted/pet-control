@@ -40,6 +40,7 @@ CONTACT_LABELS: dict[str, str] = {
     "budge":    "BUDGE   ",
     "twist":    "TWIST   ",
     "wrench":   "WRENCH  ",
+    "cradle":   "CRADLE  ",
 }
 
 class ContactType(str, Enum):
@@ -50,6 +51,7 @@ class ContactType(str, Enum):
     BUDGE    = "budge"
     TWIST    = "twist"
     WRENCH   = "wrench"
+    CRADLE   = "cradle"
 
 
 @dataclass

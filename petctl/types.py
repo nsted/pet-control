@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Optional
 from petctl.config import BATTERY_CONFIG, MOTOR_LIMITS
 
 if TYPE_CHECKING:
-    from petctl.perception.stroke import HoldReading, StrokeReading
+    from petctl.perception.stroke import CradleReading, HoldReading, StrokeReading
     from petctl.perception.contact import ContactReading
 
 
@@ -43,11 +43,12 @@ class PowerTelemetry:
 class TouchEvent:
     """Processed touch classification for one tick, populated by the controller.
 
-    Exactly one of stroke or hold is non-None when contact is detected.
-    contact is always non-None when hold is non-None (it wraps the hold reading
-    with a sub-type: HOLD / SQUEEZE / RESTRICT / WRENCH).
+    At most one of cradle, stroke, hold is non-None when contact is detected.
+    cradle takes highest priority. contact is always non-None when hold is
+    non-None (it wraps the hold reading with a sub-type).
     """
 
+    cradle: CradleReading | None = None
     stroke: StrokeReading | None = None
     hold: HoldReading | None = None
     contact: ContactReading | None = None
@@ -66,7 +67,7 @@ class TouchSummary:
     applicable to that touch type.
     """
 
-    touch_type: str            # stroke | hold | squeeze | restrict | budge | twist | wrench | touch | none
+    touch_type: str            # cradle | stroke | hold | squeeze | restrict | budge | twist | wrench | touch | none
     timestamp: float
     duration: float            # seconds since contact onset; 0.0 for instantaneous / stroke start
     intensity: float           # 0.0–1.0 mean pad activation
@@ -96,9 +97,27 @@ class TouchSummary:
         track its own duration.  HoldReading.duration is used directly
         for hold-family types.
         """
+        cradle = event.cradle
         stroke = event.stroke
         hold = event.hold
         contact = event.contact
+
+        if cradle is not None:
+            return cls(
+                touch_type="cradle",
+                timestamp=timestamp,
+                duration=cradle.duration,
+                intensity=cradle.intensity,
+                centroid=cradle.centroid,
+                side=cradle.side,
+                modules=list(cradle.modules),
+                velocity=None,
+                direction=None,
+                confidence=None,
+                pressure_peak=None,
+                torque_peak=None,
+                status=status,
+            )
 
         if stroke is not None:
             modules: list[int] = []
