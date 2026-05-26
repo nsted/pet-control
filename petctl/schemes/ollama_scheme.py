@@ -384,6 +384,7 @@ class OllamaControlScheme(ControlScheme):
     # ------------------------------------------------------------------
 
     def _llm_call(self, touch_description: str) -> None:
+        logger.info("[Ollama] sending prompt.")
         logger.debug("[Ollama] calling LLM: %s", touch_description)
         t0 = time.monotonic()
         result = self._client.chat(touch_description)
@@ -416,12 +417,12 @@ class OllamaControlScheme(ControlScheme):
         pf = self._client.last_prefill_ms
         gn = self._client.last_gen_ms
         if same_motion:
-            logger.info("[Ollama] → %s (speed=%.2f) — %s [params updated]", motion, speed, feel)
-            logger.debug("[Ollama] rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms", rtt, pt, et, ld, pf, gn)
+            logger.info("[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [params updated]", rtt, motion, speed, feel)
+            logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             _update_pattern_params(pattern, motion, speed)
         else:
-            logger.info("[Ollama] → %s (speed=%.2f) — %s", motion, speed, feel)
-            logger.debug("[Ollama] rtt=%.2fs  p=%d e=%d  ld=%d pf=%d gn=%dms", rtt, pt, et, ld, pf, gn)
+            logger.info("[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s", rtt, motion, speed, feel)
+            logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             self._switch_pattern(motion, speed)
 
 
