@@ -70,11 +70,11 @@ _CONTACT_LEVEL: dict[str, int] = {
     "touch":    2,
     "hold":     3,
     "squeeze":  4,
-    "restrict": 5,
     "twist":    6,
     "wrench":   7,
     "stroke":   8,
     "cradle":   9,
+    "restrict": 10,  # only fires during cradle; outranks plain cradle
 }
 
 # Gesture lifecycle thresholds for the touch emitter.
@@ -85,6 +85,8 @@ _MIN_GESTURE_DURATION_S: float = 0.22  # suppress gestures shorter than this
 
 def _event_level(event: GestureFrame) -> int:
     if event.cradle is not None:
+        if event.contact is not None:  # restrict-during-cradle
+            return _CONTACT_LEVEL.get(event.contact.contact_type.value, _CONTACT_LEVEL["cradle"])
         return _CONTACT_LEVEL["cradle"]
     if event.stroke is not None:
         return _CONTACT_LEVEL["stroke"]
@@ -132,6 +134,9 @@ class _GestureProcessor:
     def _detect(self, state: RobotState) -> GestureFrame:
         cradle = self._cradle.update(state)
         if cradle is not None:
+            restrict = self._clf.classify_restrict_during_cradle(cradle.modules, state)
+            if restrict is not None:
+                return GestureFrame(cradle=cradle, contact=restrict)
             return GestureFrame(cradle=cradle)
 
         stroke = self._stroke.update(state)
@@ -342,6 +347,8 @@ class _GestureEmitter:
     @staticmethod
     def _touch_type(touch: GestureFrame) -> str:
         if touch.cradle is not None:
+            if touch.contact is not None:  # restrict-during-cradle
+                return touch.contact.contact_type.value
             return "cradle"
         if touch.stroke is not None:
             return "stroke"

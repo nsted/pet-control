@@ -98,6 +98,24 @@ class GestureEvent:
         contact = event.contact
 
         if cradle is not None:
+            if contact is not None:
+                # restrict-during-cradle: use contact type/motor data, cradle geometry
+                return cls(
+                    touch_type=contact.contact_type.value,
+                    timestamp=timestamp,
+                    duration=cradle.duration,
+                    intensity=cradle.intensity,
+                    centroid=cradle.centroid,
+                    side=cradle.side,
+                    modules=list(cradle.modules),
+                    velocity=None,
+                    direction=None,
+                    confidence=None,
+                    pressure_peak=contact.pressure_peak or None,
+                    torque_peak=contact.torque_peak or None,
+                    affected_servos=list(contact.affected_servos),
+                    status=status,
+                )
             return cls(
                 touch_type="cradle",
                 timestamp=timestamp,

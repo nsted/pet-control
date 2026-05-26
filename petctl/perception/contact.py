@@ -18,7 +18,9 @@ WRENCH, RESTRICT, and TWIST use per-servo hysteresis.
 BUDGE is promoted to TWIST once cumulative travel threshold is met.
 
 When multiple conditions are met simultaneously the priority is:
-  WRENCH > RESTRICT > TWIST > SQUEEZE > HOLD > TOUCH > BUDGE.
+  RESTRICT(during cradle) > CRADLE > WRENCH > TWIST > SQUEEZE > HOLD > TOUCH > BUDGE.
+RESTRICT only fires when ≥4 modules are cradled AND a servo is stalled under load AND
+pressure is detected — it is checked inside the cradle path, not the hold path.
 All thresholds are initial guesses — tune on real hardware.
 """
 
@@ -98,6 +100,7 @@ class ContactClassifier:
     TWIST_MIN_TRAVEL_RAD: float = 0.3  # rad — cumulative travel to promote BUDGE → TWIST
 
     SQUEEZE_PRESSURE: float = 0.15
+    RESTRICT_PRESSURE: float = 0.15  # minimum pressure_total across cradled modules to confirm restrict
 
     def __init__(self) -> None:
         self._wrench_active: set[int] = set()
@@ -201,27 +204,9 @@ class ContactClassifier:
                 torque_peak=torque_peak,
             )
 
-        # --- RESTRICT hysteresis (any centroid count) ---
-        for sid in servo_ids:
-            t = abs(state.motor_torques.get(sid, 0.0))
-            v = abs(state.motor_velocities.get(sid, 0.0))
-            if sid in self._restrict_active:
-                if t < self.RESTRICT_TORQUE_OFF or v > self.RESTRICT_VEL_OFF:
-                    self._restrict_active.discard(sid)
-            else:
-                if t > self.RESTRICT_TORQUE_ON and v < self.RESTRICT_VEL_ON:
-                    self._restrict_active.add(sid)
-        self._restrict_active &= set(servo_ids)
-
-        if self._restrict_active:
-            restrict_servos = sorted(self._restrict_active)
-            torque_peak = max(abs(state.motor_torques.get(s, 0.0)) for s in restrict_servos)
-            return ContactReading(
-                hold=hold,
-                contact_type=ContactType.RESTRICT,
-                affected_servos=restrict_servos,
-                torque_peak=torque_peak,
-            )
+        # RESTRICT is only classified during cradle (see classify_restrict_during_cradle).
+        # Clear any stale state from a prior cradle so it doesn't bleed into a regular hold.
+        self._restrict_active.clear()
 
         # --- TWIST/BUDGE hysteresis (passive joint rotation; any centroid count) ---
         # Motor velocity is the primary signal — blob geometry is unreliable when both
@@ -290,4 +275,48 @@ class ContactClassifier:
             contact_type=ContactType.TOUCH,
             centroid=hold.centroid,
             side=hold.side,
+        )
+
+    def classify_restrict_during_cradle(
+        self, cradle_modules: list[int], state: RobotState
+    ) -> ContactReading | None:
+        """Check for RESTRICT while cradled — requires stall AND pressure.
+
+        Called each tick when CradleDetector fires. Returns a ContactReading(RESTRICT)
+        when at least one cradled servo is stalled under load and at least one cradled
+        module reports pressure above RESTRICT_PRESSURE, else None.
+        """
+        servo_ids = sorted(m for m in cradle_modules if m >= 1)
+        if not servo_ids:
+            self._restrict_active.clear()
+            return None
+
+        for sid in servo_ids:
+            t = abs(state.motor_torques.get(sid, 0.0))
+            v = abs(state.motor_velocities.get(sid, 0.0))
+            if sid in self._restrict_active:
+                if t < self.RESTRICT_TORQUE_OFF or v > self.RESTRICT_VEL_OFF:
+                    self._restrict_active.discard(sid)
+            else:
+                if t > self.RESTRICT_TORQUE_ON and v < self.RESTRICT_VEL_ON:
+                    self._restrict_active.add(sid)
+        self._restrict_active &= set(servo_ids)
+
+        if not self._restrict_active:
+            return None
+
+        pressure_peak = max(
+            (state.sensors[m].pressure_total for m in cradle_modules if m in state.sensors),
+            default=0.0,
+        )
+        if pressure_peak < self.RESTRICT_PRESSURE:
+            return None
+
+        restrict_servos = sorted(self._restrict_active)
+        torque_peak = max(abs(state.motor_torques.get(s, 0.0)) for s in restrict_servos)
+        return ContactReading(
+            contact_type=ContactType.RESTRICT,
+            affected_servos=restrict_servos,
+            torque_peak=torque_peak,
+            pressure_peak=pressure_peak,
         )

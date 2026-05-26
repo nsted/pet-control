@@ -856,11 +856,20 @@ class StrokeCurlMotion(Motion):
         elif self._curl_dir == 0.0:
             self._curl_dir = 1.0
 
+        active_set = state.active_servo_ids
+        directly_touched: set[int] = {
+            sid for sid in active_set
+            if (s := state.sensors.get(sid)) is not None and s.touch_total >= self.MODULE_TOUCH_THRESHOLD
+        }
+        touching: set[int] = directly_touched | {
+            nb for sid in directly_touched for nb in (sid - 1, sid + 1)
+            if nb in active_set
+        }
+
         cmds = []
         # Invariant: module N has servo N (modules 1–7). Module 0 is head, no servo.
-        for sid in sorted(state.active_servo_ids):
-            sens = state.sensors.get(sid)
-            touched = sens is not None and sens.touch_total >= self.MODULE_TOUCH_THRESHOLD
+        for sid in sorted(active_set):
+            touched = sid in touching
 
             if touched:
                 sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
