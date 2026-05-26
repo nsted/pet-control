@@ -293,7 +293,7 @@ class OllamaControlScheme(ControlScheme):
         self._was_connected = state.connected
 
         if self._touch_queue is not None:
-            self._drain_touch_queue()
+            self._drain_touch_queue(state.timestamp)
 
         ended_t = self._touch_ended_t
         if (
@@ -326,22 +326,20 @@ class OllamaControlScheme(ControlScheme):
     # Touch queue draining
     # ------------------------------------------------------------------
 
-    def _drain_touch_queue(self) -> None:
+    def _drain_touch_queue(self, now: float) -> None:
         assert self._touch_queue is not None
-        last_ts: float = 0.0
         while True:
             try:
                 summary: TouchSummary = self._touch_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
 
-            now = summary.timestamp
-            last_ts = now
+            ts = summary.timestamp
 
             # "none" events (touch ended) — record the time so update() can
             # revert to idle after 5 s of inactivity.
             if summary.touch_type == "none":
-                self._touch_ended_t = now
+                self._touch_ended_t = ts
                 continue
 
             if summary.status == "promoted":
@@ -351,13 +349,13 @@ class OllamaControlScheme(ControlScheme):
             self._touch_ended_t = None
 
             if not self._batch:
-                self._batch_start_t = now
+                self._batch_start_t = ts
             self._batch.append(summary)
 
-        if not self._batch or last_ts == 0.0:
+        if not self._batch:
             return
 
-        elapsed = last_ts - self._batch_start_t
+        elapsed = now - self._batch_start_t
         thread_free = self._pending is None or not self._pending.is_alive()
         if elapsed < _BATCH_WINDOW_S or not thread_free:
             return
