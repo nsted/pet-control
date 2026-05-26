@@ -1219,6 +1219,239 @@ class PoseMotion(Motion):
         return commands
 
 
+class NeighborAssistDriftMotion(Motion):
+    """DriftMotion kinematics with neighbor-assist stall recovery.
+
+    When a motor stalls (position stuck + torque high), its neighboring motors
+    briefly nudge toward neutral to relieve mechanical constraints.  If the
+    stalled motor recovers it continues its drift trajectory; otherwise a
+    normal direction reversal follows after MAX_ASSIST_ATTEMPTS tries.
+
+    Stall detection mirrors _WanderBase (position + torque compound check).
+    Neighbor assist is a new layer on top — the stalled motor keeps pushing
+    while neighbors temporarily override their drift targets.
+    """
+
+    name = "neighbor-assist-drift"
+
+    # Drift kinematics — mirrors DriftMotion
+    MIN_SPEED_DEG_PER_S: float = 15.0
+    MAX_SPEED_DEG_PER_S: float = 90.0
+    SPEED_PERIOD_S: float = 12.0
+    MAX_POS_RAD: float = MOTOR_LIMITS.pos_max
+
+    # Stall detection — same thresholds as _WanderBase
+    STALL_THRESHOLD_RAD: float = 0.3
+    STALL_WINDOW_S: float = 0.8
+    STALL_TORQUE_NM: float = 0.9
+    REVERSAL_COOLDOWN_S: float = 0.5
+
+    # Neighbor assist
+    ASSIST_WIGGLE_RAD: float = math.radians(20.0)
+    ASSIST_DURATION_S: float = 0.5
+    RECOVERY_RAD: float = 0.08
+    MAX_ASSIST_ATTEMPTS: int = 2
+    ASSIST_COOLDOWN_S: float = 1.5
+
+    def __init__(self) -> None:
+        self._start_time: float = 0.0
+        self._pos_cmd: dict[int, float] = {}
+        self._direction: dict[int, float] = {}
+        # stall detection
+        self._stall_since: dict[int, float] = {}
+        self._stall_pos_snap: dict[int, float] = {}
+        self._stall_peak_torque: dict[int, float] = {}
+        self._reversed_at: dict[int, float] = {}
+        # neighbor assist
+        self._assist_phase: dict[int, str] = {}       # "normal" | "assisting" | "cooldown"
+        self._assist_start: dict[int, float] = {}
+        self._assist_attempt: dict[int, int] = {}
+        self._assist_snap_pos: dict[int, float] = {}
+        self._assist_dir: dict[int, int] = {}         # +1 = wiggle toward 0°, -1 = away
+        self._cooldown_until: dict[int, float] = {}
+        self._pending_slew_resets: dict[int, float] = {}
+
+    def is_active(self) -> bool:
+        return True
+
+    def take_slew_resets(self) -> dict[int, float]:
+        resets = self._pending_slew_resets
+        self._pending_slew_resets = {}
+        return resets
+
+    def on_start(self, controller: "Controller") -> None:
+        self._start_time = time.monotonic()
+        self._pos_cmd.clear()
+        self._direction.clear()
+        self._stall_since.clear()
+        self._stall_pos_snap.clear()
+        self._stall_peak_torque.clear()
+        self._reversed_at.clear()
+        self._assist_phase.clear()
+        self._assist_start.clear()
+        self._assist_attempt.clear()
+        self._assist_snap_pos.clear()
+        self._assist_dir.clear()
+        self._cooldown_until.clear()
+        self._pending_slew_resets.clear()
+        logger.info("[BEHAVIOR] NeighborAssistDrift")
+
+    def _current_speed_rad_s(self, now: float) -> float:
+        t = now - self._start_time
+        phase = (t % self.SPEED_PERIOD_S) / self.SPEED_PERIOD_S
+        alpha = 0.5 * (1.0 - math.cos(2.0 * math.pi * phase))
+        lo = math.radians(self.MIN_SPEED_DEG_PER_S)
+        hi = math.radians(self.MAX_SPEED_DEG_PER_S)
+        return lo + alpha * (hi - lo)
+
+    def _neighbors(self, sid: int, active: set[int]) -> list[int]:
+        return [n for n in (sid - 1, sid + 1) if n in active]
+
+    def _init_servo(self, sid: int, state: RobotState, now: float) -> None:
+        self._pos_cmd[sid] = state.servo_positions.get(sid, 0.0)
+        self._direction[sid] = random.choice([-1.0, 1.0])
+        self._stall_since[sid] = 0.0
+        self._reversed_at[sid] = now
+        self._assist_phase[sid] = "normal"
+        self._cooldown_until[sid] = 0.0
+
+    def _check_stall(self, sid: int, state: RobotState, now: float) -> bool:
+        if (now - self._reversed_at[sid]) < self.REVERSAL_COOLDOWN_S:
+            self._stall_since[sid] = 0.0
+            self._stall_pos_snap.pop(sid, None)
+            self._stall_peak_torque.pop(sid, None)
+            return False
+        actual = state.servo_positions.get(sid)
+        torque = abs(state.motor_torques.get(sid, 0.0))
+        if actual is None:
+            return False
+        if sid not in self._stall_pos_snap:
+            self._stall_since[sid] = now
+            self._stall_pos_snap[sid] = actual
+            self._stall_peak_torque[sid] = torque
+            return False
+        if abs(actual - self._stall_pos_snap[sid]) >= self.STALL_THRESHOLD_RAD:
+            self._stall_since[sid] = now
+            self._stall_pos_snap[sid] = actual
+            self._stall_peak_torque[sid] = torque
+            return False
+        self._stall_peak_torque[sid] = max(self._stall_peak_torque[sid], torque)
+        if now - self._stall_since[sid] >= self.STALL_WINDOW_S:
+            if self._stall_peak_torque[sid] >= self.STALL_TORQUE_NM:
+                return True
+            # Position stuck but no load — restart window
+            self._stall_since[sid] = now
+            self._stall_pos_snap[sid] = actual
+            self._stall_peak_torque[sid] = torque
+        return abs(self._pos_cmd[sid]) >= self.MAX_POS_RAD  # ceiling fallback
+
+    def _do_reversal(self, sid: int, state: RobotState, now: float) -> None:
+        actual = state.servo_positions.get(sid, self._pos_cmd[sid])
+        clamped = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, actual))
+        self._pos_cmd[sid] = clamped
+        self._pending_slew_resets[sid] = clamped
+        self._direction[sid] *= -1.0
+        self._reversed_at[sid] = now
+        self._stall_since[sid] = 0.0
+        self._stall_pos_snap.pop(sid, None)
+        self._stall_peak_torque.pop(sid, None)
+
+    def _assist_neighbor_target(self, nid: int, state: RobotState, toward_neutral: bool) -> float:
+        current = state.servo_positions.get(nid, self._pos_cmd.get(nid, 0.0))
+        if toward_neutral:
+            # Step toward 0°
+            step = math.copysign(min(self.ASSIST_WIGGLE_RAD, abs(current)), current) if abs(current) > 0.01 else 0.0
+            target = current - step
+        else:
+            # Step away from 0° (using drift direction as hint)
+            hint = self._direction.get(nid, 1.0)
+            target = current + math.copysign(self.ASSIST_WIGGLE_RAD, hint)
+        return max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, target))
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
+        dt = max(state.dt, 1e-4)
+        speed_rad_s = self._current_speed_rad_s(now)
+        active = state.active_servo_ids
+
+        # Pass 1: advance state machine, build neighbor override map
+        neighbor_overrides: dict[int, float] = {}  # nid → target_rad
+        for sid in sorted(active):
+            if sid not in self._pos_cmd:
+                self._init_servo(sid, state, now)
+
+            phase = self._assist_phase[sid]
+
+            if phase == "normal":
+                if self._check_stall(sid, state, now):
+                    self._assist_phase[sid] = "assisting"
+                    self._assist_start[sid] = now
+                    self._assist_attempt[sid] = 0
+                    self._assist_dir[sid] = 1
+                    self._assist_snap_pos[sid] = state.servo_positions.get(sid, self._pos_cmd[sid])
+                    logger.info(
+                        "[NeighborAssist] s%d stalled at %.2f° — starting neighbor assist",
+                        sid, math.degrees(self._assist_snap_pos[sid]),
+                    )
+
+            elif phase == "assisting":
+                elapsed = now - self._assist_start[sid]
+                if elapsed >= self.ASSIST_DURATION_S:
+                    actual = state.servo_positions.get(sid, self._pos_cmd[sid])
+                    moved = abs(actual - self._assist_snap_pos[sid])
+                    if moved >= self.RECOVERY_RAD:
+                        logger.info(
+                            "[NeighborAssist] s%d recovered (moved %.3f rad) — entering cooldown",
+                            sid, moved,
+                        )
+                        self._assist_phase[sid] = "cooldown"
+                        self._cooldown_until[sid] = now + self.ASSIST_COOLDOWN_S
+                        self._stall_since[sid] = 0.0
+                        self._stall_pos_snap.pop(sid, None)
+                        self._stall_peak_torque.pop(sid, None)
+                    elif self._assist_attempt[sid] < self.MAX_ASSIST_ATTEMPTS - 1:
+                        self._assist_attempt[sid] += 1
+                        self._assist_dir[sid] *= -1
+                        self._assist_start[sid] = now
+                        self._assist_snap_pos[sid] = actual
+                        logger.info(
+                            "[NeighborAssist] s%d still stuck — attempt %d (dir %+d)",
+                            sid, self._assist_attempt[sid] + 1, self._assist_dir[sid],
+                        )
+                    else:
+                        logger.info("[NeighborAssist] s%d assist exhausted — reversing", sid)
+                        self._do_reversal(sid, state, now)
+                        self._assist_phase[sid] = "cooldown"
+                        self._cooldown_until[sid] = now + self.ASSIST_COOLDOWN_S
+                else:
+                    # Still in assist window: schedule neighbor overrides
+                    toward_neutral = (self._assist_dir[sid] == 1)
+                    for nid in self._neighbors(sid, active):
+                        if nid not in neighbor_overrides:  # first stalled motor wins
+                            neighbor_overrides[nid] = self._assist_neighbor_target(nid, state, toward_neutral)
+
+            elif phase == "cooldown":
+                if now >= self._cooldown_until[sid]:
+                    self._assist_phase[sid] = "normal"
+                    self._stall_since[sid] = 0.0
+                    self._stall_pos_snap.pop(sid, None)
+                    self._stall_peak_torque.pop(sid, None)
+
+        # Pass 2: generate commands
+        cmds: list[ServoCommand] = []
+        for sid in sorted(active):
+            if sid in neighbor_overrides:
+                # Freeze drift integrator so neighbor resumes from sensible position
+                self._pos_cmd[sid] = state.servo_positions.get(sid, self._pos_cmd.get(sid, 0.0))
+                cmds.append(ServoCommand(servo_id=sid, position=neighbor_overrides[sid]))
+            else:
+                self._pos_cmd[sid] += self._direction[sid] * speed_rad_s * dt
+                self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
+                cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
+
+        return cmds
+
+
 ALL_PATTERNS: list[type[Motion]] = [
     SnuggleMotion,
     PulseMotion,
@@ -1237,6 +1470,7 @@ ALL_PATTERNS: list[type[Motion]] = [
     ExploreMotion,
     DriftMotion,
     StruggleMotion,
+    NeighborAssistDriftMotion,
     YieldStiffMotion,
     PoseMotion,
 ]
