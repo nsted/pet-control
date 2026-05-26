@@ -26,6 +26,8 @@ class MotorLimits:
     torque_min: float = -10.0
     torque_max: float = 10.0
     # Softer defaults — high kp tracks each MIT setpoint sharply (feels "poppy").
+    kp_max: float = 1.5
+    kd_max: float = 0.04
     kp_default: float = 0.4
     kd_default: float = 0.035
 
