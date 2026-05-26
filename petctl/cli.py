@@ -176,7 +176,7 @@ def run(
         _scheme = CommandMotion()
     elif control == "ollama":
         from petctl.schemes.ollama_scheme import OllamaMotion
-        _scheme = OllamaMotion(log_input=log_ollama_input)
+        _scheme = OllamaMotion(log_input=log_ollama_input, llm_enabled=not dev_ui)
     elif control in ("snuggle", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "stroke-snuggle", "explore", "drift", "struggle", "yield-stiff", "pose"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)

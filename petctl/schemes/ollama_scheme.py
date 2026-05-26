@@ -234,7 +234,9 @@ class OllamaMotion(Motion):
         base_url: str = "http://localhost:11434",
         timeout: float = 12.0,
         log_input: bool = False,
+        llm_enabled: bool = True,
     ) -> None:
+        self._llm_enabled = llm_enabled
         self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout, log_input=log_input)
 
         # Injected in on_start() — the controller's shared gesture event queue.
@@ -266,7 +268,9 @@ class OllamaMotion(Motion):
         self._touch_queue = controller.touch_events
         self._switch_pattern(_DEFAULT_MOTION, 0.0)
 
-        if not self._client.is_available():
+        if not self._llm_enabled:
+            logger.info("[Ollama] LLM disabled (dev-ui mode).")
+        elif not self._client.is_available():
             logger.warning(
                 "[Ollama] server not reachable at %s — "
                 "start Ollama with 'ollama serve' then restart PET.",
@@ -353,6 +357,9 @@ class OllamaMotion(Motion):
             self._batch.append(summary)
 
         if not self._batch:
+            return
+
+        if not self._llm_enabled:
             return
 
         elapsed = now - self._batch_start_t
