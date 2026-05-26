@@ -601,6 +601,129 @@ class ExploreMotion(_WanderBase):
         return cmds
 
 
+class SeekTouchMotion(_WanderBase):
+    """Explore until each module detects contact, then hold in place.
+
+    Each servo moves independently at a fixed speed, reversing on stall or
+    ceiling — exactly like ExploreMotion.  As soon as touch_total on a module
+    exceeds TOUCH_THRESHOLD the servo freezes (zero-torque hold) until contact
+    is released, then resumes seeking.
+    """
+
+    name = "seek-touch"
+
+    SPEED_DEG_PER_S: float = 45.0
+    TOUCH_THRESHOLD: float = 0.06
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._speed_rad_s = math.radians(self.SPEED_DEG_PER_S)
+        self._holding: set[int] = set()
+
+    def on_start(self, controller: "Controller") -> None:
+        self._init_stall_state()
+        self._holding = set()
+        logger.info("[BEHAVIOR] SeekTouch")
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
+        dt = max(state.dt, 1e-4)
+        cmds: list[ServoCommand] = []
+        for sid in sorted(state.active_servo_ids):
+            if sid not in self._pos_cmd:
+                self._init_servo(sid, state, now)
+            s = state.sensors.get(sid)
+            if s is not None and s.touch_total >= self.TOUCH_THRESHOLD:
+                self._holding.add(sid)
+            else:
+                self._holding.discard(sid)
+            if sid in self._holding:
+                pos = state.servo_positions.get(sid, 0.0)
+                cmds.append(ServoCommand(servo_id=sid, position=pos, kp=0.0, kd=0.0, torque_ff=0.0))
+            else:
+                if self._check_stall(sid, state, now):
+                    clamped, peak_t = self._do_reversal(sid, state, now)
+                    logger.debug("[SeekTouch] s%d reversed at %.1f°", sid, math.degrees(clamped))
+                self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+                self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
+                cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
+        return cmds
+
+
+class AvoidTouchMotion(_WanderBase):
+    """Hold idle until touched, then move away until contact ends.
+
+    Each servo is still when its module is not touched.  When touch_total
+    exceeds TOUCH_THRESHOLD the servo starts moving: direction is chosen
+    based on which face is more active (away from that face), or toward home
+    if the face balance is unclear.  Stall detection and ceiling reversal
+    remain active while fleeing.
+    """
+
+    name = "avoid-touch"
+
+    SPEED_DEG_PER_S: float = 45.0
+    TOUCH_THRESHOLD: float = 0.06
+    FACE_BIAS: float = 0.05  # min left/right imbalance to pick a face direction
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._speed_rad_s = math.radians(self.SPEED_DEG_PER_S)
+        self._fleeing: set[int] = set()
+
+    def on_start(self, controller: "Controller") -> None:
+        self._init_stall_state()
+        self._fleeing = set()
+        logger.info("[BEHAVIOR] AvoidTouch")
+
+    def _flee_dir(self, sid: int, state: RobotState) -> float:
+        """Pick a direction that moves away from the more-active face."""
+        s = state.sensors.get(sid)
+        if s is not None:
+            diff = s.touch_right - s.touch_left
+            if diff > self.FACE_BIAS:
+                # right face more active → flee left → use same sign as curl-left for this servo
+                return -(1.0 if sid % 2 == 1 else -1.0)
+            if diff < -self.FACE_BIAS:
+                # left face more active → flee right
+                return (1.0 if sid % 2 == 1 else -1.0)
+        # No clear face bias — move toward home (reduce |pos|)
+        pos = state.servo_positions.get(sid, 0.0)
+        if abs(pos) > 0.1:
+            return -math.copysign(1.0, pos)
+        return self._direction.get(sid, 1.0)
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        now = time.monotonic()
+        dt = max(state.dt, 1e-4)
+        cmds: list[ServoCommand] = []
+        for sid in sorted(state.active_servo_ids):
+            if sid not in self._pos_cmd:
+                self._init_servo(sid, state, now)
+            s = state.sensors.get(sid)
+            touched = s is not None and s.touch_total >= self.TOUCH_THRESHOLD
+            was_fleeing = sid in self._fleeing
+            if touched:
+                if not was_fleeing:
+                    # First contact: set flee direction before entering fleeing state
+                    self._direction[sid] = self._flee_dir(sid, state)
+                    self._pos_cmd[sid] = state.servo_positions.get(sid, self._pos_cmd[sid])
+                self._fleeing.add(sid)
+            else:
+                self._fleeing.discard(sid)
+            if sid in self._fleeing:
+                if self._check_stall(sid, state, now):
+                    clamped, peak_t = self._do_reversal(sid, state, now)
+                    logger.debug("[AvoidTouch] s%d reversed at %.1f°", sid, math.degrees(clamped))
+                self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+                self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
+                cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
+            else:
+                pos = state.servo_positions.get(sid, 0.0)
+                cmds.append(ServoCommand(servo_id=sid, position=pos, kp=0.0, kd=0.0, torque_ff=0.0))
+        return cmds
+
+
 class DriftMotion(_WanderBase):
     """Wander variant where all joints share one speed that varies over time.
 
@@ -829,6 +952,7 @@ class StrokeCurlMotion(Motion):
     MODULE_TOUCH_THRESHOLD: float = 0.06  # touch_total to count as "hand present"
     PROGRESS_THRESHOLD_RAD: float = 0.05  # must move this much toward home per window
     PROGRESS_WINDOW_S: float = 0.5        # idle immediately if no progress within this window
+    DIRECTION_SIGN: float = 1.0           # +1 = curl toward touch, -1 = curl away
 
     def __init__(self) -> None:
         from petctl.perception.stroke import PAD_THRESHOLD
@@ -872,7 +996,7 @@ class StrokeCurlMotion(Motion):
             touched = sid in touching
 
             if touched:
-                sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
+                sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir * self.DIRECTION_SIGN
                 self._curl_target[sid] = sign * self.TARGET_DEG
                 self._release_time.pop(sid, None)
                 self._progress_snap.pop(sid, None)
@@ -915,6 +1039,33 @@ class StrokeCurlMotion(Motion):
 
     def _sense_dir(self, state: RobotState) -> float:
         return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
+
+
+class CurlTowardsMotion(StrokeCurlMotion):
+    """Curl toward the touched face. Identical to stroke-curl; provided as a named alias."""
+
+    name = "curl-towards"
+
+    def on_start(self, controller: "Controller") -> None:
+        self._curl_target = {}
+        self._release_time = {}
+        self._curl_dir = 0.0
+        self._progress_snap = {}
+        logger.info("[BEHAVIOR] CurlTowards")
+
+
+class CurlAwayMotion(StrokeCurlMotion):
+    """Curl away from the touched face — the mirror of curl-towards."""
+
+    name = "curl-away"
+    DIRECTION_SIGN: float = -1.0
+
+    def on_start(self, controller: "Controller") -> None:
+        self._curl_target = {}
+        self._release_time = {}
+        self._curl_dir = 0.0
+        self._progress_snap = {}
+        logger.info("[BEHAVIOR] CurlAway")
 
 
 class StrokeSnuggleMotion(Motion):
@@ -1466,8 +1617,12 @@ ALL_PATTERNS: list[type[Motion]] = [
     Spin7Motion,
     StrokeReactMotion,
     StrokeCurlMotion,
+    CurlTowardsMotion,
+    CurlAwayMotion,
     StrokeSnuggleMotion,
     ExploreMotion,
+    SeekTouchMotion,
+    AvoidTouchMotion,
     DriftMotion,
     StruggleMotion,
     NeighborAssistDriftMotion,
