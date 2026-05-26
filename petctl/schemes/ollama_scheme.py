@@ -344,6 +344,9 @@ class OllamaControlScheme(ControlScheme):
                 self._touch_ended_t = now
                 continue
 
+            if summary.status == "promoted":
+                continue
+
             # Clear any pending idle-revert on new touch.
             self._touch_ended_t = None
 
