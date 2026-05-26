@@ -186,6 +186,9 @@ class _TouchLogger:
             logger.info("[GESTURE] %s - begin @ %.1fs", name, offset)
         elif summary.status == "complete":
             logger.info("[GESTURE] %s - end @ %.1fs", name, offset)
+        elif summary.status == "promoted":
+            prev = summary.promoted_from.capitalize() if summary.promoted_from else "?"
+            logger.info("[GESTURE] %s → %s @ %.1fs", prev, name, offset)
         logger.debug("[GESTURE] %s: +%.1fs %s", name, offset, summary.describe())
 
 
@@ -245,7 +248,14 @@ class _TouchEventEmitter:
             self._end_hold_since = None
 
         elif _CONTACT_LEVEL.get(curr, 0) >= _CONTACT_LEVEL.get(self._sess_type, 0):
-            self._sess_type = curr  # promoted (e.g. hold → squeeze): continue session
+            if self._sess_staged and curr != self._sess_type:
+                prev_type = self._sess_type
+                self._sess_type = curr
+                self._sess_touch = touch  # update before summary so it reflects new type
+                elapsed = now - self._sess_start
+                self._emit(self._make_summary("promoted", now, elapsed, promoted_from=prev_type))
+            else:
+                self._sess_type = curr
             self._end_hold_since = None
 
         else:
@@ -300,8 +310,10 @@ class _TouchEventEmitter:
         if was_staged and emit_none:
             self._emit_none(now)
 
-    def _make_summary(self, status: str, now: float, elapsed: float) -> TouchSummary:
-        return TouchSummary.from_touch_event(self._sess_touch, now, elapsed, status=status)  # type: ignore[arg-type]
+    def _make_summary(self, status: str, now: float, elapsed: float, promoted_from: str | None = None) -> TouchSummary:
+        s = TouchSummary.from_touch_event(self._sess_touch, now, elapsed, status=status)  # type: ignore[arg-type]
+        s.promoted_from = promoted_from
+        return s
 
     def _emit(self, summary: TouchSummary) -> None:
         try:

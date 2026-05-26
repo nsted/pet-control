@@ -80,7 +80,8 @@ class TouchSummary:
     pressure_peak: float | None  # squeeze: peak FSR value (0–1)
     torque_peak: float | None    # restrict/wrench: peak torque in Nm
     affected_servos: list[int] = field(default_factory=list)  # restrict/wrench/twist
-    status: str = "complete"  # "started" | "running" | "complete"
+    status: str = "complete"  # "started" | "running" | "complete" | "promoted"
+    promoted_from: str | None = None  # set when status=="promoted": the previous touch_type
 
     @classmethod
     def from_touch_event(
@@ -205,7 +206,7 @@ class TouchSummary:
         """Human-readable one-line description for LLM prompt injection."""
         if self.touch_type == "none":
             return "contact ended"
-        _TAG = {"started": "[start]", "running": "[ongoing]", "complete": "[end]"}
+        _TAG = {"started": "[start]", "running": "[ongoing]", "complete": "[end]", "promoted": "[→]"}
         status = status_override if status_override is not None else self.status
         parts: list[str] = [f"gesture={self.touch_type}"]
         parts.insert(0, _TAG.get(status, f"[{status}]"))
