@@ -67,10 +67,19 @@ class PowerThresholds:
     voltage_sanity_min_v: float = 5.0
     voltage_sanity_max_v: float = 40.0
 
-    # --- Current limiting (applied globally to all motor kp / kd / torque_ff) ---
+    # --- Current limiting (safety backstop — applied globally) ---
     current_limit_start_a: float = 3.5    # begin scaling at this bus current
     current_limit_zero_a: float = 4.0     # compliance reaches 0.0 at this current
     current_ema_alpha: float = 0.1        # ~10-sample window (~0.33 s at 30 Hz)
+
+    # --- Current budget targeting (servo around this operating point) ---
+    # Under target: global boost ramps up slowly so motors work harder.
+    # Over target: per-motor cut applied fast; highest-torque motors cut most.
+    current_target_a: float = 1.0
+    current_target_deadband_a: float = 0.05  # no adjustment within ±50mA of target
+    current_target_boost_max: float = 1.5    # max boost multiplier
+    current_target_boost_rate: float = 0.02  # scale increase per tick (slow)
+    current_target_cut_rate: float = 0.5     # max scale drop per tick (fast)
 
 
 @dataclass
@@ -78,6 +87,7 @@ class _MotorPowerState:
     thermal_state: MotorThermalState = MotorThermalState.NORMAL
     disable_reason: str = ""
     compliance_scale: float = 1.0
+    current_budget_scale: float = 1.0   # per-motor scale from current budget targeting
     # Monotonic time when temp first dropped below recovery threshold (None = not yet)
     cool_since: Optional[float] = None
     # Monotonic time of last ERR=B/C event; 0.0 = none seen
@@ -103,10 +113,13 @@ class PowerManager:
         self._voltage_ema: Optional[float] = None
         self._voltage_state: VoltageState = VoltageState.NORMAL
 
-        # Current limiting
+        # Current limiting (safety backstop)
         self._current_ema: float = 0.0
         self._current_drive_scale: float = 1.0
         self._last_current_a: float = 0.0
+
+        # Current budget targeting
+        self._current_target_global: float = 1.0
 
         # Pending actions — drained once per tick by the Controller
         self._pending_disable_motor_ids: list[int] = []
@@ -124,6 +137,7 @@ class PowerManager:
 
         self._update_voltage(state.battery_voltage_v)
         self._update_current(state.battery_current_amps)
+        self._update_current_target(state)
         self._update_motors(state, now)
 
     # ------------------------------------------------------------------
@@ -173,6 +187,67 @@ class PowerManager:
                 f"(I={v:.2f}A)"
             )
         self._current_drive_scale = new_scale
+
+    # ------------------------------------------------------------------
+    # Current budget targeting
+    # ------------------------------------------------------------------
+
+    def _update_current_target(self, state: RobotState) -> None:
+        """Servo total bus current toward current_target_a.
+
+        Under target: ramp global boost up slowly so all motors work harder.
+        Over target: cut fast; highest-torque motors (biggest current consumers)
+        are cut most, low-torque motors are spared proportionally.
+        """
+        t = self.thresholds
+        current = self._current_ema
+        target = t.current_target_a
+
+        if current <= 0.0:
+            return
+
+        if abs(current - target) <= t.current_target_deadband_a:
+            return  # within dead-band — hold current scale
+
+        if current < target:
+            new_global = min(
+                self._current_target_global + t.current_target_boost_rate,
+                t.current_target_boost_max,
+            )
+            self._current_target_global = new_global
+            for ms in self._motor_states.values():
+                ms.current_budget_scale = new_global
+            for mid in state.active_servo_ids:
+                ms = self._motor_states.setdefault(mid, _MotorPowerState())
+                ms.current_budget_scale = new_global
+        else:
+            # Proportional target; rate-limit how fast we drop
+            desired = target / current
+            new_global = max(
+                self._current_target_global - t.current_target_cut_rate,
+                desired,
+            )
+            self._current_target_global = new_global
+            if new_global != self._current_target_global:
+                self._log_event(
+                    f"current_target_scale: {new_global:.2f} (I={current:.2f}A)"
+                )
+
+            # Distribute cut proportionally: high-torque motors absorb more.
+            # scale_i = global + (1 - global) * (1 - torque_i / max_torque)
+            # → max-torque motor gets exactly global; zero-torque motor stays at 1.0.
+            torques = {
+                mid: abs(state.motor_torques.get(mid, 0.0))
+                for mid in state.active_servo_ids
+            }
+            max_torque = max(torques.values(), default=0.0)
+            for mid in state.active_servo_ids:
+                ms = self._motor_states.setdefault(mid, _MotorPowerState())
+                if max_torque > 0.0:
+                    share = torques.get(mid, 0.0) / max_torque
+                    ms.current_budget_scale = new_global + (1.0 - new_global) * (1.0 - share)
+                else:
+                    ms.current_budget_scale = new_global
 
     # ------------------------------------------------------------------
     # Thermal protection
@@ -307,12 +382,13 @@ class PowerManager:
         return ms is None or ms.thermal_state != MotorThermalState.DISABLED
 
     def get_compliance_scale(self, motor_id: int) -> float:
-        """Product of thermal scale and current-limiting scale. Range [0.0, 1.0]."""
+        """Product of thermal, safety current-limiting, and budget-targeting scales."""
         if self._system_state == SystemState.EMERGENCY_STOPPED:
             return 0.0
         ms = self._motor_states.get(motor_id)
         thermal_scale = ms.compliance_scale if ms is not None else 1.0
-        return thermal_scale * self._current_drive_scale
+        budget_scale = ms.current_budget_scale if ms is not None else self._current_target_global
+        return thermal_scale * self._current_drive_scale * budget_scale
 
     def operator_reset(self, now: float | None = None) -> bool:
         """
@@ -391,6 +467,7 @@ class PowerManager:
             current_amps_raw=self._last_current_a,
             current_amps_filtered=self._current_ema,
             current_drive_scale=self._current_drive_scale,
+            current_target_scale=self._current_target_global,
             system_state=self._system_state.value,
             motor_states={
                 mid: ms.thermal_state.value for mid, ms in self._motor_states.items()

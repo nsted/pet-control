@@ -34,6 +34,7 @@ def _state(
     drive_temps: dict[int, int] | None = None,
     winding_temps: dict[int, int] | None = None,
     err_codes: dict[int, int] | None = None,
+    motor_torques: dict[int, float] | None = None,
     voltage_v: float = 14.5,
     current_a: float = 0.0,
 ) -> RobotState:
@@ -44,6 +45,7 @@ def _state(
         motor_temperatures=drive_temps or {},
         motor_winding_temperatures=winding_temps or {},
         motor_err_codes=err_codes or {},
+        motor_torques=motor_torques or {},
     )
     # Override computed properties for testing
     rs.__class__ = type(
@@ -361,12 +363,12 @@ class TestVoltageEMA:
 
 class TestCurrentLimiting:
     def test_below_threshold_scale_is_one(self) -> None:
-        """Current well below limit → compliance unaffected."""
+        """Current well below safety limit (3.5A) → safety drive scale unaffected."""
         w = _PM()
         for _ in range(100):
             w.tick(_state(motor_ids=[M1], current_a=1.0))
+        # Safety backstop is unaffected at 1A; budget targeting may boost above 1.0
         assert w.pm._current_drive_scale == pytest.approx(1.0)
-        assert w.pm.get_compliance_scale(M1) == pytest.approx(1.0)
 
     def test_above_limit_scale_is_zero(self) -> None:
         """Current saturated above limit → compliance zeroed."""
@@ -393,15 +395,18 @@ class TestCurrentLimiting:
         assert w.pm._current_drive_scale == pytest.approx(1.0)
 
     def test_current_scale_multiplied_with_thermal(self) -> None:
-        """Compliance = thermal_scale × current_scale."""
+        """Compliance = thermal_scale × safety_current_scale × budget_scale."""
         t = PowerThresholds(
             temp_hysteresis_cooldown_s=0.05,
-            current_ema_alpha=1.0,   # instant EMA for precise test
+            current_ema_alpha=1.0,    # instant EMA for precise test
+            current_target_cut_rate=0.5,
         )
         w = _PM(t)
-        # Thermal warning (scale=0.5) + current at midpoint (scale=0.5)
+        # Thermal warning (0.5) × safety midpoint (0.5) × budget cut (0.5 after 1 tick at 3.75A)
+        # Budget: desired=1/3.75=0.267, rate-limited to max(1.0-0.5, 0.267)=0.5 → budget=0.5
+        # Final: 0.5 × 0.5 × 0.5 = 0.125
         w.tick(_state(motor_ids=[M1], drive_temps={M1: 58}, current_a=3.75))
-        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.25, abs=0.01)
+        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.125, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -449,3 +454,87 @@ class TestTelemetry:
         w = _PM()
         t = w.pm.get_telemetry(14.5)
         assert t.system_state == "RUNNING"
+
+
+# ---------------------------------------------------------------------------
+# Current budget targeting
+# ---------------------------------------------------------------------------
+
+# Instant EMA so tests can reason about exact current values.
+_TARGET_THRESHOLDS = PowerThresholds(
+    temp_hysteresis_cooldown_s=0.05,
+    current_ema_alpha=1.0,
+    current_target_a=1.0,
+    current_target_boost_max=1.5,
+    current_target_boost_rate=0.02,
+    current_target_cut_rate=0.5,
+)
+
+
+class TestCurrentBudget:
+    def test_under_target_boosts_scale(self) -> None:
+        """Below 1A → scale gradually climbs above 1.0."""
+        w = _PM(_TARGET_THRESHOLDS)
+        for _ in range(10):
+            w.tick(_state(motor_ids=[M1], current_a=0.5))
+        assert w.pm._current_target_global > 1.0
+        assert w.pm.get_compliance_scale(M1) > 1.0
+
+    def test_boost_caps_at_boost_max(self) -> None:
+        """Sustained under-current never exceeds boost_max."""
+        w = _PM(_TARGET_THRESHOLDS)
+        for _ in range(1000):
+            w.tick(_state(motor_ids=[M1], current_a=0.1))
+        assert w.pm._current_target_global == pytest.approx(
+            _TARGET_THRESHOLDS.current_target_boost_max
+        )
+
+    def test_over_target_cuts_scale(self) -> None:
+        """Above 1A → global scale drops below 1.0."""
+        w = _PM(_TARGET_THRESHOLDS)
+        w.tick(_state(motor_ids=[M1], current_a=2.0))
+        assert w.pm._current_target_global < 1.0
+
+    def test_over_target_proportional_cut(self) -> None:
+        """Ideal cut at 2A target=1A → global approaches 0.5."""
+        w = _PM(_TARGET_THRESHOLDS)
+        for _ in range(20):
+            w.tick(_state(motor_ids=[M1], current_a=2.0))
+        # rate-limited at 0.5/tick, so after 2 ticks we'd be at 0.5; many ticks → stable
+        assert w.pm._current_target_global == pytest.approx(0.5, abs=0.05)
+
+    def test_high_torque_motor_cut_more(self) -> None:
+        """When over budget, the motor with higher torque gets a lower scale."""
+        w = _PM(_TARGET_THRESHOLDS)
+        for _ in range(5):
+            w.tick(_state(
+                motor_ids=[M1, M2],
+                current_a=2.0,
+                motor_torques={M1: 10.0, M2: 1.0},
+            ))
+        scale_m1 = w.pm._motor_states[M1].current_budget_scale
+        scale_m2 = w.pm._motor_states[M2].current_budget_scale
+        assert scale_m1 < scale_m2, "high-torque motor should be cut more"
+
+    def test_zero_torque_motor_spared(self) -> None:
+        """A motor doing no work gets scale=1.0 even when system is over budget."""
+        w = _PM(_TARGET_THRESHOLDS)
+        for _ in range(5):
+            w.tick(_state(
+                motor_ids=[M1, M2],
+                current_a=2.0,
+                motor_torques={M1: 10.0, M2: 0.0},
+            ))
+        assert w.pm._motor_states[M2].current_budget_scale == pytest.approx(1.0)
+
+    def test_boost_then_cut_responds_correctly(self) -> None:
+        """Scale rises when under, then falls quickly when over."""
+        w = _PM(_TARGET_THRESHOLDS)
+        for _ in range(10):
+            w.tick(_state(motor_ids=[M1], current_a=0.5))
+        boosted = w.pm._current_target_global
+        assert boosted > 1.0
+
+        for _ in range(5):
+            w.tick(_state(motor_ids=[M1], current_a=3.0))
+        assert w.pm._current_target_global < boosted
