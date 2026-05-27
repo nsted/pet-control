@@ -7,9 +7,9 @@ which movement to perform.  LLM calls happen in a background thread so the
 30 Hz control loop stays non-blocking.  Between calls the last commanded
 motion continues uninterrupted.
 
-A persistent conversation is maintained for the session: the combined system
-prompt (robot_context.md + behavior_guide.md) is sent once on start, then
-each gesture event is appended as a user turn so the model retains context.
+Each gesture batch is sent as a fresh conversation turn against the system
+prompt only. History is cleared after each call to minimize token usage and
+avoid stale context from prior interactions.
 
 Motion is delegated to the same Motion classes used by standalone
 patterns (patterns.py).  Speed from the LLM response scales frequency;
@@ -203,14 +203,25 @@ def _format_batch(batch: list[GestureEvent]) -> str:
     return "{" + pairs + "}"
 
 
+def _intensity_label(intensity: float) -> str:
+    return "firm" if intensity >= 0.4 else "light"
+
+
 def _categorize_gesture(s: GestureEvent) -> str:
+    label = _intensity_label(s.intensity)
     if s.touch_type == "stroke":
-        return "stroke-fast" if s.velocity is not None and abs(s.velocity) >= 2.0 else "stroke-slow"
+        speed = "fast" if s.velocity is not None and abs(s.velocity) >= 2.0 else "slow"
+        return f"stroke-{speed}-{label}"
     if s.touch_type == "squeeze":
-        return "squeeze-hard" if (s.pressure_peak or 0.0) >= 0.5 else "squeeze-soft"
+        hardness = "hard" if (s.pressure_peak or 0.0) >= 0.5 else "soft"
+        return f"squeeze-{hardness}-{label}"
     if s.touch_type == "hold":
-        return "hold-long" if s.duration >= 3.0 else "hold-brief"
-    return s.touch_type
+        dur = "long" if s.duration >= 3.0 else "brief"
+        return f"hold-{dur}-{label}"
+    if s.touch_type == "cradle":
+        dur = "-long" if s.duration >= 5.0 else ""
+        return f"cradle{dur}-{label}"
+    return f"{s.touch_type}-{label}"
 
 
 class OllamaMotion(Motion):
@@ -261,6 +272,10 @@ class OllamaMotion(Motion):
     # ------------------------------------------------------------------
     # Motion interface
     # ------------------------------------------------------------------
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return self._active_pattern.is_active()
 
     def on_start(self, controller: Controller) -> None:
         self._controller = controller
@@ -347,6 +362,16 @@ class OllamaMotion(Motion):
                 continue
 
             if summary.status == "promoted":
+                # Update the type of the matching started event in the current batch so
+                # the LLM sees a single escalating contact rather than two separate events.
+                found = False
+                for i in range(len(self._batch) - 1, -1, -1):
+                    if self._batch[i].status == "started" and self._batch[i].touch_type == summary.promoted_from:
+                        self._batch[i].touch_type = summary.touch_type
+                        found = True
+                        break
+                if not found:
+                    self._batch.append(summary)
                 continue
 
             # Clear any pending idle-revert on new touch.
@@ -396,10 +421,13 @@ class OllamaMotion(Motion):
         t0 = time.monotonic()
         result = self._client.chat(touch_description)
         rtt = time.monotonic() - t0
-        if result is None:
-            return
-        self._apply_llm_response(result, rtt)
-        self._client.clear_history()
+        try:
+            if result is not None:
+                self._apply_llm_response(result, rtt)
+        except Exception as exc:
+            logger.warning("[Ollama] could not apply response: %s — raw: %s", exc, result)
+        finally:
+            self._client.clear_history()
 
     def _apply_llm_response(self, response: dict, rtt: float = 0.0) -> None:
         motion = str(response.get("movement", "")).strip().lower()
@@ -411,23 +439,25 @@ class OllamaMotion(Motion):
             )
             return
 
-        speed = max(0.05, min(1.0, float(response.get("speed", 1.0))))
+        try:
+            speed = max(0.05, min(1.0, float(response.get("speed", 1.0))))
+        except (TypeError, ValueError):
+            logger.warning("[Ollama] invalid speed field %r — using default 1.0", response.get("speed"))
+            speed = 1.0
         feel = str(response.get("explanation", response.get("feel", ""))).strip()
-
-        with self._lock:
-            same_motion = self._active_motion == motion
-            pattern = self._active_pattern
 
         pt = self._client.last_prompt_tokens
         et = self._client.last_eval_tokens
         ld = self._client.last_load_ms
         pf = self._client.last_prefill_ms
         gn = self._client.last_gen_ms
-        if same_motion:
-            logger.info("[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [params updated]", rtt, motion, speed, feel)
-            logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
-            _update_pattern_params(pattern, motion, speed)
-        else:
+        with self._lock:
+            same_motion = self._active_motion == motion
+            if same_motion:
+                logger.info("[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [params updated]", rtt, motion, speed, feel)
+                logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
+                _update_pattern_params(self._active_pattern, motion, speed)
+        if not same_motion:
             logger.info("[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s", rtt, motion, speed, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             self._switch_pattern(motion, speed)

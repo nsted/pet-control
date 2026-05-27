@@ -232,12 +232,13 @@ class ContactClassifier:
                 self._servo_last_pos[sid] = pos
 
                 v = abs(state.motor_velocities.get(sid, 0.0))
+                t = abs(state.motor_torques.get(sid, 0.0))
                 if sid in self._twist_active:
-                    if v < self.TWIST_VEL_OFF:
+                    if v < self.TWIST_VEL_OFF or t > self.TWIST_TORQUE_MAX:
                         self._twist_active.discard(sid)
                         self._servo_travel.pop(sid, None)
                 else:
-                    if v >= self.TWIST_VEL_ON and is_passive:
+                    if v >= self.TWIST_VEL_ON and t <= self.TWIST_TORQUE_MAX and is_passive:
                         self._twist_active.add(sid)
             self._twist_active &= set(servo_ids)
 
