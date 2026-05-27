@@ -530,7 +530,14 @@ class RobotBackend(_BackendBase):
         battery_voltage_raw = (raw_bytes[106] << 8) | raw_bytes[107]
 
         modules: dict[int, ModuleSensors] = {}
-        module_ids = self._discovered_modules or list(range(8))
+        # Always parse all NUM_MODULES slots — the sensor payload is fixed-size
+        # regardless of discovery state. Partial discovery (e.g. after reconnect)
+        # must not silently discard 7/8 modules' data.
+        module_ids = (
+            self._discovered_modules
+            if len(self._discovered_modules) == NUM_MODULES
+            else list(range(NUM_MODULES))
+        )
         for mod_idx, mod_id in enumerate(module_ids[:8]):
             t = touch[mod_idx * 7:(mod_idx + 1) * 7]
             nibbles: list[int] = []
@@ -688,17 +695,34 @@ class RobotBackend(_BackendBase):
         effect on the next sleep boundary — no task restart needed.
         """
         _FAIL_THRESHOLD = 5
+        # After this many consecutive backoffs without recovery, the Arduino's
+        # I2C/API path is stuck (CAN feedback may still arrive, so the RX watchdog
+        # won't fire). Force a reconnect to reset the connection.
+        _BACKOFF_RECONNECT_THRESHOLD = 1
         sensor_failures = 0
+        consecutive_backedoffs = 0
 
         while self._connected:
             try:
                 if sensor_failures >= _FAIL_THRESHOLD:
+                    consecutive_backedoffs += 1
                     logger.warning(
-                        "[RobotBackend] Sensor read failed %d× — backing off and retrying "
+                        "[RobotBackend] Sensor read failed %d× (backoff #%d) — backing off and retrying "
                         "(motor TX + RX watchdog will catch a dead connection).",
-                        sensor_failures,
+                        sensor_failures, consecutive_backedoffs,
                     )
                     sensor_failures = 0
+                    if consecutive_backedoffs >= _BACKOFF_RECONNECT_THRESHOLD:
+                        logger.warning(
+                            "[RobotBackend] Sensor dead for %d consecutive backoffs — forcing reconnect.",
+                            consecutive_backedoffs,
+                        )
+                        self._connected = False
+                        if self.auto_reconnect and not self._reconnecting:
+                            self._reconnect_task = asyncio.get_running_loop().create_task(
+                                self._reconnect_loop()
+                            )
+                        break
                     await asyncio.sleep(2.0)
 
                 t0 = time.monotonic()
@@ -710,7 +734,16 @@ class RobotBackend(_BackendBase):
                     self._latest_battery_current_raw = batt_cur
                     self._latest_battery_voltage_raw = batt_vol
                     sensor_failures = 0
+                    consecutive_backedoffs = 0
                 else:
+                    if data is None:
+                        logger.debug("[RobotBackend] Sensor read timeout (no response from Arduino)")
+                    else:
+                        try:
+                            n = len([x for x in data.split(",") if x.strip()])
+                        except Exception:
+                            n = -1
+                        logger.debug("[RobotBackend] Sensor parse failed — got %d bytes (expected 108)", n)
                     sensor_failures += 1
 
                 elapsed = time.monotonic() - t0
