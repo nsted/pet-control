@@ -307,6 +307,10 @@ class RobotState:
     """
 
     timestamp: float = field(default_factory=time.monotonic)
+    # Monotonic time when the current sensor data was last written by the sensor loop.
+    # Distinct from timestamp (which advances every controller tick); only advances
+    # when the backend has a fresh sensor reading.  Used to gate gesture detection.
+    sensor_timestamp: float = 0.0
     # Keyed by module_id (int). Sensor values are normalized 0-1.
     sensors: dict[int, ModuleSensors] = field(default_factory=dict)
     # Keyed by servo_id (int). Position in radians; home = 0.0.

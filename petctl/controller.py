@@ -396,6 +396,7 @@ class Controller:
         self.log_loop = log_loop
         self.power_manager = PowerManager()
         self._gesture_processor = _GestureProcessor()
+        self._last_gesture_sensor_ts: float = -1.0
         self._power_reset_requested: bool = False
 
         # Async queue of GestureEvent events, emitted on type transitions.
@@ -582,7 +583,14 @@ class Controller:
                 self._ws_epoch = self._state.timestamp
             self._was_connected = self._state.connected
             self._state.is_motion_active = self.motion.is_active()
-            self._state.gesture = self._gesture_processor.update(self._state)
+            # Only run gesture detection when sensor data has actually changed.
+            # The detectors use frame-count windows sized for the sensor rate (~20 Hz);
+            # calling them at the controller rate (~200 Hz) shrinks the effective window
+            # 10× and makes velocity estimates unreliable.
+            if self._state.sensor_timestamp != self._last_gesture_sensor_ts:
+                self._last_gesture_sensor_ts = self._state.sensor_timestamp
+                self._state.gesture = self._gesture_processor.update(self._state)
+            # Emitter runs every tick for accurate timing (end-hold, min-gesture timers).
             self._gesture_emitter.update(self._state)
             if self._touch_logger is not None:
                 self._touch_logger.tick(self._state.timestamp)
