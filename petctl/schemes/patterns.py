@@ -1842,7 +1842,7 @@ class PurrRippleMotion(Motion):
 
     KD_TARGET: float = 0.08  # peak kd — causes vibration
     BASE_HZ: float = 0.3    # ripple frequency at speed=1.0 (~3.3s per pass)
-    CREST_POWER: int = 0.5    # exponent on sin envelope; higher = narrower active crest
+    CREST_POWER: float = 0.5    # exponent on sin envelope; fractional values narrow the crest
 
     def __init__(self, speed: float = 1.0) -> None:
         self.speed = max(speed, 0.01)

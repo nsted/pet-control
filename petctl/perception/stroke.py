@@ -20,6 +20,7 @@ PAD_THRESHOLD: float = 0.35     # minimum per-pad value to contribute to centroi
 TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grouping
 VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
 MIN_STROKE_TRAVEL: float = 0.35  # centroid must travel this far (body-units) over the velocity window
+MIN_CONFIDENCE: float = 0.25    # R² floor — below this the centroid trajectory is too noisy to be a real stroke
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
 TOUCH_GAP_GRACE_S: float = 0.25  # don't clear velocity window during brief inter-module gaps
@@ -147,7 +148,7 @@ class StrokeDetector:
 
         velocity, r_squared = _linear_fit(list(self._window))
 
-        if abs(velocity) < VELOCITY_THRESHOLD:
+        if abs(velocity) < VELOCITY_THRESHOLD or r_squared < MIN_CONFIDENCE:
             return None
 
         # A press keeps the centroid near the contact location — the linear fit can
@@ -220,11 +221,13 @@ class HoldDetector:
 
         self._centroid_window.append((state.timestamp, centroid))
 
-        if len(self._centroid_window) >= MIN_WINDOW_FRAMES:
-            velocity, _ = _linear_fit(list(self._centroid_window))
-            if abs(velocity) >= VELOCITY_THRESHOLD:
-                self._hold_start = None
-                return None
+        if len(self._centroid_window) < MIN_WINDOW_FRAMES:
+            return None
+
+        velocity, _ = _linear_fit(list(self._centroid_window))
+        if abs(velocity) >= VELOCITY_THRESHOLD:
+            self._hold_start = None
+            return None
 
         q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
         if not q_blobs:

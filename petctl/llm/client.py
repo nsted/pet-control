@@ -16,10 +16,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_MAX_CONV_LINES = 10    # max lines in conversation history (excluding system prompt)
-_MAX_AGE_S      = 60.0  # drop turns older than this
-
-
 class OllamaClient:
     """Blocking client for Ollama's /api/chat endpoint.
 
@@ -44,7 +40,6 @@ class OllamaClient:
         self._timeout = timeout
         self._log_input = log_input
         self._messages: list[dict[str, str]] = []
-        self._turn_times: list[float] = []  # monotonic time when each turn completed
         self._gen: int = 0
         self.last_prompt_tokens: int = 0
         self.last_eval_tokens: int = 0
@@ -56,30 +51,6 @@ class OllamaClient:
         """Begin a new conversation with the given system prompt."""
         self._gen += 1
         self._messages = [{"role": "system", "content": system}]
-        self._turn_times = []
-
-    def _prune(self) -> None:
-        """Drop turns that are too old or push conversation past _MAX_CONV_LINES."""
-        now = time.monotonic()
-        drop = 0
-        for i, t in enumerate(self._turn_times):
-            if now - t > _MAX_AGE_S:
-                drop = i + 1
-            else:
-                break
-        # Count lines in the remaining conversation; drop oldest turns until fits.
-        total = sum(
-            len(m["content"].splitlines())
-            for m in self._messages[1 + drop * 2 :]
-        )
-        while total > _MAX_CONV_LINES and drop < len(self._turn_times):
-            pair = self._messages[1 + drop * 2 : 1 + (drop + 1) * 2]
-            total -= sum(len(m["content"].splitlines()) for m in pair)
-            drop += 1
-        if drop:
-            logger.debug("[Ollama] pruning %d turn(s) from history", drop)
-            del self._messages[1 : 1 + drop * 2]
-            del self._turn_times[:drop]
 
     def chat(self, user: str) -> dict[str, Any] | None:
         """Append a user turn, call the API, and return the parsed JSON response.
@@ -91,7 +62,6 @@ class OllamaClient:
             Parsed dict from the LLM, or None if the call fails or the
             response cannot be parsed as JSON.
         """
-        self._prune()
         gen = self._gen
         self._messages.append({"role": "user", "content": user})
         payload = json.dumps({
@@ -116,15 +86,13 @@ class OllamaClient:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = resp.read().decode()
         except urllib.error.URLError as exc:
-            logger.warning("[Ollama] connection error after %.1fs: %s", time.monotonic() - t0, exc)
-            if self._gen == gen:
-                self._messages.pop()
-            return None
-        except TimeoutError:
-            logger.warning(
-                "[Ollama] request timed out after %.1fs (prompt ~%d words, %d turns)",
-                self._timeout, prompt_tokens, (len(self._messages) - 1) // 2,
-            )
+            if isinstance(exc.reason, TimeoutError):
+                logger.warning(
+                    "[Ollama] request timed out after %.1fs (prompt ~%d words, %d turns)",
+                    self._timeout, prompt_tokens, (len(self._messages) - 1) // 2,
+                )
+            else:
+                logger.warning("[Ollama] connection error after %.1fs: %s", time.monotonic() - t0, exc)
             if self._gen == gen:
                 self._messages.pop()
             return None
@@ -138,7 +106,6 @@ class OllamaClient:
             content = envelope["message"]["content"]
             result = json.loads(content)
             self._messages.append({"role": "assistant", "content": content})
-            self._turn_times.append(time.monotonic())
             self.last_prompt_tokens = envelope.get("prompt_eval_count", 0) or 0
             self.last_eval_tokens = envelope.get("eval_count", 0) or 0
             self.last_load_ms = int((envelope.get("load_duration") or 0) / 1e6)
@@ -156,7 +123,6 @@ class OllamaClient:
         """Reset conversation to just the system prompt, keeping the model loaded."""
         system = self._messages[0] if self._messages else None
         self._messages = [system] if system else []
-        self._turn_times = []
 
     def is_available(self) -> bool:
         """Return True if the Ollama server responds to a health check."""
