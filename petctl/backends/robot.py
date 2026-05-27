@@ -113,6 +113,7 @@ class RobotBackend(_BackendBase):
         # Latest sensor data populated by _sensor_loop — decouples sensor latency
         # from the control loop so get_state() never blocks on a network round-trip.
         self._latest_sensors: Optional[dict] = None
+        self._latest_sensor_ts: float = 0.0
         # Per-module, per-face sliding windows for cap moving average.
         # Keyed by module_id → {"left": [deque,...], "right": [...], "middle": [...]}.
         self._cap_filter: dict[int, dict[str, list[collections.deque]]] = {}
@@ -194,6 +195,7 @@ class RobotBackend(_BackendBase):
             now = time.monotonic()
             state = RobotState(
                 timestamp=now,
+                sensor_timestamp=self._latest_sensor_ts,
                 sensors=sensors,
                 servo_positions={
                     mid: data["pos"] - self._angle_offsets.get(mid, 0.0)
@@ -704,6 +706,7 @@ class RobotBackend(_BackendBase):
                 sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
                 if sensors is not None:
                     self._latest_sensors = self._apply_cap_filter(sensors)
+                    self._latest_sensor_ts = time.monotonic()
                     self._latest_battery_current_raw = batt_cur
                     self._latest_battery_voltage_raw = batt_vol
                     sensor_failures = 0

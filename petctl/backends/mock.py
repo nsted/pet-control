@@ -96,6 +96,7 @@ class MockBackend(Backend):
 
         self._start_time = time.monotonic()
         self._last_timestamp = time.monotonic()
+        self._last_sensor_ts: float = 0.0
         self._connected = False
 
     # ------------------------------------------------------------------
@@ -106,6 +107,7 @@ class MockBackend(Backend):
         self._connected = True
         self._start_time = time.monotonic()
         self._last_timestamp = time.monotonic()
+        self._last_sensor_ts = time.monotonic()
         if self.state_file:
             self._reload_file()
         return True
@@ -114,6 +116,7 @@ class MockBackend(Backend):
         self._connected = False
 
     async def get_state(self) -> RobotState:
+        from petctl.config import LOOP_LIMITS
         now = time.monotonic()
         dt = now - self._last_timestamp
         self._last_timestamp = now
@@ -123,11 +126,16 @@ class MockBackend(Backend):
         if self.state_file:
             self._reload_file_if_changed()
 
+        sensor_period = 1.0 / LOOP_LIMITS.sensor_poll_hz
+        if now - self._last_sensor_ts >= sensor_period:
+            self._last_sensor_ts = now
+
         sensors = self._build_sensors(elapsed)
         servo_positions = self._build_servo_positions()
 
         return RobotState(
             timestamp=now,
+            sensor_timestamp=self._last_sensor_ts,
             sensors=sensors,
             servo_positions=servo_positions,
             active_modules=list(sensors.keys()),
