@@ -882,7 +882,7 @@ class RobotBackend(_BackendBase):
                 self._module_poll_task = None
             if self._ws is not None:
                 try:
-                    await asyncio.wait_for(self._ws.close(), timeout=2.0)
+                    await asyncio.wait_for(self._ws.close(), timeout=0.2)
                 except Exception:
                     pass
                 self._ws = None
