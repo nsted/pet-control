@@ -402,6 +402,12 @@ class RobotBackend(_BackendBase):
             for mid in self._discovered_motors:
                 await self._ws.send(_encode_mit_enable(mid))
             await asyncio.sleep(0.5)
+        elif self._discovered_motors:
+            # Reconnect fast path: reuse cached IDs, just re-enable and wait for first CAN echo.
+            logger.info("[RobotBackend] Reusing motor IDs %s (reconnect)", self._discovered_motors)
+            for mid in self._discovered_motors:
+                await self._ws.send(_encode_mit_enable(mid))
+            await asyncio.sleep(0.3)
         else:
             self._discovered_motors = await self._discover_motors()
 
