@@ -13,7 +13,7 @@ from typing import Optional, Sequence
 
 import websockets
 
-from petctl.config import LOOP_LIMITS, MOTOR_LIMITS, SENSOR_LIMITS
+from petctl.config import LOOP_LIMITS, MOTOR_LIMITS, NUM_MODULES, SENSOR_LIMITS
 from petctl.protocols import Backend as _BackendBase
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
@@ -99,6 +99,7 @@ class RobotBackend(_BackendBase):
         # Two independent tasks: motor TX at motor_update_hz, sensor at _sensor_poll_hz.
         self._motor_tx_task: Optional[asyncio.Task] = None
         self._sensor_task: Optional[asyncio.Task] = None
+        self._module_poll_task: Optional[asyncio.Task] = None
         self._sensor_poll_hz: float = LOOP_LIMITS.sensor_poll_hz
 
         self._last_state = RobotState.empty()
@@ -148,6 +149,9 @@ class RobotBackend(_BackendBase):
         if self._sensor_task:
             self._sensor_task.cancel()
             self._sensor_task = None
+        if self._module_poll_task:
+            self._module_poll_task.cancel()
+            self._module_poll_task = None
         if self._receive_task:
             self._receive_task.cancel()
             self._receive_task = None
@@ -327,7 +331,7 @@ class RobotBackend(_BackendBase):
             logger.warning("[RobotBackend] Resolution failed: %s", e)
         return None
 
-    async def _connect_with_ip(self, ip: str, *, _is_reconnect: bool = False) -> bool:
+    async def _connect_with_ip(self, ip: str) -> bool:
         uri = f"ws://{ip}:{self.port}"
         logger.info("[RobotBackend] Connecting to %s...", uri)
         try:
@@ -379,36 +383,34 @@ class RobotBackend(_BackendBase):
 
         self._disabled_motor_ids.clear()
 
-        if _is_reconnect and self._discovered_modules and self._discovered_motors:
-            # Reuse previously discovered topology — skip the 1-second motor scan and
-            # re-calibration so home offsets stay valid across a transient drop.
-            logger.info(
-                "[RobotBackend] Reconnect: reusing modules=%s motors=%s",
-                self._discovered_modules, self._discovered_motors,
+        self._discovered_modules = await self._discover_modules()
+        logger.info("[RobotBackend] Discovered modules: %s", self._discovered_modules)
+        if len(self._discovered_modules) < NUM_MODULES:
+            logger.warning(
+                "[RobotBackend] Only %d/%d modules found — polling every 2s",
+                len(self._discovered_modules), NUM_MODULES,
             )
+            if self._module_poll_task and not self._module_poll_task.done():
+                self._module_poll_task.cancel()
+            self._module_poll_task = asyncio.create_task(self._module_poll_loop())
+
+        if self._configured_motor_ids is not None:
+            self._discovered_motors = list(self._configured_motor_ids)
+            logger.info("[RobotBackend] Using fixed motor IDs (--motors): %s", self._discovered_motors)
             for mid in self._discovered_motors:
                 await self._ws.send(_encode_mit_enable(mid))
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
         else:
-            self._discovered_modules = await self._discover_modules()
-            logger.info("[RobotBackend] Discovered modules: %s", self._discovered_modules)
+            self._discovered_motors = await self._discover_motors()
 
-            if self._configured_motor_ids is not None:
-                self._discovered_motors = list(self._configured_motor_ids)
-                logger.info("[RobotBackend] Using fixed motor IDs (--motors): %s", self._discovered_motors)
-                for mid in self._discovered_motors:
-                    await self._ws.send(_encode_mit_enable(mid))
-                await asyncio.sleep(0.5)
-            else:
-                self._discovered_motors = await self._discover_motors()
-
-            if self.calibrate_on_connect and self._discovered_modules:
-                await self._calibrate()
+        if self.calibrate_on_connect and self._discovered_modules:
+            await self._calibrate()
 
         # Cancel any leftover tasks from a previous connection, then start fresh.
-        for task in (self._motor_tx_task, self._sensor_task):
+        for task in (self._motor_tx_task, self._sensor_task, self._module_poll_task):
             if task and not task.done():
                 task.cancel()
+        self._module_poll_task = None
         self._latest_sensors = None
         self._motor_tx_task = asyncio.create_task(self._motor_tx_loop())
         self._sensor_task = asyncio.create_task(self._sensor_loop())
@@ -472,15 +474,28 @@ class RobotBackend(_BackendBase):
         except ValueError:
             return []
 
+    async def _module_poll_loop(self) -> None:
+        """Retry getmodules every 2s until all NUM_MODULES respond."""
+        while len(self._discovered_modules) < NUM_MODULES:
+            await asyncio.sleep(2.0)
+            modules = await self._discover_modules()
+            if not modules:
+                continue
+            if set(modules) != set(self._discovered_modules):
+                self._discovered_modules = modules
+                logger.info("[RobotBackend] Module re-poll: %s", self._discovered_modules)
+            if len(self._discovered_modules) >= NUM_MODULES:
+                logger.info("[RobotBackend] All %d modules found", NUM_MODULES)
+                break
+
     async def _discover_motors(self) -> list[int]:
         if self._ws is None:
             return []
-        before = set(self._motor_state.keys())
+        self._motor_state.clear()
         for mid in range(1, 8):
             await self._ws.send(_encode_mit_enable(mid))
         await asyncio.sleep(1.0)
-        after = set(self._motor_state.keys())
-        discovered = sorted(after - before)
+        discovered = sorted(self._motor_state.keys())
         if not discovered:
             logger.warning(
                 "[RobotBackend] No motor CAN feedback during discovery; defaulting to IDs 1–7. "
@@ -826,6 +841,9 @@ class RobotBackend(_BackendBase):
             if self._sensor_task and not self._sensor_task.done():
                 self._sensor_task.cancel()
                 self._sensor_task = None
+            if self._module_poll_task and not self._module_poll_task.done():
+                self._module_poll_task.cancel()
+                self._module_poll_task = None
             if self._ws is not None:
                 try:
                     await asyncio.wait_for(self._ws.close(), timeout=2.0)
@@ -843,7 +861,7 @@ class RobotBackend(_BackendBase):
                 logger.info("[RobotBackend] Reconnect attempt %d...", attempt)
                 try:
                     ip = self._resolved_ip or await self._resolve_host()
-                    if ip and await self._connect_with_ip(ip, _is_reconnect=True):
+                    if ip and await self._connect_with_ip(ip):
                         logger.info("[RobotBackend] Reconnected.")
                         break
                 except Exception as e:
