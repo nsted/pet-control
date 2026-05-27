@@ -80,7 +80,7 @@ _CONTACT_LEVEL: dict[str, int] = {
 # Gesture lifecycle thresholds for the touch emitter.
 _UPDATE_INTERVAL_S: float = 2.0   # interval between "running" status updates
 _END_HOLD_S: float = 0.40         # hold before emitting "complete" — bridges sensor gaps
-_MIN_GESTURE_DURATION_S: float = 0.22  # suppress gestures shorter than this
+_MIN_GESTURE_DURATION_S: float = 0.10  # suppress gestures shorter than 2 sensor samples (2 × 50 ms @ 20 Hz)
 
 
 def _event_level(event: GestureFrame) -> int:
