@@ -1070,6 +1070,131 @@ class CurlAwayMotion(StrokeCurlMotion):
         logger.info("[BEHAVIOR] CurlAway")
 
 
+class CurlTowardsNeighborAssistMotion(StrokeCurlMotion):
+    """
+    curl-towards with neighbor-assist stall recovery.
+
+    Behaves identically to curl-towards. When a module stalls while curling
+    (position not advancing + high torque), its adjacent neighbors are temporarily
+    commanded in the opposite direction to relieve mechanical strain. Once the
+    caller starts moving (or the assist window times out), neighbors release and
+    resume their natural curl behavior.
+    """
+
+    name = "curl-towards-assist"
+    DIRECTION_SIGN: float = 1.0
+
+    STALL_THRESHOLD_RAD: float = 0.10
+    STALL_WINDOW_S: float = 0.8
+    STALL_TORQUE_NM: float = 0.9
+    ASSIST_TARGET_DEG: float = 30.0
+    ASSIST_DURATION_S: float = 0.8
+    RECOVERY_THRESHOLD_RAD: float = 0.06
+    ASSIST_COOLDOWN_S: float = 1.5
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stall_pos_snap: dict[int, tuple[float, float]] = {}
+        self._stall_peak_torque: dict[int, float] = {}
+        self._assist_phase: dict[int, str] = {}
+        self._assist_start: dict[int, float] = {}
+        self._assist_snap_pos: dict[int, float] = {}
+        self._assist_cooldown_until: dict[int, float] = {}
+
+    def on_start(self, controller: "Controller") -> None:
+        super().on_start(controller)
+        self._stall_pos_snap.clear()
+        self._stall_peak_torque.clear()
+        self._assist_phase.clear()
+        self._assist_start.clear()
+        self._assist_snap_pos.clear()
+        self._assist_cooldown_until.clear()
+        logger.info("[BEHAVIOR] CurlTowardsNeighborAssist")
+
+    def _neighbors(self, sid: int, active: set[int]) -> list[int]:
+        return [n for n in (sid - 1, sid + 1) if n in active]
+
+    def _check_assist_stall(self, sid: int, state: "RobotState", now: float) -> bool:
+        actual = state.servo_positions.get(sid)
+        torque = abs(state.motor_torques.get(sid, 0.0))
+        if actual is None:
+            return False
+        if sid not in self._stall_pos_snap:
+            self._stall_pos_snap[sid] = (actual, now)
+            self._stall_peak_torque[sid] = torque
+            return False
+        snap_pos, snap_t = self._stall_pos_snap[sid]
+        if abs(actual - snap_pos) >= self.STALL_THRESHOLD_RAD:
+            self._stall_pos_snap[sid] = (actual, now)
+            self._stall_peak_torque[sid] = torque
+            return False
+        self._stall_peak_torque[sid] = max(self._stall_peak_torque[sid], torque)
+        if now - snap_t >= self.STALL_WINDOW_S:
+            if self._stall_peak_torque[sid] >= self.STALL_TORQUE_NM:
+                return True
+            self._stall_pos_snap[sid] = (actual, now)
+            self._stall_peak_torque[sid] = torque
+        return False
+
+    def _end_assist(self, sid: int, now: float) -> None:
+        self._assist_phase[sid] = "cooldown"
+        self._assist_cooldown_until[sid] = now + self.ASSIST_COOLDOWN_S
+        self._stall_pos_snap.pop(sid, None)
+        self._stall_peak_torque.pop(sid, None)
+
+    def update(self, state: "RobotState") -> "list[ServoCommand]":
+        cmds_by_sid = {cmd.servo_id: cmd for cmd in super().update(state)}
+        now = state.timestamp
+        active = state.active_servo_ids
+        neighbor_overrides: dict[int, "ServoCommand"] = {}
+
+        for sid in sorted(active):
+            target_deg = self._curl_target.get(sid, 0.0)
+            if target_deg == 0.0:
+                self._stall_pos_snap.pop(sid, None)
+                self._stall_peak_torque.pop(sid, None)
+                if self._assist_phase.get(sid) not in ("assisting", "cooldown"):
+                    self._assist_phase.pop(sid, None)
+                continue
+
+            phase = self._assist_phase.get(sid, "normal")
+
+            if phase == "normal":
+                if self._check_assist_stall(sid, state, now):
+                    self._assist_phase[sid] = "assisting"
+                    self._assist_start[sid] = now
+                    self._assist_snap_pos[sid] = state.servo_positions.get(sid, 0.0)
+                    logger.info(
+                        "[CurlAssist] s%d stalled at %.1f° — starting assist",
+                        sid, target_deg,
+                    )
+
+            elif phase == "assisting":
+                elapsed = now - self._assist_start.get(sid, now)
+                actual = state.servo_positions.get(sid, 0.0)
+                moved = abs(actual - self._assist_snap_pos.get(sid, actual))
+                if moved >= self.RECOVERY_THRESHOLD_RAD:
+                    logger.info("[CurlAssist] s%d recovered (moved %.3f rad)", sid, moved)
+                    self._end_assist(sid, now)
+                elif elapsed >= self.ASSIST_DURATION_S:
+                    logger.info("[CurlAssist] s%d assist timed out", sid)
+                    self._end_assist(sid, now)
+                else:
+                    opp_deg = -math.copysign(self.ASSIST_TARGET_DEG, target_deg)
+                    for nid in self._neighbors(sid, active):
+                        if nid not in neighbor_overrides:
+                            neighbor_overrides[nid] = ServoCommand.from_angle(nid, opp_deg)
+
+            elif phase == "cooldown":
+                if now >= self._assist_cooldown_until.get(sid, 0.0):
+                    self._assist_phase[sid] = "normal"
+                    self._stall_pos_snap.pop(sid, None)
+                    self._stall_peak_torque.pop(sid, None)
+
+        cmds_by_sid.update(neighbor_overrides)
+        return list(cmds_by_sid.values())
+
+
 class StrokeSnuggleMotion(Motion):
     """
     Like stroke-curl, but after 10s of continuous stroking transitions to
@@ -1772,6 +1897,7 @@ ALL_PATTERNS: list[type[Motion]] = [
     StrokeReactMotion,
     StrokeCurlMotion,
     CurlTowardsMotion,
+    CurlTowardsNeighborAssistMotion,
     CurlAwayMotion,
     StrokeSnuggleMotion,
     ExploreMotion,

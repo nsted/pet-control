@@ -166,3 +166,6 @@ LOOP_LIMITS = ControlLoopLimits()
 BEHAVIOR_LIMITS = BehaviorLimits()
 SENSOR_LIMITS = SensorLimits()
 BATTERY_CONFIG = BatteryConfig()
+
+# Total number of modules: head (0) + 6 middle + tail (7).
+NUM_MODULES: int = 8
