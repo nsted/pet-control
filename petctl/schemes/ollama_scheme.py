@@ -36,6 +36,7 @@ from petctl.schemes.patterns import (
     CascadeMotion,
     CoilMotion,
     CurlMotion,
+    CurlTowardsNeighborAssistMotion,
     DriftMotion,
     FreezeMotion,
     IdleMotion,
@@ -84,7 +85,8 @@ _AMP_MAX: dict[str, float] = {
     "struggle":       0.0,
     "drift":         0.0,
     "stroke":        0.0,  # touch-reactive — senses internally
-    "stroke-curl":   0.0,
+    "stroke-curl":          0.0,
+    "curl-towards-assist":  0.0,
     "stroke-snuggle": 0.0,
     "yield-stiff":   0.0,
     "pose":          0.0,
@@ -93,7 +95,7 @@ _AMP_MAX: dict[str, float] = {
 _VALID_MOVEMENTS = set(_AMP_MAX)
 
 # Movement to use on startup and after idle revert (no touch for _TOUCH_IDLE_S).
-_DEFAULT_MOTION = "stroke-curl"
+_DEFAULT_MOTION = "curl-towards-assist"
 
 
 class _CurlLeft(CurlMotion):
@@ -147,6 +149,8 @@ def _make_pattern(motion: str, speed: float) -> Motion:
         return StrokeReactMotion()
     if motion == "stroke-curl":
         return StrokeCurlMotion()
+    if motion == "curl-towards-assist":
+        return CurlTowardsNeighborAssistMotion()
     if motion == "stroke-snuggle":
         return StrokeSnuggleMotion()
     if motion == "yield-stiff":

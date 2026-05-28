@@ -48,7 +48,7 @@ class ControlLoopLimits:
     # Maximum slew rate for the backend position ramping filter (rad/s).
     # Caps how fast p_des_commanded can move toward p_des_target each cycle.
     # Acts as a final safety net after scheme-level smoothing.
-    max_speed_rad_s: float = 5.0
+    max_speed_rad_s: float = 7.0
 
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10
