@@ -339,7 +339,7 @@ class RobotBackend(_BackendBase):
         try:
             self._ws = await asyncio.wait_for(
                 websockets.connect(uri, ping_interval=None),
-                timeout=10.0,
+                timeout=2.0,
             )
         except asyncio.TimeoutError:
             logger.warning("[RobotBackend] Connection timed out")
