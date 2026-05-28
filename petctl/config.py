@@ -121,9 +121,9 @@ class SensorLimits:
     cap_full_scale: float = 11 / 15
 
     # Sliding-window size for the per-pad cap moving average (number of sensor frames).
-    # At 20 Hz sensor rate: 2 frames = 100 ms of smoothing — enough to reject single-frame
+    # At 50 Hz push rate: 5 frames = 100 ms of smoothing — enough to reject single-frame
     # spikes while keeping gesture detection responsive to brief touches.
-    cap_filter_window: int = 2
+    cap_filter_window: int = 5
 
 
 @dataclass(frozen=True)

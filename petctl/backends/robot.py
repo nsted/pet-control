@@ -96,11 +96,8 @@ class RobotBackend(_BackendBase):
         # Monotonic time of the last real position command for each motor.
         # Used to revert to zero-torque after LOOP_LIMITS.idle_hold_s of inactivity.
         self._last_command_time: dict[int, float] = {}
-        # Two independent tasks: motor TX at motor_update_hz, sensor at _sensor_poll_hz.
         self._motor_tx_task: Optional[asyncio.Task] = None
-        self._sensor_task: Optional[asyncio.Task] = None
         self._module_poll_task: Optional[asyncio.Task] = None
-        self._sensor_poll_hz: float = LOOP_LIMITS.sensor_poll_hz
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
@@ -110,8 +107,7 @@ class RobotBackend(_BackendBase):
         # Set by _try_bare_ping; receive loop completes it on a plain "pong" line.
         self._bare_reply_fut: Optional[asyncio.Future[str]] = None
 
-        # Latest sensor data populated by _sensor_loop — decouples sensor latency
-        # from the control loop so get_state() never blocks on a network round-trip.
+        # Latest sensor data populated by _handle_sensor_push — updated at ~50 Hz.
         self._latest_sensors: Optional[dict] = None
         self._latest_sensor_ts: float = 0.0
         # Per-module, per-face sliding windows for cap moving average.
@@ -147,9 +143,6 @@ class RobotBackend(_BackendBase):
         if self._motor_tx_task:
             self._motor_tx_task.cancel()
             self._motor_tx_task = None
-        if self._sensor_task:
-            self._sensor_task.cancel()
-            self._sensor_task = None
         if self._module_poll_task:
             self._module_poll_task.cancel()
             self._module_poll_task = None
@@ -286,17 +279,6 @@ class RobotBackend(_BackendBase):
     def discovered_servos(self) -> list[int]:
         return list(self._discovered_motors)
 
-    @property
-    def sensor_poll_hz(self) -> float:
-        return self._sensor_poll_hz
-
-    @sensor_poll_hz.setter
-    def sensor_poll_hz(self, hz: float) -> None:
-        self._sensor_poll_hz = max(
-            LOOP_LIMITS.sensor_poll_hz_min,
-            min(LOOP_LIMITS.sensor_poll_hz_max, hz),
-        )
-
     # ------------------------------------------------------------------
     # Connection helpers
     # ------------------------------------------------------------------
@@ -415,13 +397,12 @@ class RobotBackend(_BackendBase):
             await self._calibrate()
 
         # Cancel any leftover tasks from a previous connection, then start fresh.
-        for task in (self._motor_tx_task, self._sensor_task, self._module_poll_task):
+        for task in (self._motor_tx_task, self._module_poll_task):
             if task and not task.done():
                 task.cancel()
         self._module_poll_task = None
         self._latest_sensors = None
         self._motor_tx_task = asyncio.create_task(self._motor_tx_loop())
-        self._sensor_task = asyncio.create_task(self._sensor_loop())
 
         logger.info("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
@@ -693,81 +674,16 @@ class RobotBackend(_BackendBase):
             )
         return result
 
-    async def _sensor_loop(self) -> None:
-        """Sensor polling loop at self._sensor_poll_hz (runtime configurable).
-
-        Decoupled from motor TX: slow I2C round-trips only delay sensor reads,
-        never motor frames. Rate changes via the sensor_poll_hz setter take
-        effect on the next sleep boundary — no task restart needed.
-        """
-        _FAIL_THRESHOLD = 5
-        # After this many consecutive backoffs without recovery, the Arduino's
-        # I2C/API path is stuck (CAN feedback may still arrive, so the RX watchdog
-        # won't fire). Force a reconnect to reset the connection.
-        _BACKOFF_RECONNECT_THRESHOLD = 3
-        sensor_failures = 0
-        consecutive_backedoffs = 0
-
-        while self._connected:
-            try:
-                if sensor_failures >= _FAIL_THRESHOLD:
-                    consecutive_backedoffs += 1
-                    logger.warning(
-                        "[RobotBackend] Sensor read failed %d× (backoff #%d) — backing off and retrying "
-                        "(motor TX + RX watchdog will catch a dead connection).",
-                        sensor_failures, consecutive_backedoffs,
-                    )
-                    sensor_failures = 0
-                    if consecutive_backedoffs >= _BACKOFF_RECONNECT_THRESHOLD:
-                        logger.warning(
-                            "[RobotBackend] Sensor dead for %d consecutive backoffs — forcing reconnect.",
-                            consecutive_backedoffs,
-                        )
-                        self._connected = False
-                        if self.auto_reconnect and not self._reconnecting:
-                            self._reconnect_task = asyncio.get_running_loop().create_task(
-                                self._reconnect_loop()
-                            )
-                        break
-                    await asyncio.sleep(2.0)
-
-                t0 = time.monotonic()
-                data = await self._send_text("snsr 0 108", timeout=2.0)
-                sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
-                if sensors is not None:
-                    self._latest_sensors = self._apply_cap_filter(sensors)
-                    self._latest_sensor_ts = time.monotonic()
-                    self._latest_battery_current_raw = batt_cur
-                    self._latest_battery_voltage_raw = batt_vol
-                    sensor_failures = 0
-                    consecutive_backedoffs = 0
-                else:
-                    if data is None:
-                        logger.debug("[RobotBackend] Sensor read timeout (no response from Arduino)")
-                    else:
-                        try:
-                            n = len([x for x in data.split(",") if x.strip()])
-                        except Exception:
-                            n = -1
-                        logger.debug("[RobotBackend] Sensor parse failed — got %d bytes (expected 108)", n)
-                    sensor_failures += 1
-
-                elapsed = time.monotonic() - t0
-                period = 1.0 / self._sensor_poll_hz  # re-read each iteration for runtime changes
-                remaining = period - elapsed
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
-                # No sleep(0) on overrun — _send_text already yielded during I2C round-trip.
-
-            except asyncio.CancelledError:
-                raise
-            except websockets.ConnectionClosed:
-                break
-            except Exception as e:
-                if not self._connected:
-                    break
-                logger.error("[RobotBackend] Sensor loop error: %s", e)
-                await asyncio.sleep(0.01)
+    def _handle_sensor_push(self, data: str) -> None:
+        """Process an unsolicited sensor push from the Arduino (~50 Hz)."""
+        sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
+        if sensors is not None:
+            self._latest_sensors = self._apply_cap_filter(sensors)
+            self._latest_sensor_ts = time.monotonic()
+            self._latest_battery_current_raw = batt_cur
+            self._latest_battery_voltage_raw = batt_vol
+        else:
+            logger.debug("[RobotBackend] Sensor push parse failed")
 
     # ------------------------------------------------------------------
     # Sensor calibration & normalization
@@ -880,9 +796,6 @@ class RobotBackend(_BackendBase):
             if self._motor_tx_task and not self._motor_tx_task.done():
                 self._motor_tx_task.cancel()
                 self._motor_tx_task = None
-            if self._sensor_task and not self._sensor_task.done():
-                self._sensor_task.cancel()
-                self._sensor_task = None
             if self._module_poll_task and not self._module_poll_task.done():
                 self._module_poll_task.cancel()
                 self._module_poll_task = None
@@ -972,6 +885,8 @@ class RobotBackend(_BackendBase):
                         logger.info("[RobotBackend] << %r", line[:240])
                     if line.startswith(("t", "T")):
                         self._handle_slcan_frame(line)
+                    elif line.startswith("push:"):
+                        self._handle_sensor_push(line[5:])
                     elif line[0].isdigit():
                         self._handle_api_response(line)
                     elif self._bare_reply_fut is not None and not self._bare_reply_fut.done():
