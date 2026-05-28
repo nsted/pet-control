@@ -1891,6 +1891,7 @@ ALL_PATTERNS: list[type[Motion]] = [
     SlalomMotion,
     TwitchMotion,
     FreezeMotion,
+    IdleMotion,
     CoilMotion,
     CurlMotion,
     Spin7Motion,

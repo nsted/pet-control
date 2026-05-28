@@ -61,7 +61,7 @@ _PASSIVE_MOTION_FAMILY: frozenset[str] = frozenset({"budge", "twist"})
 
 # Downgrade hysteresis: how many consecutive frames at a lower level are required
 # before committing a downgrade.  Upgrades are always immediate.
-_DOWNGRADE_GRACE_FRAMES: int = 8  # ~265ms at 30Hz
+_DOWNGRADE_GRACE_FRAMES: int = 5  # ~250ms at 20Hz sensor rate — bridges qualifying-blob flicker
 
 # Contact levels for hysteresis comparison (higher = more specific).
 _CONTACT_LEVEL: dict[str, int] = {
@@ -79,7 +79,7 @@ _CONTACT_LEVEL: dict[str, int] = {
 
 # Gesture lifecycle thresholds for the touch emitter.
 _UPDATE_INTERVAL_S: float = 2.0   # interval between "running" status updates
-_END_HOLD_S: float = 0.40         # hold before emitting "complete" — bridges sensor gaps
+_END_HOLD_S: float = 0.25         # hold before emitting "complete" — bridges sensor gaps
 _MIN_GESTURE_DURATION_S: float = 0.10  # suppress gestures shorter than 2 sensor samples (2 × 50 ms @ 20 Hz)
 
 

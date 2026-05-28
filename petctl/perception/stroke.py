@@ -12,14 +12,17 @@ No FSR data is used; capacitive pad readings are sufficient.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from petctl.types import RobotState
 
-PAD_THRESHOLD: float = 0.35     # minimum per-pad value to contribute to centroid
+CENTROID_PAD_THRESHOLD: float = 0.20  # per-pad minimum to contribute to centroid (stroke detection)
+PAD_THRESHOLD: float = 0.35     # per-pad minimum for qualification checks (hold / cradle)
 TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grouping
-VELOCITY_THRESHOLD: float = 0.8  # body-units/second — below this is not a stroke
-MIN_STROKE_TRAVEL: float = 0.35  # centroid must travel this far (body-units) over the velocity window
+VELOCITY_THRESHOLD: float = 0.6  # body-units/second — below this is not a stroke
+MIN_STROKE_TRAVEL: float = 0.12  # centroid must travel this far (body-units) from window start
+                                  # calibrated as VELOCITY_THRESHOLD × (MIN_WINDOW_FRAMES−1) / sensor_hz
 MIN_CONFIDENCE: float = 0.25    # R² floor — below this the centroid trajectory is too noisy to be a real stroke
 WINDOW_FRAMES: int = 15          # rolling window depth (~0.75 s at 20 Hz)
 MIN_WINDOW_FRAMES: int = 5       # minimum frames before fitting
@@ -123,6 +126,7 @@ class StrokeDetector:
         self._last_touch_t: float | None = None
         self._current_direction: str | None = None
         self._last_reading: StrokeReading | None = None
+        self._stroke_start_centroid: float | None = None
 
     def update(self, state: RobotState) -> StrokeReading | None:
         """Process one tick of RobotState. Returns StrokeReading or None."""
@@ -135,9 +139,11 @@ class StrokeDetector:
                 self._last_touch_t = None
                 self._current_direction = None
                 self._last_reading = None
+                self._stroke_start_centroid = None
                 return None
             # Within grace gap — return last valid reading so the emitter sees
             # a continuous stroke rather than a None that triggers a downgrade.
+            # Do NOT clear _stroke_start_centroid; the stroke is still in progress.
             return self._last_reading
 
         self._last_touch_t = state.timestamp
@@ -146,16 +152,20 @@ class StrokeDetector:
         if len(self._window) < MIN_WINDOW_FRAMES:
             return None
 
-        velocity, r_squared = _linear_fit(list(self._window))
+        velocity, r_squared = _linear_fit(self._window)
 
         if abs(velocity) < VELOCITY_THRESHOLD or r_squared < MIN_CONFIDENCE:
             return None
 
         # A press keeps the centroid near the contact location — the linear fit can
         # still show a high slope from sensor noise or settling.  Require the centroid
-        # to have actually moved over the window so that presses and local oscillations
-        # are not mistaken for strokes.
-        if abs(centroid - self._window[0][1]) < MIN_STROKE_TRAVEL:
+        # to have actually moved from the window start so presses and local oscillations
+        # are not mistaken for strokes.  Anchor to window[0] once (on first passing frame)
+        # so the travel check measures displacement across the full confirmed window rather
+        # than requiring additional movement beyond the current centroid.
+        if self._stroke_start_centroid is None:
+            self._stroke_start_centroid = self._window[0][1]
+        if abs(centroid - self._stroke_start_centroid) < MIN_STROKE_TRAVEL:
             return None
 
         curr_dir = "head_to_tail" if velocity > 0 else "tail_to_head"
@@ -163,11 +173,12 @@ class StrokeDetector:
         if self._current_direction is None:
             self._current_direction = curr_dir
         elif curr_dir != self._current_direction:
-            # Direction reversed — reset so the next stroke starts fresh.
+            # Direction reversed — reset so the next stroke segment starts fresh.
             self._window.clear()
             self._window.append((state.timestamp, centroid))
             self._current_direction = None
             self._last_reading = None
+            self._stroke_start_centroid = centroid
             return None
 
         activations = {mid: s.touch_total for mid, s in state.sensors.items()}
@@ -224,7 +235,7 @@ class HoldDetector:
         if len(self._centroid_window) < MIN_WINDOW_FRAMES:
             return None
 
-        velocity, _ = _linear_fit(list(self._centroid_window))
+        velocity, _ = _linear_fit(self._centroid_window)
         if abs(velocity) >= VELOCITY_THRESHOLD:
             self._hold_start = None
             return None
@@ -389,7 +400,7 @@ def _pad_centroid(state: RobotState) -> tuple[float | None, float]:
     for mod_id, sens in state.sensors.items():
         all_pads = (*sens.touch_right_pads, *sens.touch_left_pads, *sens.touch_middle_pads)
         for pad_idx, val in enumerate(all_pads):
-            if val >= PAD_THRESHOLD:
+            if val >= CENTROID_PAD_THRESHOLD:
                 body_pos = mod_id + _PAD_BODY_SUB[pad_idx]
                 weighted_sum += body_pos * val
                 weight_sum += val
@@ -485,7 +496,7 @@ def qualifying_contact(state: RobotState) -> tuple[float | None, str]:
     return centroid, _active_side(state)
 
 
-def _linear_fit(window: list[tuple[float, float]]) -> tuple[float, float]:
+def _linear_fit(window: Sequence[tuple[float, float]]) -> tuple[float, float]:
     """
     Fit a line to (timestamp, centroid) pairs.
 

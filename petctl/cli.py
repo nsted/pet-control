@@ -47,7 +47,7 @@ def run(
         "curl-towards",
         help=(
             "Control scheme: keyboard, passthrough, sine, command, ollama, "
-            "snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, "
+            "snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, idle, coil, curl, spin7, "
             "stroke, stroke-curl, curl-towards, curl-towards-assist, curl-away, stroke-snuggle, "
             "explore, seek-touch, avoid-touch, drift, struggle, neighbor-assist-drift, "
             "yield-stiff, pose, balanced-torque, purr-ripple"
@@ -180,13 +180,13 @@ def run(
     elif control == "ollama":
         from petctl.schemes.ollama_scheme import OllamaMotion
         _scheme = OllamaMotion(log_input=log_ollama_input, llm_enabled=not dev_ui)
-    elif control in ("snuggle", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "coil", "curl", "spin7", "stroke", "stroke-curl", "curl-towards", "curl-towards-assist", "curl-away", "stroke-snuggle", "explore", "seek-touch", "avoid-touch", "drift", "struggle", "neighbor-assist-drift", "yield-stiff", "pose", "balanced-torque", "purr-ripple"):
+    elif control in ("snuggle", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "idle", "coil", "curl", "spin7", "stroke", "stroke-curl", "curl-towards", "curl-towards-assist", "curl-away", "stroke-snuggle", "explore", "seek-touch", "avoid-touch", "drift", "struggle", "neighbor-assist-drift", "yield-stiff", "pose", "balanced-torque", "purr-ripple"):
         from petctl.schemes.patterns import ALL_PATTERNS
         _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
     else:
         typer.echo(
             f"Unknown control scheme '{control}'. "
-            "Choose: keyboard, passthrough, sine, command, ollama, snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, coil, curl, spin7, stroke, stroke-curl, curl-towards, curl-towards-assist, curl-away, stroke-snuggle, explore, seek-touch, avoid-touch, drift, struggle, neighbor-assist-drift, yield-stiff, pose, balanced-torque, purr-ripple",
+            "Choose: keyboard, passthrough, sine, command, ollama, snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, idle, coil, curl, spin7, stroke, stroke-curl, curl-towards, curl-towards-assist, curl-away, stroke-snuggle, explore, seek-touch, avoid-touch, drift, struggle, neighbor-assist-drift, yield-stiff, pose, balanced-torque, purr-ripple",
             err=True,
         )
         raise typer.Exit(1)
