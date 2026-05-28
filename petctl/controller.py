@@ -188,12 +188,12 @@ class _TouchLogger:
         offset = summary.timestamp - self._epoch_fn()
         name = summary.touch_type.capitalize()
         if summary.status == "started":
-            logger.info("[GESTURE] %s - begin @ %.1fs", name, offset)
+            logger.info("[GESTURE] %s - ongoing", name)
         elif summary.status == "complete":
-            logger.info("[GESTURE] %s - end @ %.1fs", name, offset)
+            logger.info("[GESTURE] %s - end - %.1fs", name, summary.duration)
         elif summary.status == "promoted":
             prev = summary.promoted_from.capitalize() if summary.promoted_from else "?"
-            logger.info("[GESTURE] %s → %s @ %.1fs", prev, name, offset)
+            logger.info("[GESTURE] %s → %s - %.1fs", prev, name, summary.duration)
         logger.debug("[GESTURE] %s: +%.1fs %s", name, offset, summary.describe())
 
 
