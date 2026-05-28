@@ -704,7 +704,7 @@ class RobotBackend(_BackendBase):
         # After this many consecutive backoffs without recovery, the Arduino's
         # I2C/API path is stuck (CAN feedback may still arrive, so the RX watchdog
         # won't fire). Force a reconnect to reset the connection.
-        _BACKOFF_RECONNECT_THRESHOLD = 1
+        _BACKOFF_RECONNECT_THRESHOLD = 3
         sensor_failures = 0
         consecutive_backedoffs = 0
 
@@ -732,7 +732,7 @@ class RobotBackend(_BackendBase):
                     await asyncio.sleep(2.0)
 
                 t0 = time.monotonic()
-                data = await self._send_text("snsr 0 108", timeout=1.0)
+                data = await self._send_text("snsr 0 108", timeout=2.0)
                 sensors, batt_cur, batt_vol = self._parse_sensor_response(data)
                 if sensors is not None:
                     self._latest_sensors = self._apply_cap_filter(sensors)
