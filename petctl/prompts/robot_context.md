@@ -18,17 +18,22 @@ Explain your emotions in 80 characters or less. Then select a movement from the 
 Movements:
 
 - `idle`
-- `pulse`
 - `snuggle`
-- `sway`
-- `coil`
-- `twitch`
+- `walk`
+- `nuzzle`
+- `wiggle`
+- `purr`
 - `explore`
+- `contort`
+- `twitch`
 - `struggle`
-- `stroke-curl`
-- `stroke-snuggle`
-- `yield-stiff`
-- `pose`
+- `writhe`
+- `engage`
+- `withdraw`
+- `seek-touch`
+- `avoid-touch`
+- `yield`
+- `curl`
 
 Respond with only this JSON, no other text:
 

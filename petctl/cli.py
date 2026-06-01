@@ -47,10 +47,9 @@ def run(
         "curl-towards",
         help=(
             "Control scheme: keyboard, passthrough, sine, command, ollama, "
-            "snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, idle, coil, curl, spin7, "
-            "stroke, stroke-curl, curl-towards, curl-towards-assist, curl-away, stroke-snuggle, "
-            "explore, seek-touch, avoid-touch, drift, struggle, neighbor-assist-drift, "
-            "yield-stiff, pose, balanced-torque, purr-ripple"
+            "wiggle, nuzzle, purr, contort, writhe, engage, withdraw, seek-touch, avoid-touch, "
+            "yield, curl, snuggle, explore, twitch, struggle, idle, "
+            "cascade, coil, curl-towards, freeze, pose, pulse, stroke, stroke-curl, balanced-torque"
         ),
     ),
     no_viz: bool = typer.Option(
@@ -180,16 +179,17 @@ def run(
     elif control == "ollama":
         from petctl.schemes.ollama_scheme import OllamaMotion
         _scheme = OllamaMotion(log_input=log_ollama_input, llm_enabled=not dev_ui)
-    elif control in ("snuggle", "pulse", "breathe", "sway", "cascade", "slalom", "twitch", "freeze", "idle", "coil", "curl", "spin7", "stroke", "stroke-curl", "curl-towards", "curl-towards-assist", "curl-away", "stroke-snuggle", "explore", "seek-touch", "avoid-touch", "drift", "struggle", "neighbor-assist-drift", "yield-stiff", "pose", "balanced-torque", "purr-ripple"):
-        from petctl.schemes.patterns import ALL_PATTERNS
-        _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
     else:
-        typer.echo(
-            f"Unknown control scheme '{control}'. "
-            "Choose: keyboard, passthrough, sine, command, ollama, snuggle, pulse, breathe, sway, cascade, slalom, twitch, freeze, idle, coil, curl, spin7, stroke, stroke-curl, curl-towards, curl-towards-assist, curl-away, stroke-snuggle, explore, seek-touch, avoid-touch, drift, struggle, neighbor-assist-drift, yield-stiff, pose, balanced-torque, purr-ripple",
-            err=True,
-        )
-        raise typer.Exit(1)
+        from petctl.schemes.patterns import ALL_PATTERNS, PATTERN_NAMES
+        try:
+            _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
+        except StopIteration:
+            typer.echo(
+                f"Unknown control scheme '{control}'. "
+                f"Choose: keyboard, passthrough, sine, command, ollama, {', '.join(sorted(PATTERN_NAMES))}",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     # --- Build visualizers ---
     _visualizers = []

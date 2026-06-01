@@ -32,25 +32,22 @@ from typing import TYPE_CHECKING
 from petctl.llm.client import OllamaClient
 from petctl.protocols import Motion
 from petctl.schemes.patterns import (
-    BreatheMotion,
-    CascadeMotion,
-    CoilMotion,
+    AvoidTouchMotion,
+    CurlAwayMotion,
     CurlMotion,
     CurlTowardsNeighborAssistMotion,
     DriftMotion,
+    ExploreMotion,
     FreezeMotion,
     IdleMotion,
-    PoseMotion,
-    PulseMotion,
-    SnuggleMotion,
+    NeighborAssistDriftMotion,
+    PurrRippleMotion,
+    SeekTouchMotion,
     SlalomMotion,
-    StrokeCurlMotion,
-    StrokeReactMotion,
+    SnuggleMotion,
     StrokeSnuggleMotion,
-    SwayMotion,
-    TwitchMotion,
-    ExploreMotion,
     StruggleMotion,
+    TwitchMotion,
     YieldStiffMotion,
 )
 from petctl.types import GestureEvent, RobotState, ServoCommand
@@ -68,95 +65,67 @@ _BATCH_WINDOW_S = 5.0
 # Max amplitude per movement (degrees). Always used at full value — no intensity scaling.
 # Patterns with no amplitude param use 0.0.
 _AMP_MAX: dict[str, float] = {
-    "freeze":        0.0,
-    "idle":          0.0,
-    "home":          0.0,
-    "breathe":      15.0,
-    "pulse":        60.0,
-    "snuggle":       55.0,
-    "sway":         70.0,
-    "cascade":      70.0,
-    "slalom":       60.0,
-    "twitch":       40.0,
-    "coil":         65.0,
-    "curl_right":   80.0,
-    "curl_left":    80.0,
-    "explore":        0.0,
-    "struggle":       0.0,
-    "drift":         0.0,
-    "stroke":        0.0,  # touch-reactive — senses internally
-    "stroke-curl":          0.0,
-    "curl-towards-assist":  0.0,
-    "stroke-snuggle": 0.0,
-    "yield-stiff":   0.0,
-    "pose":          0.0,
+    "idle":         0.0,
+    "snuggle":     55.0,
+    "walk":        55.0,
+    "nuzzle":       0.0,
+    "wiggle":      60.0,
+    "purr":         0.0,
+    "explore":      0.0,
+    "contort":      0.0,
+    "twitch":      40.0,
+    "struggle":     0.0,
+    "writhe":       0.0,
+    "engage":       0.0,
+    "withdraw":     0.0,
+    "seek-touch":   0.0,
+    "avoid-touch":  0.0,
+    "yield":        0.0,
+    "curl":         0.0,
 }
 
 _VALID_MOVEMENTS = set(_AMP_MAX)
 
 # Movement to use on startup and after idle revert (no touch for _TOUCH_IDLE_S).
-_DEFAULT_MOTION = "curl-towards-assist"
-
-
-class _CurlLeft(CurlMotion):
-    """CurlMotion with all joint signs negated → curl to the left."""
-
-    name = "curl_left"
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        cmds = super().update(state)
-        for cmd in cmds:
-            if cmd.position is not None:
-                cmd.position = -cmd.position
-        return cmds
+_DEFAULT_MOTION = "engage"
 
 
 def _make_pattern(motion: str, speed: float) -> Motion:
     """Instantiate a Motion for the given motion name, scaled by speed."""
     amp = _AMP_MAX.get(motion, 0.0)
 
-    if motion in ("freeze", "home"):
-        return FreezeMotion()
     if motion == "idle":
         return IdleMotion()
-    if motion == "breathe":
-        return BreatheMotion(amplitude_deg=amp, hz=0.05 + speed * 0.06)
-    if motion == "pulse":
-        return PulseMotion(amplitude_deg=amp, hz=0.15 + speed * 0.35)
-    if motion == "snuggle":
+    if motion in ("snuggle", "walk"):
         return SnuggleMotion(amplitude_deg=amp, hz=0.2 + speed * 0.4)
-    if motion == "sway":
-        return SwayMotion(amplitude_deg=amp, hz=0.08 + speed * 0.15)
-    if motion == "cascade":
-        return CascadeMotion(amplitude_deg=amp, hz=0.15 + speed * 0.25)
-    if motion == "slalom":
+    if motion == "nuzzle":
+        return StrokeSnuggleMotion()
+    if motion == "wiggle":
         return SlalomMotion(amplitude_deg=amp, hz=0.1 + speed * 0.3)
-    if motion == "twitch":
-        return TwitchMotion(amplitude_deg=amp, smoothing=0.03 + speed * 0.08)
-    if motion == "coil":
-        return CoilMotion(amplitude_deg=amp, hz=0.1 + speed * 0.2)
-    if motion == "curl_right":
-        return CurlMotion(target_deg=amp)
-    if motion == "curl_left":
-        return _CurlLeft(target_deg=amp)
+    if motion == "purr":
+        return PurrRippleMotion()
     if motion == "explore":
         return ExploreMotion(speed_deg_per_s=20.0 + speed * 60.0)
+    if motion == "contort":
+        return DriftMotion()
+    if motion == "twitch":
+        return TwitchMotion(amplitude_deg=amp, smoothing=0.03 + speed * 0.08)
     if motion == "struggle":
         return StruggleMotion(speed_deg_per_s=50.0 + speed * 50.0)
-    if motion == "drift":
-        return DriftMotion()
-    if motion == "stroke":
-        return StrokeReactMotion()
-    if motion == "stroke-curl":
-        return StrokeCurlMotion()
-    if motion == "curl-towards-assist":
+    if motion == "writhe":
+        return NeighborAssistDriftMotion()
+    if motion == "engage":
         return CurlTowardsNeighborAssistMotion()
-    if motion == "stroke-snuggle":
-        return StrokeSnuggleMotion()
-    if motion == "yield-stiff":
+    if motion == "withdraw":
+        return CurlAwayMotion()
+    if motion == "seek-touch":
+        return SeekTouchMotion()
+    if motion == "avoid-touch":
+        return AvoidTouchMotion()
+    if motion == "yield":
         return YieldStiffMotion()
-    if motion == "pose":
-        return PoseMotion()
+    if motion == "curl":
+        return CurlMotion()
     return FreezeMotion()
 
 
@@ -164,38 +133,20 @@ def _update_pattern_params(pattern: Motion, motion: str, speed: float) -> None:
     """Update a running pattern's amplitude/speed without resetting its phase."""
     amp = _AMP_MAX.get(motion, 0.0)
 
-    if motion == "breathe":
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.hz = 0.05 + speed * 0.06  # type: ignore[attr-defined]
-    elif motion == "pulse":
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.hz = 0.15 + speed * 0.35  # type: ignore[attr-defined]
-    elif motion == "snuggle":
+    if motion in ("snuggle", "walk"):
         pattern.amplitude_deg = amp  # type: ignore[attr-defined]
         pattern.hz = 0.2 + speed * 0.4  # type: ignore[attr-defined]
-    elif motion == "sway":
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.hz = 0.08 + speed * 0.15  # type: ignore[attr-defined]
-    elif motion == "cascade":
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.hz = 0.15 + speed * 0.25  # type: ignore[attr-defined]
-    elif motion == "slalom":
+    elif motion == "wiggle":
         pattern.amplitude_deg = amp  # type: ignore[attr-defined]
         pattern.hz = 0.1 + speed * 0.3  # type: ignore[attr-defined]
     elif motion == "twitch":
         pattern.amplitude_deg = amp  # type: ignore[attr-defined]
         pattern.smoothing = 0.03 + speed * 0.08  # type: ignore[attr-defined]
-    elif motion == "coil":
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.hz = 0.1 + speed * 0.2  # type: ignore[attr-defined]
-    elif motion in ("curl_right", "curl_left"):
-        pattern.target_deg = amp  # type: ignore[attr-defined]
     elif motion == "explore":
         pattern._speed_rad_s = math.radians(20.0 + speed * 60.0)  # type: ignore[attr-defined]
     elif motion == "struggle":
         pattern._speed_rad_s = math.radians(50.0 + speed * 50.0)  # type: ignore[attr-defined]
-    # freeze, home, drift, stroke, stroke-curl, stroke-ripple, yield-stiff, pose:
-    # no tunable params — nothing to update
+    # all other motions have no tunable params — nothing to update
 
 
 def _format_batch(batch: list[GestureEvent]) -> str:

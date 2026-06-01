@@ -72,6 +72,12 @@ class SnuggleMotion(Motion):
         ]
 
 
+class WalkMotion(SnuggleMotion):
+    """Alias for snuggle — used as the LLM's 'walk' behavior name."""
+
+    name = "walk"
+
+
 class PulseMotion(Motion):
     """All joints in phase — whole-body contraction and release."""
 
@@ -97,76 +103,6 @@ class PulseMotion(Motion):
             ServoCommand.from_angle(servo_id=sid, angle_deg=angle)
             for sid in sorted(state.active_servo_ids)
         ]
-
-
-class BreatheMotion(Motion):
-    """Very gentle, slow in-phase motion — aliveness at rest."""
-
-    name = "breathe"
-
-    def is_active(self) -> bool:
-        return True
-
-    def __init__(self, amplitude_deg: float = 12.0, hz: float = 0.08) -> None:
-        self.amplitude_deg = amplitude_deg
-        self.hz = hz
-        self._start: float = 0.0
-
-    def on_start(self, controller: "Controller") -> None:
-        self._start = time.monotonic()
-        logger.info("[BEHAVIOR] Breathe")
-        logger.debug("[BEHAVIOR] Breathe: ±%.0f° at %.2f Hz (~%.0fs period).", self.amplitude_deg, self.hz, 1.0 / self.hz)
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        t = time.monotonic() - self._start
-        angle = self.amplitude_deg * math.sin(2 * math.pi * self.hz * t)
-        return [
-            ServoCommand.from_angle(servo_id=sid, angle_deg=angle)
-            for sid in sorted(state.active_servo_ids)
-        ]
-
-
-class SwayMotion(Motion):
-    """Travelling wave with amplitude tapering head→tail (head leads, tail damps)."""
-
-    name = "sway"
-
-    def is_active(self) -> bool:
-        return True
-
-    def __init__(
-        self,
-        amplitude_deg: float = 60.0,
-        hz: float = 0.15,
-        tail_fraction: float = 0.15,
-    ) -> None:
-        self.amplitude_deg = amplitude_deg
-        self.hz = hz
-        self.tail_fraction = tail_fraction
-        self._start: float = 0.0
-
-    def on_start(self, controller: "Controller") -> None:
-        self._start = time.monotonic()
-        logger.info("[BEHAVIOR] Sway")
-        logger.debug(
-            "[BEHAVIOR] Sway: head ±%.0f° → tail ±%.0f° at %.1f Hz.",
-            self.amplitude_deg, self.amplitude_deg * self.tail_fraction, self.hz,
-        )
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        t = time.monotonic() - self._start
-        ids = sorted(state.active_servo_ids)
-        n = len(ids)
-        if n == 0:
-            return []
-        cmds = []
-        for i, sid in enumerate(ids):
-            frac = i / max(n - 1, 1)
-            taper = 1.0 - (1.0 - self.tail_fraction) * frac
-            spatial_phase = frac * 2 * math.pi
-            angle = self.amplitude_deg * taper * math.sin(2 * math.pi * self.hz * t + spatial_phase)
-            cmds.append(ServoCommand.from_angle(servo_id=sid, angle_deg=angle))
-        return cmds
 
 
 class CascadeMotion(Motion):
@@ -215,7 +151,7 @@ class CascadeMotion(Motion):
 class SlalomMotion(Motion):
     """Odd/even joints get opposing phase → persistent S-shape that rocks side to side."""
 
-    name = "slalom"
+    name = "wiggle"
 
     def is_active(self) -> bool:
         return True
@@ -346,49 +282,6 @@ class CoilMotion(Motion):
             )
             for i, sid in enumerate(ids)
         ]
-
-
-class Spin7Motion(Motion):
-    """Continuously rotate joint 7 (tail); all other joints hold at home.
-
-    Every full revolution the motor's software zero is reset to its current
-    physical position, keeping commanded angles in the safe MIT encoding range
-    indefinitely.
-    """
-
-    name = "spin7"
-
-    def is_active(self) -> bool:
-        return True
-
-    def __init__(self, speed_deg_per_s: float = 30.0) -> None:
-        self.speed_deg_per_s = speed_deg_per_s
-        self._pos_deg: float = 0.0
-        self._last_t: float = 0.0
-        self._backend = None
-
-    def on_start(self, controller: "Controller") -> None:
-        self._pos_deg = 0.0
-        self._last_t = time.monotonic()
-        self._backend = controller.backend
-        logger.info("[BEHAVIOR] Spin7")
-        logger.debug("[BEHAVIOR] Spin7: joint 7 spinning at %.0f°/s.", self.speed_deg_per_s)
-
-    def update(self, state: RobotState) -> list[ServoCommand]:
-        now = time.monotonic()
-        self._pos_deg += self.speed_deg_per_s * (now - self._last_t)
-        self._last_t = now
-
-        if self._pos_deg >= 360.0:
-            self._pos_deg -= 360.0
-            if hasattr(self._backend, "reset_motor_zero"):
-                self._backend.reset_motor_zero(7)
-
-        cmds = []
-        for sid in sorted(state.active_servo_ids):
-            angle = self._pos_deg if sid == 7 else 0.0
-            cmds.append(ServoCommand.from_angle(servo_id=sid, angle_deg=angle))
-        return cmds
 
 
 class StrokeReactMotion(Motion):
@@ -735,7 +628,7 @@ class DriftMotion(_WanderBase):
     ExploreMotion.
     """
 
-    name = "drift"
+    name = "contort"
 
     MIN_SPEED_DEG_PER_S: float = 15.0
     MAX_SPEED_DEG_PER_S: float = 90.0  # intentionally 2× Explore — explores a wider speed range
@@ -1059,7 +952,7 @@ class CurlTowardsMotion(StrokeCurlMotion):
 class CurlAwayMotion(StrokeCurlMotion):
     """Curl away from the touched face — the mirror of curl-towards."""
 
-    name = "curl-away"
+    name = "withdraw"
     DIRECTION_SIGN: float = -1.0
 
     def on_start(self, controller: "Controller") -> None:
@@ -1081,7 +974,7 @@ class CurlTowardsNeighborAssistMotion(StrokeCurlMotion):
     resume their natural curl behavior.
     """
 
-    name = "curl-towards-assist"
+    name = "engage"
     DIRECTION_SIGN: float = 1.0
 
     STALL_THRESHOLD_RAD: float = 0.10
@@ -1206,7 +1099,7 @@ class StrokeSnuggleMotion(Motion):
       home   — all joints commanded to 0° and held there
     """
 
-    name = "stroke-snuggle"
+    name = "nuzzle"
 
     # Curl phase
     TARGET_DEG: float = 45.0
@@ -1359,7 +1252,7 @@ class YieldStiffMotion(Motion):
     No touch detection required: compliance is triggered purely by motor load.
     """
 
-    name = "yield-stiff"
+    name = "yield"
 
     YIELD_RATE_RAD_S: float = 3.0    # how fast the setpoint chases actual (rad/s)
     TORQUE_BASELINE_NM: float = 0.15  # stop drifting when torque drops below this
@@ -1510,7 +1403,7 @@ class NeighborAssistDriftMotion(Motion):
     while neighbors temporarily override their drift targets.
     """
 
-    name = "neighbor-assist-drift"
+    name = "writhe"
 
     # Drift kinematics — mirrors DriftMotion
     MIN_SPEED_DEG_PER_S: float = 15.0
@@ -1838,7 +1731,7 @@ class PurrRippleMotion(Motion):
     Speed controls ripple frequency (ripples per second).
     """
 
-    name = "purr-ripple"
+    name = "purr"
 
     KD_TARGET: float = 0.08  # peak kd — causes vibration
     BASE_HZ: float = 0.3    # ripple frequency at speed=1.0 (~3.3s per pass)
@@ -1884,9 +1777,8 @@ class PurrRippleMotion(Motion):
 
 ALL_PATTERNS: list[type[Motion]] = [
     SnuggleMotion,
+    WalkMotion,
     PulseMotion,
-    BreatheMotion,
-    SwayMotion,
     CascadeMotion,
     SlalomMotion,
     TwitchMotion,
@@ -1894,7 +1786,6 @@ ALL_PATTERNS: list[type[Motion]] = [
     IdleMotion,
     CoilMotion,
     CurlMotion,
-    Spin7Motion,
     StrokeReactMotion,
     StrokeCurlMotion,
     CurlTowardsMotion,
