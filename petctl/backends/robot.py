@@ -374,9 +374,9 @@ class RobotBackend(_BackendBase):
                 "[RobotBackend] Only %d/%d modules found — polling every 2s",
                 len(self._discovered_modules), NUM_MODULES,
             )
-            if self._module_poll_task and not self._module_poll_task.done():
-                self._module_poll_task.cancel()
-            self._module_poll_task = asyncio.create_task(self._module_poll_loop())
+        if self._module_poll_task and not self._module_poll_task.done():
+            self._module_poll_task.cancel()
+        self._module_poll_task = asyncio.create_task(self._module_poll_loop())
 
         if self._configured_motor_ids is not None:
             self._discovered_motors = list(self._configured_motor_ids)
@@ -464,8 +464,8 @@ class RobotBackend(_BackendBase):
             return []
 
     async def _module_poll_loop(self) -> None:
-        """Retry getmodules every 2s until all NUM_MODULES respond."""
-        while len(self._discovered_modules) < NUM_MODULES:
+        """Poll getmodules every 2s, logging any changes."""
+        while True:
             await asyncio.sleep(2.0)
             modules = await self._discover_modules()
             if not modules:
@@ -481,9 +481,8 @@ class RobotBackend(_BackendBase):
                 )
                 self._discovered_modules = modules
                 logger.info("[RobotBackend] Modules: %s (%s)", self._discovered_modules, note)
-            if len(self._discovered_modules) >= NUM_MODULES:
-                logger.info("[RobotBackend] All %d modules found", NUM_MODULES)
-                break
+                if len(self._discovered_modules) == NUM_MODULES:
+                    logger.info("[RobotBackend] All %d modules present", NUM_MODULES)
 
     async def _discover_motors(self) -> list[int]:
         if self._ws is None:
