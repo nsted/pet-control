@@ -471,8 +471,16 @@ class RobotBackend(_BackendBase):
             if not modules:
                 continue
             if set(modules) != set(self._discovered_modules):
+                prev = set(self._discovered_modules)
+                curr = set(modules)
+                added = sorted(curr - prev)
+                dropped = sorted(prev - curr)
+                note = ", ".join(
+                    ([f"+{len(added)} added {added}"] if added else [])
+                    + ([f"-{len(dropped)} dropped {dropped}"] if dropped else [])
+                )
                 self._discovered_modules = modules
-                logger.info("[RobotBackend] Module re-poll: %s", self._discovered_modules)
+                logger.info("[RobotBackend] Modules: %s (%s)", self._discovered_modules, note)
             if len(self._discovered_modules) >= NUM_MODULES:
                 logger.info("[RobotBackend] All %d modules found", NUM_MODULES)
                 break
