@@ -674,7 +674,7 @@ class RerunVisualizer(Visualizer):
             current.append(mod_id)
         if current:
             blobs.append(current)
-        min_pads = 1 if self._contact_type in ("stroke", "touch") else 2
+        min_pads = 1 if self._contact_type in ("stroke", "poke") else 2
         blobs = [b for b in blobs if sum(module_pad_count.get(m, 0) for m in b) >= min_pads]
 
         color = {

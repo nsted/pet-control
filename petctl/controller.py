@@ -67,7 +67,7 @@ _DOWNGRADE_GRACE_FRAMES: int = 5  # ~250ms at 20Hz sensor rate — bridges quali
 _CONTACT_LEVEL: dict[str, int] = {
     "none":     0,
     "budge":    1,
-    "touch":    2,
+    "poke":     2,
     "hold":     3,
     "squeeze":  4,
     "twist":    6,
@@ -102,10 +102,10 @@ class _GestureProcessor:
     attached to state.gesture so motion sources, visualizers, and _TouchLogger all
     read from the same computed value rather than each running their own detectors.
 
-    Hysteresis: upgrades (touch → hold → squeeze/restrict/wrench) are immediate.
+    Hysteresis: upgrades (poke → hold → squeeze/restrict/wrench) are immediate.
     Downgrades require _DOWNGRADE_GRACE_FRAMES consecutive frames at the lower
     level before being committed.  This suppresses sub-200ms oscillations at
-    hold/touch and stroke/touch boundaries caused by qualifying-blob flicker.
+    hold/poke and stroke/poke boundaries caused by qualifying-blob flicker.
     """
 
     def __init__(self) -> None:
@@ -156,7 +156,7 @@ class _GestureProcessor:
             centroid, side = self._qualifying_contact(state)
             if centroid is not None:
                 return GestureFrame(contact=self._ContactReading(
-                    contact_type=ContactType.TOUCH,
+                    contact_type=ContactType.POKE,
                     centroid=centroid,
                     side=side,
                 ))

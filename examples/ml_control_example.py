@@ -1,7 +1,7 @@
 """
 ML Motion Example
 =================
-Shows how to wrap a PyTorch model (the BiLSTM touch classifier from
+Shows how to wrap a PyTorch model (the BiLSTM poke classifier from
 grapple_ai) into a petctl Motion source.
 
 Run with mock backend (no robot needed):
@@ -38,15 +38,15 @@ from petctl.visualizers.rerun_viz import RerunVisualizer
 
 # Sensor fields in the order the model expects
 _SENSOR_FIELDS = (
-    "touch_middle", "touch_left", "touch_right",
+    "poke_middle", "poke_left", "poke_right",
     "pressure_middle", "pressure_left", "pressure_right",
 )
 
 
 class TouchReactiveMotion(Motion):
     """
-    Uses the BiLSTM touch classifier from grapple_ai to drive servos
-    based on detected touch type and valence.
+    Uses the BiLSTM poke classifier from grapple_ai to drive servos
+    based on detected poke type and valence.
 
     Positive valence → extend all joints to +20°
     Negative valence → retract all joints to -20°
@@ -55,7 +55,7 @@ class TouchReactiveMotion(Motion):
     Replace the valence-to-servo mapping with your own logic.
     """
 
-    name = "touch_reactive"
+    name = "poke_reactive"
 
     def __init__(
         self,
@@ -77,7 +77,7 @@ class TouchReactiveMotion(Motion):
     def on_start(self, controller) -> None:
         try:
             import torch
-            from models.touch_classifier import GrappleTouchClassifier
+            from models.poke_classifier import GrappleTouchClassifier
 
             self._torch = torch
             self._model = GrappleTouchClassifier()
@@ -90,7 +90,7 @@ class TouchReactiveMotion(Motion):
             print("  Install torch: pip install torch")
         except FileNotFoundError:
             print(f"[TouchReactiveScheme] Model file not found: {self.model_path}")
-            print("  Train the model first using grapple_ai/training/train_touch_classifier.py")
+            print("  Train the model first using grapple_ai/training/train_poke_classifier.py")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         # Build a feature frame: num_modules * 6 sensors
@@ -113,7 +113,7 @@ class TouchReactiveMotion(Motion):
         x = torch.tensor(list(self._buffer), dtype=torch.float32).unsqueeze(0)
 
         with torch.no_grad():
-            touch_logits, valence_logits = self._model(x)
+            poke_logits, valence_logits = self._model(x)
 
         valence_class = valence_logits.argmax().item()
         # 0 = negative, 1 = neutral, 2 = positive
@@ -162,12 +162,12 @@ def main() -> None:
     parser.add_argument("--real", action="store_true", help="Use real robot backend")
     parser.add_argument("--host", default="pet-robot.local", help="Robot hostname")
     parser.add_argument(
-        "--scheme", choices=["touch", "sine"], default="sine",
+        "--scheme", choices=["poke", "sine"], default="sine",
         help="Motion source to use (default: sine — no model needed)"
     )
     parser.add_argument(
         "--model", default="grapple_ai/models/best_grapple_model.pth",
-        help="Path to trained model weights (for --scheme touch)"
+        help="Path to trained model weights (for --scheme poke)"
     )
     args = parser.parse_args()
 
@@ -178,7 +178,7 @@ def main() -> None:
         backend = MockBackend(mode="mock-sensor-sine", num_modules=4)
 
     # Motion source
-    if args.scheme == "touch":
+    if args.scheme == "poke":
         scheme = TouchReactiveMotion(model_path=args.model)
     else:
         scheme = SineWaveMotion()

@@ -2,11 +2,11 @@
 Contact sub-classifier — enriches a HoldReading with motor-state context.
 
 Classification chains
-  One centroid:   TOUCH → STROKE | SQUEEZE | RESTRICT | BUDGE | TWIST
-  Two centroids:  TOUCH → STROKE | HOLD → SQUEEZE | RESTRICT | BUDGE | TWIST | WRENCH
+  One centroid:   POKE → STROKE | SQUEEZE | RESTRICT | BUDGE | TWIST
+  Two centroids:  POKE → STROKE | HOLD → SQUEEZE | RESTRICT | BUDGE | TWIST | WRENCH
 
 Sub-type semantics
-  TOUCH    — one hand, static, no special condition.
+  POKE     — one hand, static, no special condition.
   SQUEEZE  — any centroid count, meaningful FSR pressure.
   RESTRICT — any centroid count, motor stalled under load (high torque, near-zero velocity).
   HOLD     — two hands, static, no motor event.
@@ -18,7 +18,7 @@ WRENCH, RESTRICT, and TWIST use per-servo hysteresis.
 BUDGE is promoted to TWIST once cumulative travel threshold is met.
 
 When multiple conditions are met simultaneously the priority is:
-  RESTRICT(during cradle) > CRADLE > WRENCH > TWIST > SQUEEZE > HOLD > TOUCH > BUDGE.
+  RESTRICT(during cradle) > CRADLE > WRENCH > TWIST > SQUEEZE > HOLD > POKE > BUDGE.
 RESTRICT only fires when ≥4 modules are cradled AND a servo is stalled under load AND
 pressure is detected — it is checked inside the cradle path, not the hold path.
 All thresholds are initial guesses — tune on real hardware.
@@ -34,7 +34,7 @@ from petctl.types import RobotState
 
 # Fixed-width labels for console log lines, keyed by contact type string.
 CONTACT_LABELS: dict[str, str] = {
-    "touch":    "TOUCH   ",
+    "poke":     "POKE    ",
     "stroke":   "STROKE  ",
     "hold":     "HOLD    ",
     "squeeze":  "SQUEEZE ",
@@ -46,7 +46,7 @@ CONTACT_LABELS: dict[str, str] = {
 }
 
 class ContactType(str, Enum):
-    TOUCH    = "touch"
+    POKE     = "poke"
     HOLD     = "hold"
     SQUEEZE  = "squeeze"
     RESTRICT = "restrict"
@@ -60,7 +60,7 @@ class ContactType(str, Enum):
 class ContactReading:
     """Contact classification with optional hold/motor context.
 
-    For TOUCH: centroid and side describe the pad activity; hold may be populated.
+    For POKE: centroid and side describe the pad activity; hold may be populated.
     For all other types: hold is populated.
     """
     contact_type: ContactType
@@ -268,12 +268,12 @@ class ContactClassifier:
                 pressure_peak=pressure_peak,
             )
 
-        # --- HOLD (two centroids) / TOUCH fallback (one centroid) ---
+        # --- HOLD (two centroids) / POKE fallback (one centroid) ---
         if two_centroids:
             return ContactReading(hold=hold, contact_type=ContactType.HOLD)
         return ContactReading(
             hold=hold,
-            contact_type=ContactType.TOUCH,
+            contact_type=ContactType.POKE,
             centroid=hold.centroid,
             side=hold.side,
         )
