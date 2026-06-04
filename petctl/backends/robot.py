@@ -298,7 +298,7 @@ class RobotBackend(_BackendBase):
         if self._resolved_ip:
             return self._resolved_ip
 
-        logger.info("[RobotBackend] Resolving %s...", self.host)
+        logger.debug("[RobotBackend] Resolving %s...", self.host)
         loop = asyncio.get_running_loop()
         try:
             infos = await asyncio.wait_for(
@@ -310,7 +310,7 @@ class RobotBackend(_BackendBase):
             )
             if infos:
                 ip = infos[0][4][0]
-                logger.info("[RobotBackend] Resolved to %s", ip)
+                logger.debug("[RobotBackend] Resolved to %s", ip)
                 return ip
         except (asyncio.TimeoutError, OSError) as e:
             logger.warning("[RobotBackend] Resolution failed: %s", e)
@@ -318,7 +318,7 @@ class RobotBackend(_BackendBase):
 
     async def _connect_with_ip(self, ip: str) -> bool:
         uri = f"ws://{ip}:{self.port}"
-        logger.info("[RobotBackend] Connecting to %s...", uri)
+        logger.debug("[RobotBackend] Connecting to %s...", uri)
         try:
             self._ws = await asyncio.wait_for(
                 websockets.connect(uri, ping_interval=None),
@@ -342,14 +342,14 @@ class RobotBackend(_BackendBase):
         slcan_preopened = False
         ok = await _numbered_ping_ok()
         if not ok:
-            logger.info("[RobotBackend] Numbered ping failed; opening SLCAN (S8/O) then retrying...")
+            logger.debug("[RobotBackend] Numbered ping failed; opening SLCAN (S8/O) then retrying...")
             await self._ws.send("S8")
             await self._ws.send("O")
             await asyncio.sleep(_SLCAN_SETTLE_S)
             slcan_preopened = True
             ok = await _numbered_ping_ok()
         if not ok:
-            logger.info("[RobotBackend] Retrying with bare text \"ping\" (expect line \"pong\")...")
+            logger.debug("[RobotBackend] Retrying with bare text \"ping\" (expect line \"pong\")...")
             ok = await self._try_bare_ping(timeout=2.5)
         if not ok:
             logger.error(
@@ -369,7 +369,7 @@ class RobotBackend(_BackendBase):
         self._disabled_motor_ids.clear()
 
         self._discovered_modules = await self._discover_modules()
-        logger.info("[RobotBackend] Discovered modules: %s", self._discovered_modules)
+        logger.debug("[RobotBackend] Discovered modules: %s", self._discovered_modules)
         if len(self._discovered_modules) < NUM_MODULES:
             logger.warning(
                 "[RobotBackend] Only %d/%d modules found — polling every 2s",
@@ -377,13 +377,13 @@ class RobotBackend(_BackendBase):
             )
         if self._configured_motor_ids is not None:
             self._discovered_motors = list(self._configured_motor_ids)
-            logger.info("[RobotBackend] Using fixed motor IDs (--motors): %s", self._discovered_motors)
+            logger.debug("[RobotBackend] Using fixed motor IDs (--motors): %s", self._discovered_motors)
             for mid in self._discovered_motors:
                 await self._ws.send(_encode_mit_enable(mid))
             await asyncio.sleep(0.5)
         elif self._discovered_motors:
             # Reconnect fast path: reuse cached IDs, just re-enable and wait for first CAN echo.
-            logger.info("[RobotBackend] Reusing motor IDs %s (reconnect)", self._discovered_motors)
+            logger.debug("[RobotBackend] Reusing motor IDs %s (reconnect)", self._discovered_motors)
             for mid in self._discovered_motors:
                 await self._ws.send(_encode_mit_enable(mid))
             await asyncio.sleep(0.3)
@@ -402,7 +402,7 @@ class RobotBackend(_BackendBase):
         self._module_poll_task = asyncio.create_task(self._module_poll_loop())
         self._motor_poll_task = asyncio.create_task(self._motor_poll_loop())
 
-        logger.info("[RobotBackend] Connected (text channel + SLCAN OK)")
+        logger.debug("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
 
     # ------------------------------------------------------------------
@@ -478,9 +478,9 @@ class RobotBackend(_BackendBase):
                     + ([f"-{len(dropped)} dropped {dropped}"] if dropped else [])
                 )
                 self._discovered_modules = modules
-                logger.info("[RobotBackend] Modules: %s (%s)", self._discovered_modules, note)
+                logger.debug("[RobotBackend] Modules: %s (%s)", self._discovered_modules, note)
                 if len(self._discovered_modules) == NUM_MODULES:
-                    logger.info("[RobotBackend] All %d modules present", NUM_MODULES)
+                    logger.debug("[RobotBackend] All %d modules present", NUM_MODULES)
 
     async def _discover_motors(self) -> list[int]:
         if self._ws is None:
@@ -496,7 +496,7 @@ class RobotBackend(_BackendBase):
                 "For a partial bench (e.g. only motor 1), pass --motors 1."
             )
             return list(range(1, 8))
-        logger.info("[RobotBackend] Discovered motors: %s", discovered)
+        logger.debug("[RobotBackend] Discovered motors: %s", discovered)
         return discovered
 
     async def _motor_poll_loop(self) -> None:
@@ -515,7 +515,7 @@ class RobotBackend(_BackendBase):
             added = sorted(now - known)
             if added:
                 self._discovered_motors = sorted(now)
-                logger.info("[RobotBackend] Motors: %s (+%d added %s)", self._discovered_motors, len(added), added)
+                logger.debug("[RobotBackend] Motors: %s (+%d added %s)", self._discovered_motors, len(added), added)
 
     # ------------------------------------------------------------------
     # Sensor reading
@@ -728,7 +728,7 @@ class RobotBackend(_BackendBase):
         if self._ws is None:
             return
         ids = self._discovered_motors or list(range(1, 8))
-        logger.info("[RobotBackend] Writing hardware zero to motor(s) %s...", ids)
+        logger.debug("[RobotBackend] Writing hardware zero to motor(s) %s...", ids)
         for mid in ids:
             async with self._ws_send_lock:
                 await self._ws.send(_encode_mit_set_zero(mid))
@@ -740,7 +740,7 @@ class RobotBackend(_BackendBase):
         now = time.monotonic()
         self._last_mit_abs_pos = {mid: 0.0 for mid in ids}
         self._last_mit_wall_s = {mid: now for mid in ids}
-        logger.info("[RobotBackend] Hardware zero written — %d motor(s) zeroed.", len(ids))
+        logger.debug("[RobotBackend] Hardware zero written — %d motor(s) zeroed.", len(ids))
 
     async def poll_positions(self) -> None:
         """Solicit a state reply from every motor.
@@ -836,11 +836,11 @@ class RobotBackend(_BackendBase):
             attempt = 0
             while not self._connected:
                 attempt += 1
-                logger.info("[RobotBackend] Reconnect attempt %d...", attempt)
+                logger.debug("[RobotBackend] Reconnect attempt %d...", attempt)
                 try:
                     ip = self._resolved_ip or await self._resolve_host()
                     if ip and await self._connect_with_ip(ip):
-                        logger.info("[RobotBackend] Reconnected.")
+                        logger.debug("[RobotBackend] Reconnected.")
                         break
                 except Exception as e:
                     logger.error("[RobotBackend] Reconnect error: %s", e)
@@ -857,7 +857,7 @@ class RobotBackend(_BackendBase):
         if missing:
             logger.warning("[RobotBackend] set_home: no data yet for motor(s) %s — offsets unchanged", missing)
         if captured:
-            logger.info(
+            logger.debug(
                 "[RobotBackend] set_home: captured %s",
                 "  ".join(f"{mid}:{self._angle_offsets[mid]:.4f}" for mid in sorted(captured)),
             )
@@ -905,7 +905,7 @@ class RobotBackend(_BackendBase):
                     if not line:
                         continue
                     if os.environ.get("PETCTL_ROBOT_TRACE"):
-                        logger.info("[RobotBackend] << %r", line[:240])
+                        logger.debug("[RobotBackend] << %r", line[:240])
                     if line.startswith(("t", "T")):
                         self._handle_slcan_frame(line)
                     elif line.startswith("push:"):
@@ -933,7 +933,7 @@ class RobotBackend(_BackendBase):
                 detail = f" code={code} reason={reason!r}" if code is not None else ""
             except Exception:
                 detail = ""
-            logger.info("[RobotBackend] WebSocket closed cleanly by server%s", detail)
+            logger.debug("[RobotBackend] WebSocket closed cleanly by server%s", detail)
         # Reach here on clean close OR exception (not CancelledError) — trigger reconnect.
         if self._connected:
             self._connected = False

@@ -398,7 +398,6 @@ class OllamaMotion(Motion):
     def _apply_llm_response(self, response: dict, rtt: float = 0.0, gen: int = 0) -> None:
         with self._lock:
             if gen != self._revert_gen:
-                logger.info("[Ollama] discarding stale response (reverted since prompt was sent).")
                 return
         motion = str(response.get("movement", "")).strip().lower()
         if motion not in _VALID_MOVEMENTS:
@@ -424,11 +423,11 @@ class OllamaMotion(Motion):
         with self._lock:
             same_motion = self._active_motion == motion
             if same_motion:
-                logger.info("[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [params updated]", rtt, motion, speed, feel)
+                logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [params updated]\n", rtt, motion, speed, feel)
                 logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
                 _update_pattern_params(self._active_pattern, motion, speed)
         if not same_motion:
-            logger.info("[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s", rtt, motion, speed, feel)
+            logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s\n", rtt, motion, speed, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             self._switch_pattern(motion, speed)
 

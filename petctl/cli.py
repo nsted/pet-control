@@ -130,6 +130,11 @@ def run(
         "--log-loop",
         help="Print control loop timing stats (Hz, min/mean/max ms) every 5s",
     ),
+    log_robot: bool = typer.Option(
+        False,
+        "--log-robot",
+        help="Enable RobotBackend connection and discovery logs",
+    ),
     dev_ui: bool = typer.Option(
         False,
         "--dev-ui",
@@ -142,6 +147,9 @@ def run(
     ),
 ) -> None:
     """Run the petctl controller."""
+
+    if log_robot:
+        logging.getLogger("petctl.backends.robot").setLevel(logging.DEBUG)
 
     # --- Build backend ---
     if backend == "mock":

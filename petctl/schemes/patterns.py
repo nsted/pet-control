@@ -1057,7 +1057,7 @@ class CurlTowardsNeighborAssistMotion(StrokeCurlMotion):
                     self._assist_phase[sid] = "assisting"
                     self._assist_start[sid] = now
                     self._assist_snap_pos[sid] = state.servo_positions.get(sid, 0.0)
-                    logger.info(
+                    logger.debug(
                         "[CurlAssist] s%d stalled at %.1f° — starting assist",
                         sid, target_deg,
                     )
@@ -1067,10 +1067,10 @@ class CurlTowardsNeighborAssistMotion(StrokeCurlMotion):
                 actual = state.servo_positions.get(sid, 0.0)
                 moved = abs(actual - self._assist_snap_pos.get(sid, actual))
                 if moved >= self.RECOVERY_THRESHOLD_RAD:
-                    logger.info("[CurlAssist] s%d recovered (moved %.3f rad)", sid, moved)
+                    logger.debug("[CurlAssist] s%d recovered (moved %.3f rad)", sid, moved)
                     self._end_assist(sid, now)
                 elif elapsed >= self.ASSIST_DURATION_S:
-                    logger.info("[CurlAssist] s%d assist timed out", sid)
+                    logger.debug("[CurlAssist] s%d assist timed out", sid)
                     self._end_assist(sid, now)
                 else:
                     opp_deg = -math.copysign(self.ASSIST_TARGET_DEG, target_deg)
@@ -1585,12 +1585,12 @@ class NeighborAssistDriftMotion(Motion):
                         self._assist_dir[sid] *= -1
                         self._assist_start[sid] = now
                         self._assist_snap_pos[sid] = actual
-                        logger.info(
+                        logger.debug(
                             "[NeighborAssist] s%d still stuck — attempt %d (dir %+d)",
                             sid, self._assist_attempt[sid] + 1, self._assist_dir[sid],
                         )
                     else:
-                        logger.info("[NeighborAssist] s%d assist exhausted — reversing", sid)
+                        logger.debug("[NeighborAssist] s%d assist exhausted — reversing", sid)
                         self._do_reversal(sid, state, now)
                         self._assist_phase[sid] = "cooldown"
                         self._cooldown_until[sid] = now + self.ASSIST_COOLDOWN_S
