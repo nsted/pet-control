@@ -225,6 +225,7 @@ class OllamaMotion(Motion):
         self._active_motion: str = ""
         self._was_connected: bool = False
         self._touch_ended_t: float | None = None  # wall time of last "none" event
+        self._revert_gen: int = 0  # incremented on every forced revert; used to discard stale LLM responses
 
     # ------------------------------------------------------------------
     # Motion interface
@@ -261,10 +262,14 @@ class OllamaMotion(Motion):
             self._client.start(self._system_prompt)
             self._batch = []
             self._touch_ended_t = None
+            with self._lock:
+                self._revert_gen += 1
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
         elif not self._was_connected and state.connected:
             logger.info("[System] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
             self._batch = []
+            with self._lock:
+                self._revert_gen += 1
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
         self._was_connected = state.connected
 
@@ -280,6 +285,8 @@ class OllamaMotion(Motion):
             logger.info("[System] no touch for 5s — reverting to %s.", _DEFAULT_MOTION)
             self._touch_ended_t = None
             self._batch = []
+            with self._lock:
+                self._revert_gen += 1
             self._switch_pattern(_DEFAULT_MOTION, 0.0)
 
         with self._lock:
@@ -350,7 +357,9 @@ class OllamaMotion(Motion):
             return
 
         batch, self._batch = self._batch, []
-        t = threading.Thread(target=self._llm_call, args=(_format_batch(batch),), daemon=True)
+        with self._lock:
+            gen = self._revert_gen
+        t = threading.Thread(target=self._llm_call, args=(_format_batch(batch), gen), daemon=True)
         self._pending = t
         t.start()
 
@@ -372,7 +381,7 @@ class OllamaMotion(Motion):
     # LLM interaction (background thread)
     # ------------------------------------------------------------------
 
-    def _llm_call(self, touch_description: str) -> None:
+    def _llm_call(self, touch_description: str, gen: int) -> None:
         logger.info("[Ollama] sending prompt.")
         logger.debug("[Ollama] calling LLM: %s", touch_description)
         t0 = time.monotonic()
@@ -380,13 +389,17 @@ class OllamaMotion(Motion):
         rtt = time.monotonic() - t0
         try:
             if result is not None:
-                self._apply_llm_response(result, rtt)
+                self._apply_llm_response(result, rtt, gen)
         except Exception as exc:
             logger.warning("[Ollama] could not apply response: %s — raw: %s", exc, result)
         finally:
             self._client.trim_history(self._history_turns)
 
-    def _apply_llm_response(self, response: dict, rtt: float = 0.0) -> None:
+    def _apply_llm_response(self, response: dict, rtt: float = 0.0, gen: int = 0) -> None:
+        with self._lock:
+            if gen != self._revert_gen:
+                logger.info("[Ollama] discarding stale response (reverted since prompt was sent).")
+                return
         motion = str(response.get("movement", "")).strip().lower()
         if motion not in _VALID_MOVEMENTS:
             logger.warning(
