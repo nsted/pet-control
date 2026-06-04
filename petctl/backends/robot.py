@@ -98,6 +98,7 @@ class RobotBackend(_BackendBase):
         self._last_command_time: dict[int, float] = {}
         self._motor_tx_task: Optional[asyncio.Task] = None
         self._module_poll_task: Optional[asyncio.Task] = None
+        self._motor_poll_task: Optional[asyncio.Task] = None
 
         self._last_state = RobotState.empty()
         self._reconnecting = False
@@ -374,10 +375,6 @@ class RobotBackend(_BackendBase):
                 "[RobotBackend] Only %d/%d modules found — polling every 2s",
                 len(self._discovered_modules), NUM_MODULES,
             )
-        if self._module_poll_task and not self._module_poll_task.done():
-            self._module_poll_task.cancel()
-        self._module_poll_task = asyncio.create_task(self._module_poll_loop())
-
         if self._configured_motor_ids is not None:
             self._discovered_motors = list(self._configured_motor_ids)
             logger.info("[RobotBackend] Using fixed motor IDs (--motors): %s", self._discovered_motors)
@@ -397,12 +394,13 @@ class RobotBackend(_BackendBase):
             await self._calibrate()
 
         # Cancel any leftover tasks from a previous connection, then start fresh.
-        for task in (self._motor_tx_task, self._module_poll_task):
+        for task in (self._motor_tx_task, self._module_poll_task, self._motor_poll_task):
             if task and not task.done():
                 task.cancel()
-        self._module_poll_task = None
         self._latest_sensors = None
         self._motor_tx_task = asyncio.create_task(self._motor_tx_loop())
+        self._module_poll_task = asyncio.create_task(self._module_poll_loop())
+        self._motor_poll_task = asyncio.create_task(self._motor_poll_loop())
 
         logger.info("[RobotBackend] Connected (text channel + SLCAN OK)")
         return True
@@ -500,6 +498,24 @@ class RobotBackend(_BackendBase):
             return list(range(1, 8))
         logger.info("[RobotBackend] Discovered motors: %s", discovered)
         return discovered
+
+    async def _motor_poll_loop(self) -> None:
+        """Poll all possible motor IDs every 5s; enable any newly-responding ones."""
+        while True:
+            await asyncio.sleep(5.0)
+            if self._ws is None or self._configured_motor_ids is not None:
+                continue
+            for mid in range(1, 8):
+                if self._ws is None:
+                    break
+                await self._ws.send(_encode_mit_enable(mid))
+            await asyncio.sleep(0.5)
+            now = set(self._motor_state.keys())
+            known = set(self._discovered_motors)
+            added = sorted(now - known)
+            if added:
+                self._discovered_motors = sorted(now)
+                logger.info("[RobotBackend] Motors: %s (+%d added %s)", self._discovered_motors, len(added), added)
 
     # ------------------------------------------------------------------
     # Sensor reading
