@@ -124,6 +124,19 @@ class OllamaClient:
         system = self._messages[0] if self._messages else None
         self._messages = [system] if system else []
 
+    def trim_history(self, max_turns: int) -> None:
+        """Keep the system prompt and the last `max_turns` exchange pairs (user+assistant).
+
+        One turn = one user message + one assistant reply. Excess older turns are dropped.
+        """
+        if not self._messages:
+            return
+        system = self._messages[0]
+        exchanges = self._messages[1:]  # alternating user/assistant pairs
+        # Each turn is 2 messages; keep only the last max_turns pairs.
+        keep = max_turns * 2
+        self._messages = [system] + exchanges[-keep:]
+
     def is_available(self) -> bool:
         """Return True if the Ollama server responds to a health check."""
         try:

@@ -7,9 +7,9 @@ which movement to perform.  LLM calls happen in a background thread so the
 30 Hz control loop stays non-blocking.  Between calls the last commanded
 motion continues uninterrupted.
 
-Each gesture batch is sent as a fresh conversation turn against the system
-prompt only. History is cleared after each call to minimize token usage and
-avoid stale context from prior interactions.
+Each gesture batch is a new conversation turn. After each LLM reply the
+history is trimmed to the most recent `history_turns` exchange pairs (default 4)
+so the model has recent context without unbounded token growth.
 
 Motion is delegated to the same Motion classes used by standalone
 patterns (patterns.py).  Speed from the LLM response scales frequency;
@@ -201,8 +201,10 @@ class OllamaMotion(Motion):
         timeout: float = 12.0,
         log_input: bool = False,
         llm_enabled: bool = True,
+        history_turns: int = 4,
     ) -> None:
         self._llm_enabled = llm_enabled
+        self._history_turns = history_turns
         self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout, log_input=log_input)
 
         # Injected in on_start() — the controller's shared gesture event queue.
@@ -382,7 +384,7 @@ class OllamaMotion(Motion):
         except Exception as exc:
             logger.warning("[Ollama] could not apply response: %s — raw: %s", exc, result)
         finally:
-            self._client.clear_history()
+            self._client.trim_history(self._history_turns)
 
     def _apply_llm_response(self, response: dict, rtt: float = 0.0) -> None:
         motion = str(response.get("movement", "")).strip().lower()
