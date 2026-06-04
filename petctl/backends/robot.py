@@ -910,6 +910,8 @@ class RobotBackend(_BackendBase):
                         self._handle_slcan_frame(line)
                     elif line.startswith("push:"):
                         self._handle_sensor_push(line[5:])
+                    elif line.startswith("boot:"):
+                        logger.info("[RobotBackend] firmware boot: %s", line[5:])
                     elif line[0].isdigit():
                         self._handle_api_response(line)
                     elif self._bare_reply_fut is not None and not self._bare_reply_fut.done():
