@@ -508,7 +508,10 @@ class RobotBackend(_BackendBase):
             for mid in range(1, 8):
                 if self._ws is None:
                     break
-                await self._ws.send(_encode_mit_enable(mid))
+                try:
+                    await self._ws.send(_encode_mit_enable(mid))
+                except Exception:
+                    break
             await asyncio.sleep(0.5)
             now = set(self._motor_state.keys())
             known = set(self._discovered_motors)
@@ -822,6 +825,9 @@ class RobotBackend(_BackendBase):
             if self._module_poll_task and not self._module_poll_task.done():
                 self._module_poll_task.cancel()
                 self._module_poll_task = None
+            if self._motor_poll_task and not self._motor_poll_task.done():
+                self._motor_poll_task.cancel()
+                self._motor_poll_task = None
             if self._ws is not None:
                 try:
                     await asyncio.wait_for(self._ws.close(), timeout=0.2)
