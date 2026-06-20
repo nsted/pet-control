@@ -29,7 +29,7 @@ ROBOT_DEFAULT_PORT = 8080
 
 # Lines CAN→WebSocket may broadcast (see grapple-arduino head.ino). Not API
 # ("<digit>:") and not MIT motor frames (handled via "t"/"T" + hex).
-_SLCAN_WS_NOISE_FIRST = frozenset("SOCZzFNvV")
+_SLCAN_WS_NOISE_FIRST = frozenset("SOCZzFNvV\x07")
 
 
 def _ping_payload_ok(data: Optional[str]) -> bool:
