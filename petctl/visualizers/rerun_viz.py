@@ -224,6 +224,16 @@ _IMU_WORLD_TARGET: tuple[float, float, float] = (
     -_IMU_CENTER[0], -_IMU_CENTER[1], -_IMU_CENTER[2]
 )
 
+# 180° rotation around the robot's body axis (head→tail direction ≈ (0,1,1)/√2 in
+# robot-local space) applied before the BNO085 quaternion to correct the upside-down
+# mounting of the chip on module 7's -Y face.
+# Derived: Rodrigues' formula for 180° around (0, 1/√2, 1/√2) = 2·n·nᵀ − I.
+_IMU_BODY_CORRECTION: np.ndarray = np.array([
+    [-1., 0., 0.],
+    [ 0., 0., 1.],
+    [ 0., 1., 0.],
+], dtype=np.float64)
+
 # Quaternion (xyzw) that orients the IMU slab flat on the -Y face.
 # 90° around +X: maps local-Z → (0, -1, 0).
 _IMU_QUATERNION_XYZW: tuple[float, float, float, float] = (0.707, 0.0, 0.0, 0.707)
@@ -286,10 +296,6 @@ class RerunVisualizer(Visualizer):
         self._pad_centers_np: Optional[np.ndarray] = None
         self._pad_half_sizes_np: Optional[np.ndarray] = None
         self._pad_quats: list = []
-        # IMU reference rotation captured on first valid reading; relative rotation
-        # is applied so the visualization starts right-side up in the FK-based pose
-        # regardless of the BNO085 chip mounting orientation.
-        self._imu_ref_mat: Optional[np.ndarray] = None
         self._rr = None
         self._viewer_active: bool = False
         self._show_pad_labels: bool = False
@@ -943,14 +949,9 @@ class RerunVisualizer(Visualizer):
                 logger.debug("[RerunViz] state.imu is empty — no IMU data flowing to visualizer")
         if imu7 is not None and (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) > 0.5:
             Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
-            if self._imu_ref_mat is None:
-                self._imu_ref_mat = Q_mat
-                logger.info("[RerunViz] IMU reference captured — visualization zeroed to current pose")
-            # Relative rotation from the captured reference: Q_rel = Q_current @ Q_ref^T
-            # This cancels the BNO085 mounting offset so the viz starts right-side up.
-            Q_rel = Q_mat @ self._imu_ref_mat.T
-            R_robot = Q_rel @ R_fk
-            t_robot = Q_rel @ t_fk
+            R_corrected = _IMU_BODY_CORRECTION @ R_fk
+            R_robot = Q_mat @ R_corrected
+            t_robot = Q_mat @ (_IMU_BODY_CORRECTION @ t_fk)
             if _imu_diag_tick % 100 == 1:
                 logger.debug("[RerunViz] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
         else:
