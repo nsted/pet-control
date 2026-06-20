@@ -15,7 +15,7 @@ import websockets
 
 from petctl.config import LOOP_LIMITS, MOTOR_LIMITS, NUM_MODULES, SENSOR_LIMITS
 from petctl.protocols import Backend as _BackendBase
-from petctl.types import ModuleSensors, RobotState, ServoCommand
+from petctl.types import ImuReading, ModuleSensors, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,8 @@ class RobotBackend(_BackendBase):
         # Latest sensor data populated by _handle_sensor_push — updated at ~50 Hz.
         self._latest_sensors: Optional[dict] = None
         self._latest_sensor_ts: float = 0.0
+        # Latest IMU data per module, populated by _handle_imu_push — updated at ~25 Hz.
+        self._latest_imu: dict[int, ImuReading] = {}
         # Per-module, per-face sliding windows for cap moving average.
         # Keyed by module_id → {"left": [deque,...], "right": [...], "middle": [...]}.
         self._cap_filter: dict[int, dict[str, list[collections.deque]]] = {}
@@ -202,6 +204,7 @@ class RobotBackend(_BackendBase):
                 motor_err_codes={mid: data.get("err_code", 0) for mid, data in self._motor_state.items()},
                 battery_current_raw=battery_current_raw,
                 battery_voltage_raw=battery_voltage_raw,
+                imu=dict(self._latest_imu),
                 active_modules=self._discovered_modules,
                 active_servo_ids=set(self._discovered_motors),
                 connected=True,
@@ -711,6 +714,29 @@ class RobotBackend(_BackendBase):
         else:
             logger.debug("[RobotBackend] Sensor push parse failed")
 
+    def _handle_imu_push(self, data: str) -> None:
+        """Process an unsolicited IMU push from the Arduino (~25 Hz).
+
+        Wire format: "<mid>,<qr>,<qi>,<qj>,<qk>,<ax>,<ay>,<az>,<gx>,<gy>,<gz>"
+        One message per active module (currently only module 7).
+        Quaternion is the BNO085 rotation vector in absolute world frame.
+        """
+        try:
+            parts = data.split(",")
+            if len(parts) != 11:
+                return
+            mid = int(parts[0])
+            self._latest_imu[mid] = ImuReading(
+                module_id=mid,
+                qr=float(parts[1]), qi=float(parts[2]),
+                qj=float(parts[3]), qk=float(parts[4]),
+                ax=float(parts[5]), ay=float(parts[6]), az=float(parts[7]),
+                gx=float(parts[8]), gy=float(parts[9]), gz=float(parts[10]),
+                timestamp=time.monotonic(),
+            )
+        except (ValueError, IndexError):
+            logger.debug("[RobotBackend] IMU push parse failed: %r", data[:80])
+
     # ------------------------------------------------------------------
     # Sensor calibration & normalization
     # ------------------------------------------------------------------
@@ -916,6 +942,8 @@ class RobotBackend(_BackendBase):
                         self._handle_slcan_frame(line)
                     elif line.startswith("push:"):
                         self._handle_sensor_push(line[5:])
+                    elif line.startswith("imu:"):
+                        self._handle_imu_push(line[4:])
                     elif line.startswith("boot:"):
                         logger.info("[RobotBackend] firmware boot: %s", line[5:])
                     elif line[0].isdigit():

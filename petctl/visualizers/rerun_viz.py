@@ -363,6 +363,8 @@ class RerunVisualizer(Visualizer):
         self._log_motor_state(rr, state)
         self._log_battery_series(rr, state)
         self._log_power_telemetry(rr, state)
+        if state.imu:
+            self._log_imu_series(rr, state)
         if self.show_3d:
             self._log_3d_pose(rr, state)
             self._log_sensor_overlays(rr, state)
@@ -427,6 +429,7 @@ class RerunVisualizer(Visualizer):
             rrb.TimeSeriesView(origin="motors/temperature", name="Temperature (°C)"),
             rrb.TimeSeriesView(origin="telemetry/voltage_v", name="Battery voltage (V)"),
             rrb.TimeSeriesView(origin="telemetry/current_amps", name="Battery current (A)"),
+            rrb.TimeSeriesView(origin="imu", name="IMU accel/gyro"),
         ))
         rr.send_blueprint(rrb.Blueprint(
             rrb.Horizontal(*views),
@@ -492,6 +495,17 @@ class RerunVisualizer(Visualizer):
             return
         rr.log("telemetry/voltage_v", rr.Scalars(state.battery_voltage_v))
         rr.log("telemetry/current_amps", rr.Scalars(state.battery_current_amps))
+
+    def _log_imu_series(self, rr, state: RobotState) -> None:
+        """Log IMU accel and gyro scalar series for each module with live data."""
+        for mid, imu in state.imu.items():
+            base = f"imu/m{mid}"
+            rr.log(f"{base}/accel_x", rr.Scalars(imu.ax))
+            rr.log(f"{base}/accel_y", rr.Scalars(imu.ay))
+            rr.log(f"{base}/accel_z", rr.Scalars(imu.az))
+            rr.log(f"{base}/gyro_x",  rr.Scalars(imu.gx))
+            rr.log(f"{base}/gyro_y",  rr.Scalars(imu.gy))
+            rr.log(f"{base}/gyro_z",  rr.Scalars(imu.gz))
 
     def _setup_overlay_geometry(self, rr) -> None:
         """Pre-compute static arrays used every tick by _log_sensor_overlays."""

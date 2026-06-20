@@ -243,6 +243,30 @@ class GestureEvent:
 
 
 @dataclass
+class ImuReading:
+    """IMU reading from a single module (BNO085 rotation vector + linear accel + gyro).
+
+    qr/qi/qj/qk: rotation vector quaternion in absolute world frame (real part first).
+    ax/ay/az:    linear acceleration in m/s² (gravity removed).
+    gx/gy/gz:    calibrated gyroscope in rad/s.
+    timestamp:   monotonic time of receipt.
+    """
+
+    module_id: int
+    qr: float = 0.0
+    qi: float = 0.0
+    qj: float = 0.0
+    qk: float = 0.0
+    ax: float = 0.0
+    ay: float = 0.0
+    az: float = 0.0
+    gx: float = 0.0
+    gy: float = 0.0
+    gz: float = 0.0
+    timestamp: float = 0.0
+
+
+@dataclass
 class ModuleSensors:
     """Sensor readings for a single robot module, normalized 0-1.
 
@@ -340,6 +364,8 @@ class RobotState:
     # True when the active motion source is commanding autonomous motion (set by Controller
     # each tick via motion.is_active()). Suppresses twist detection in ContactClassifier.
     is_motion_active: bool = False
+    # IMU readings per module, keyed by module_id. Updated at ~25 Hz by imu: pushes.
+    imu: dict[int, "ImuReading"] = field(default_factory=dict)
     # Seconds since last update — useful for time-based control schemes
     dt: float = 0.0
 
