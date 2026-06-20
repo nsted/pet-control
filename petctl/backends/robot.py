@@ -530,20 +530,27 @@ class RobotBackend(_BackendBase):
     def _parse_sensor_response(
         self, data: Optional[str]
     ) -> tuple[Optional[dict[int, ModuleSensors]], int, int]:
-        """Parse a CSV sensor response string into (modules, battery_current_raw, battery_voltage_raw)."""
+        """Parse a CSV sensor response string into (modules, battery_current_raw, battery_voltage_raw).
+
+        Wire format (68 bytes):
+          bytes  0–15: touch bits, 2 bytes per module × 8 modules
+                       bits 0–3: mpr1 (right face), bits 4–7: mpr2 (left face), bits 8–13: mpr3 (top/middle)
+          bytes 16–63: FSR, 6 bytes per module × 8 modules (fsrR, fsrL, fsrM — big-endian int16)
+          bytes 64–67: head-only extended (current 2B, voltage 2B)
+        """
         if not data:
             return None, 0, 0
         try:
             raw_bytes = [int(x.strip()) for x in data.split(",")]
         except ValueError:
             return None, 0, 0
-        if len(raw_bytes) < 108:
+        if len(raw_bytes) < 68:
             return None, 0, 0
 
-        touch = raw_bytes[0:56]
-        fsr = raw_bytes[56:104]
-        battery_current_raw = (raw_bytes[104] << 8) | raw_bytes[105]
-        battery_voltage_raw = (raw_bytes[106] << 8) | raw_bytes[107]
+        touch = raw_bytes[0:16]    # 2 bytes × 8 modules (14 binary touch bits per module)
+        fsr = raw_bytes[16:64]     # 6 bytes × 8 modules (3 FSR int16 values per module)
+        battery_current_raw = (raw_bytes[64] << 8) | raw_bytes[65]
+        battery_voltage_raw = (raw_bytes[66] << 8) | raw_bytes[67]
 
         modules: dict[int, ModuleSensors] = {}
         # Always parse all NUM_MODULES slots — the sensor payload is fixed-size
@@ -555,16 +562,11 @@ class RobotBackend(_BackendBase):
             else list(range(NUM_MODULES))
         )
         for mod_idx, mod_id in enumerate(module_ids[:8]):
-            t = touch[mod_idx * 7:(mod_idx + 1) * 7]
-            nibbles: list[int] = []
-            for b in t:
-                nibbles.append((b >> 4) & 0xF)
-                nibbles.append(b & 0xF)
-
-            _cap_scale = 15.0 * SENSOR_LIMITS.cap_full_scale
-            raw_right   = tuple(max(0.0, min(1.0, nibbles[i] / _cap_scale)) for i in range(0, 4))
-            raw_left    = tuple(max(0.0, min(1.0, nibbles[i] / _cap_scale)) for i in range(4, 8))
-            middle_pads = tuple(max(0.0, min(1.0, nibbles[i] / _cap_scale)) for i in range(8, 14))
+            # 14-bit touch word, little-endian (low byte first)
+            touch_word = touch[mod_idx * 2] | (touch[mod_idx * 2 + 1] << 8)
+            raw_right   = tuple(float((touch_word >> i) & 1) for i in range(0, 4))
+            raw_left    = tuple(float((touch_word >> (4 + i)) & 1) for i in range(4))
+            middle_pads = tuple(float((touch_word >> (8 + i)) & 1) for i in range(6))
 
             f = fsr[mod_idx * 6:(mod_idx + 1) * 6]
             right_p = _int16_be(f[0], f[1])
