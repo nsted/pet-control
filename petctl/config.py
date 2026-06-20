@@ -137,15 +137,15 @@ class BatteryConfig:
 
     I_amps = -(raw * ads_v_per_bit - zero_v) / sensitivity_v_per_a
 
-    Voltage sensor: ESP32 onboard ADC via esp_adc_cal_raw_to_voltage() —
+    Voltage sensor: ESP32 onboard ADC via analogReadMilliVolts() —
     firmware sends calibrated millivolts, not raw ADC counts.
     100 kΩ / 10 kΩ voltage divider scales the battery voltage down to ADC range.
     ESP32 ADC non-linearity requires two-point calibration; single-ratio fit
     is inaccurate across the battery discharge range.
 
-    Two calibration points (raw_mV → V_actual):
-        1318 mV → 14.700 V  (adapter connected)
-        1068 mV → 12.320 V  (on battery)
+    Two calibration points (analogReadMilliVolts → V_actual):
+        1328.5 mV → 14.650 V  (adapter connected, derived from 14.8V display at 14.65V actual)
+        1107.9 mV → 12.120 V  (on battery, derived from 12.7V display at 12.12V actual)
 
     V_battery = (voltage_slope * raw_mV + voltage_offset_mv) / 1000
     """
@@ -154,8 +154,8 @@ class BatteryConfig:
     zero_v: float = 1.65                  # VCC/2 at zero current
     ads_v_per_bit: float = 0.002         # ADS1015 GAIN_ONE: 2 mV/LSB
 
-    voltage_slope: float = 9.52          # mV_actual / mV_raw — two-point empirical fit
-    voltage_offset_mv: float = 2152.64   # mV — two-point empirical fit
+    voltage_slope: float = 11.47         # mV_actual / mV_raw — two-point empirical fit
+    voltage_offset_mv: float = -587.9    # mV — two-point empirical fit
 
 
 # ---------------------------------------------------------------------------
