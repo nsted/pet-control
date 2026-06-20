@@ -422,7 +422,7 @@ class RerunVisualizer(Visualizer):
         rr = self._rr
         views = []
         if self.show_3d:
-            views.append(rrb.Spatial3DView(origin="robot", name="Robot"))
+            views.append(rrb.Spatial3DView(origin="/", name="Robot"))
         views.append(rrb.Vertical(
             rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
             rrb.TimeSeriesView(origin="motors/torque", name="Torque (Nm)"),
@@ -497,9 +497,13 @@ class RerunVisualizer(Visualizer):
         rr.log("telemetry/current_amps", rr.Scalars(state.battery_current_amps))
 
     def _log_imu_series(self, rr, state: RobotState) -> None:
-        """Log IMU accel and gyro scalar series for each module with live data."""
+        """Log IMU quaternion, accel, and gyro scalar series for each module with live data."""
         for mid, imu in state.imu.items():
             base = f"imu/m{mid}"
+            rr.log(f"{base}/quat_w",  rr.Scalars(imu.qr))
+            rr.log(f"{base}/quat_x",  rr.Scalars(imu.qi))
+            rr.log(f"{base}/quat_y",  rr.Scalars(imu.qj))
+            rr.log(f"{base}/quat_z",  rr.Scalars(imu.qk))
             rr.log(f"{base}/accel_x", rr.Scalars(imu.ax))
             rr.log(f"{base}/accel_y", rr.Scalars(imu.ay))
             rr.log(f"{base}/accel_z", rr.Scalars(imu.az))
@@ -903,18 +907,52 @@ class RerunVisualizer(Visualizer):
         correctly invert the apparent servo direction.
 
         Rerun composes transforms along the entity hierarchy automatically.
+
+        When an IMU reading is available for module 7, the BNO085 absolute
+        orientation quaternion is composed on top of the FK correction so the
+        entire model rotates with the physical robot.  The IMU point remains at
+        world origin (0, 0, 0) because rotation about the origin keeps it fixed.
         """
         if not self._module_meta:
             return
 
-        # Recompute the robot entity transform every tick so module 7 stays fixed
-        # at the world origin (IMU at 0,0,0) regardless of joint angles.
-        # Inverse of module 7's current world transform: R_robot = R7^T, t_robot = target - R7^T @ p7
+        # FK correction: inverse of module 7's cumulative FK so the IMU sits at origin.
         p7, R7 = self._fk_to_module(_IMU_MODULE_ID, state)
-        target = np.array(_IMU_WORLD_TARGET, dtype=np.float64)
+        t_fk = np.array(_IMU_WORLD_TARGET, dtype=np.float64) - R7.T @ p7
+        R_fk = R7.T
+
+        # Apply BNO085 absolute orientation as a world-space rotation about the origin.
+        # Q_imu rotates robot-local (gravity-corrected) space into Rerun world space.
+        # If no valid quaternion is present, fall back to FK-only (identity world rotation).
+        imu7 = state.imu.get(_IMU_MODULE_ID)
+        _imu_diag_tick = getattr(self, "_imu_diag_tick", 0) + 1
+        self._imu_diag_tick = _imu_diag_tick
+        if _imu_diag_tick % 100 == 1:
+            if state.imu:
+                for mid, r in state.imu.items():
+                    qmag2 = r.qr**2 + r.qi**2 + r.qj**2 + r.qk**2
+                    logger.info(
+                        "[RerunViz] IMU module %d: qr=%.3f qi=%.3f qj=%.3f qk=%.3f mag²=%.3f",
+                        mid, r.qr, r.qi, r.qj, r.qk, qmag2,
+                    )
+            else:
+                logger.info("[RerunViz] state.imu is empty — no IMU data flowing to visualizer")
+        if imu7 is not None and (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) > 0.5:
+            Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
+            R_robot = Q_mat @ R_fk
+            t_robot = Q_mat @ t_fk
+            if _imu_diag_tick % 100 == 1:
+                logger.info("[RerunViz] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
+        else:
+            R_robot = R_fk
+            t_robot = t_fk
+            if _imu_diag_tick % 100 == 1:
+                reason = f"imu7={imu7}" if imu7 is None else f"mag²={imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2:.3f}<0.5"
+                logger.info("[RerunViz] IMU rotation NOT applied: %s", reason)
+
         rr.log("robot", rr.Transform3D(
-            translation=(target - R7.T @ p7).tolist(),
-            mat3x3=R7.T.tolist(),
+            translation=t_robot.tolist(),
+            mat3x3=R_robot.tolist(),
         ))
 
         for mod in self._module_meta:
@@ -1002,3 +1040,16 @@ def _axis_angle_to_mat3(axis: tuple[float, float, float], angle_rad: float) -> n
         [t*ax*ay + s*az, t*ay*ay + c,    t*ay*az - s*ax],
         [t*ax*az - s*ay, t*ay*az + s*ax, t*az*az + c   ],
     ], dtype=np.float32)
+
+
+def _quat_wxyz_to_mat3(w: float, x: float, y: float, z: float) -> np.ndarray:
+    """Convert a unit quaternion (w, x, y, z) to a 3×3 rotation matrix."""
+    n = math.sqrt(w*w + x*x + y*y + z*z)
+    if n < 1e-9:
+        return np.eye(3, dtype=np.float64)
+    w, x, y, z = w/n, x/n, y/n, z/n
+    return np.array([
+        [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
+        [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
+        [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)],
+    ], dtype=np.float64)
