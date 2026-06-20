@@ -135,6 +135,11 @@ def run(
         "--log-robot",
         help="Enable RobotBackend connection and discovery logs",
     ),
+    log_imu: bool = typer.Option(
+        False,
+        "--log-imu",
+        help="Print IMU quaternion diagnostics every ~5s",
+    ),
     dev_ui: bool = typer.Option(
         False,
         "--dev-ui",
@@ -150,6 +155,8 @@ def run(
 
     if log_robot:
         logging.getLogger("petctl.backends.robot").setLevel(logging.DEBUG)
+    if log_imu:
+        logging.getLogger("petctl.visualizers.rerun_viz").setLevel(logging.DEBUG)
 
     # --- Build backend ---
     if backend == "mock":

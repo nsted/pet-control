@@ -931,24 +931,24 @@ class RerunVisualizer(Visualizer):
             if state.imu:
                 for mid, r in state.imu.items():
                     qmag2 = r.qr**2 + r.qi**2 + r.qj**2 + r.qk**2
-                    logger.info(
+                    logger.debug(
                         "[RerunViz] IMU module %d: qr=%.3f qi=%.3f qj=%.3f qk=%.3f mag²=%.3f",
                         mid, r.qr, r.qi, r.qj, r.qk, qmag2,
                     )
             else:
-                logger.info("[RerunViz] state.imu is empty — no IMU data flowing to visualizer")
+                logger.debug("[RerunViz] state.imu is empty — no IMU data flowing to visualizer")
         if imu7 is not None and (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) > 0.5:
             Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
             R_robot = Q_mat @ R_fk
             t_robot = Q_mat @ t_fk
             if _imu_diag_tick % 100 == 1:
-                logger.info("[RerunViz] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
+                logger.debug("[RerunViz] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
         else:
             R_robot = R_fk
             t_robot = t_fk
             if _imu_diag_tick % 100 == 1:
                 reason = f"imu7={imu7}" if imu7 is None else f"mag²={imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2:.3f}<0.5"
-                logger.info("[RerunViz] IMU rotation NOT applied: %s", reason)
+                logger.debug("[RerunViz] IMU rotation NOT applied: %s", reason)
 
         rr.log("robot", rr.Transform3D(
             translation=t_robot.tolist(),
