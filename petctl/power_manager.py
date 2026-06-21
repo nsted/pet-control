@@ -241,7 +241,13 @@ class PowerManager:
     def _update_current(self, current_a: float) -> None:
         b = POWER_BUDGET
         alpha = self._reactive_ema_alpha
-        self._current_ema = alpha * current_a + (1.0 - alpha) * self._current_ema
+        # Asymmetric EMA: build up at normal alpha, drain faster when current is falling
+        # so transient spikes don't suppress torque long after actual load has cleared.
+        if current_a >= self._current_ema:
+            self._current_ema = alpha * current_a + (1.0 - alpha) * self._current_ema
+        else:
+            decay_alpha = min(1.0, alpha * b.reactive_recovery_multiplier)
+            self._current_ema = decay_alpha * current_a + (1.0 - decay_alpha) * self._current_ema
         self._last_current_a = current_a
 
         budget = self._effective_budget()
@@ -441,8 +447,13 @@ class PowerManager:
                         placed = True
                         break
                 if not placed:
-                    slots.append([motor_id])
-                    slot_totals.append(i_est)
+                    if len(slots) < b.max_stagger_motors:
+                        slots.append([motor_id])
+                        slot_totals.append(i_est)
+                    else:
+                        # Stagger depth capped — overflow into last slot
+                        slots[-1].append(motor_id)
+                        slot_totals[-1] += i_est
 
             # Issue stagger delays only when a motor newly enters a higher slot.
             # Don't refresh while it stays in the same slot — the existing deadline

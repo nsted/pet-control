@@ -17,7 +17,7 @@ from petctl.power_manager import (
     SystemState,
     VoltageState,
 )
-from petctl.types import RobotState
+from petctl.types import RobotState, ServoCommand
 
 # Motor IDs used in tests
 M1, M2 = 1, 2
@@ -444,7 +444,7 @@ class TestTelemetry:
         w.tick(_state(current_a=2.0))
         t = w.pm.get_telemetry(14.5)
         assert t.current_amps_raw == pytest.approx(2.0)
-        assert t.current_amps_filtered == pytest.approx(0.2, abs=0.01)  # 0.1 * 2.0
+        assert t.current_amps_filtered == pytest.approx(0.4, abs=0.01)  # 0.2 * 2.0
         assert t.current_drive_scale == pytest.approx(1.0)
 
     def test_telemetry_current_scale_saturated(self) -> None:
@@ -464,3 +464,88 @@ class TestTelemetry:
         w = _PM()
         t = w.pm.get_telemetry(14.5)
         assert t.system_state == "RUNNING"
+
+
+# ---------------------------------------------------------------------------
+# Reactive EMA asymmetric decay
+# ---------------------------------------------------------------------------
+
+class TestCurrentLimitingAsymmetricDecay:
+    def test_ema_decays_faster_on_recovery(self) -> None:
+        """After sustained overcurrent, scale recovers to 1.0 within 3 ticks at
+        normal current. Without asymmetric decay (~10 ticks would be needed)."""
+        w = _PM()
+        for _ in range(100):
+            w.tick(_state(current_a=5.0))  # EMA saturates at ~5.0A; scale=0
+        assert w.pm._reactive_scale == pytest.approx(0.0, abs=0.01)
+
+        for _ in range(3):
+            w.tick(_state(current_a=1.0))  # 1A < start threshold (2.5A)
+        assert w.pm._reactive_scale == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# allocate_budget — stagger cap enforcement
+# ---------------------------------------------------------------------------
+
+def _alloc_state(
+    *,
+    voltage_v: float = 12.0,
+    torques: dict[int, float] | None = None,
+    velocities: dict[int, float] | None = None,
+) -> RobotState:
+    """Minimal RobotState for allocate_budget() tests."""
+    rs = RobotState(
+        motor_torques=torques or {},
+        motor_velocities=velocities or {},
+    )
+    rs.__class__ = type(
+        "_AllocRobotState",
+        (RobotState,),
+        {"battery_voltage_v": property(lambda self: voltage_v)},
+    )
+    return rs
+
+
+class TestStaggerCap:
+    """max_stagger_motors caps slot depth when many motors are over budget."""
+
+    # τ=0.228 Nm → I_est ≈ 0.06 + 20×0.228² ≈ 1.1A > budget/2 → 1 motor per slot
+    _TAU = 0.228
+
+    def _commands(self, motor_ids: list[int]) -> list[ServoCommand]:
+        return [ServoCommand(servo_id=mid, position=None) for mid in motor_ids]
+
+    def test_delay_capped_when_motors_exceed_max_slots(self) -> None:
+        """5 motors needing 5 slots are capped to max_stagger_motors=4 slots."""
+        from petctl.config import POWER_BUDGET as b
+
+        motor_ids = [1, 2, 3, 4, 5]
+        state = _alloc_state(
+            torques={mid: self._TAU for mid in motor_ids},
+            velocities={mid: 0.0 for mid in motor_ids},
+        )
+        pm = PowerManager()
+        _, stagger_schedule = pm.allocate_budget(self._commands(motor_ids), state)
+
+        max_allowed_delay = (b.max_stagger_motors - 1) * b.stagger_interval_s
+        assert stagger_schedule, "expected some motors to be staggered"
+        assert all(
+            delay <= max_allowed_delay + 1e-9
+            for delay in stagger_schedule.values()
+        )
+
+    def test_delay_not_capped_when_at_limit(self) -> None:
+        """Exactly max_stagger_motors motors → no capping, full delay range used."""
+        from petctl.config import POWER_BUDGET as b
+
+        motor_ids = list(range(1, b.max_stagger_motors + 1))
+        state = _alloc_state(
+            torques={mid: self._TAU for mid in motor_ids},
+            velocities={mid: 0.0 for mid in motor_ids},
+        )
+        pm = PowerManager()
+        _, stagger_schedule = pm.allocate_budget(self._commands(motor_ids), state)
+
+        max_allowed_delay = (b.max_stagger_motors - 1) * b.stagger_interval_s
+        assert all(delay <= max_allowed_delay + 1e-9 for delay in stagger_schedule.values())

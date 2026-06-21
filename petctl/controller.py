@@ -46,7 +46,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from petctl.config import LOOP_LIMITS
+from petctl.config import LOOP_LIMITS, POWER_BUDGET
 from petctl.perception.contact import ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import Backend, Motion, Visualizer
@@ -395,6 +395,15 @@ class Controller:
         self.log_touch = log_touch
         self.log_loop = log_loop
         self.power_manager = PowerManager()
+        if (
+            type(backend).__name__ == "RobotBackend"
+            and POWER_BUDGET.max_bus_current_a <= 2.0
+        ):
+            logger.warning(
+                "[Controller] Real robot running with dev power budget (%.1fA) — "
+                "set max_bus_current_a in config.py for production",
+                POWER_BUDGET.max_bus_current_a,
+            )
         self._gesture_processor = _GestureProcessor()
         self._last_gesture_sensor_ts: float = -1.0
         self._power_reset_requested: bool = False

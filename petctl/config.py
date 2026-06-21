@@ -196,7 +196,8 @@ class PowerBudgetConfig:
     # Thresholds are relative to the effective budget so they scale with power source.
     reactive_backstop_factor: float = 1.25  # start scaling at budget × 1.25
     reactive_cutoff_factor: float = 1.50    # scale=0.0 at budget × 1.50
-    reactive_ema_alpha: float = 0.1         # ~0.33 s window at 30 Hz
+    reactive_ema_alpha: float = 0.2         # ~0.17 s window at 30 Hz; attack direction
+    reactive_recovery_multiplier: float = 3.0  # EMA drains N× faster when current is falling
 
     # Power source auto-detection via bus voltage
     # Wall supply ≈14.7V, battery drains 15V→10V — clearly distinguishable
