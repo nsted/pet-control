@@ -248,7 +248,9 @@ class PowerManager:
         start = budget * b.reactive_backstop_factor
         zero = budget * b.reactive_cutoff_factor
 
-        v = self._current_ema
+        # Fast-attack, slow-decay: throttle immediately on any raw spike;
+        # recover gradually as the EMA drains back down.
+        v = max(current_a, self._current_ema)
         if v >= zero:
             new_scale = 0.0
         elif v >= start:

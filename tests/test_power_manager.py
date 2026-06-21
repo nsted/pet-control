@@ -389,13 +389,16 @@ class TestCurrentLimiting:
             w.tick(_state(current_a=2.75))
         assert w.pm._reactive_scale == pytest.approx(0.5, abs=0.02)
 
-    def test_ema_softens_brief_current_spike(self) -> None:
-        """A single-tick current spike should not immediately zero compliance."""
+    def test_spike_throttles_immediately_then_recovers(self) -> None:
+        """A raw current spike throttles immediately; scale recovers once spike clears."""
         w = _PM()
         for _ in range(50):
             w.tick(_state(current_a=1.0))
+        # Single tick at 10A — raw exceeds zero threshold (3.0A) → immediate cutoff
         w.tick(_state(current_a=10.0))
-        # EMA: 0.1*10 + 0.9*~1.0 ≈ 1.9A — still below 2.5A backstop start
+        assert w.pm._reactive_scale == pytest.approx(0.0, abs=0.01)
+        # Back to 1.0A — raw is below start threshold, EMA still elevated but draining
+        w.tick(_state(current_a=1.0))
         assert w.pm._reactive_scale == pytest.approx(1.0)
 
     def test_thermal_and_reactive_are_independent(self) -> None:
