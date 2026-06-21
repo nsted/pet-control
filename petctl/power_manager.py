@@ -1,5 +1,5 @@
 """
-petctl.power_manager — Motor thermal and voltage protection + predictive power budget.
+petctl.power_manager — Motor thermal and voltage protection + feedback-driven power budget.
 
 Safety-critical pure-logic module. No I/O, no async. All hardware actions are
 communicated back to the Controller via drain_disable_events() / drain_voltage_cutoff(),
@@ -8,9 +8,10 @@ which then calls the backend. PowerManager only consumes RobotState and produces
 Protection layers (in priority order):
   1. Thermal: per-motor temperature state machine (WARNING → DISABLED → EMERGENCY)
   2. Voltage cutoff: disables all motor torques below low_voltage_cutoff_v
-  3. Predictive budget: estimates per-motor current draw; bin-packs motors into
-     time slots so each slot stays within budget (stagger-first, not scale-first);
-     only scales individual motors that alone exceed the budget ceiling
+  3. Feedback budget: estimates per-motor current from actual torque + velocity
+     feedback (I ≈ copper-loss + mechanical-power/V); bin-packs motors into time
+     slots so each slot stays within budget; stagger releases progressively as
+     slot-0 torques settle; individual motors only scaled if they alone exceed budget
   4. Reactive EMA backstop: measured bus current safety net — reduction is
      concentrated on the heaviest-drawing motors so lighter ones keep full torque
 
@@ -28,7 +29,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
-from petctl.config import MOTOR_LIMITS, POWER_BUDGET
+from petctl.config import POWER_BUDGET
 from petctl.types import PowerTelemetry, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
@@ -338,17 +339,22 @@ class PowerManager:
     def allocate_budget(
         self, commands: list[ServoCommand], state: RobotState
     ) -> tuple[list[ServoCommand], dict[int, float]]:
-        """Predictive current estimation with slot-based stagger when over budget.
+        """Feedback-driven current estimation with slot-based stagger when over budget.
 
-        When predicted total current exceeds budget, motors are bin-packed into
-        time slots (heaviest estimated draw first) so each slot stays within
-        budget. Later slots are delayed by stagger_interval_s per slot index.
-        Individual motors are only scaled down when a single motor alone would
-        exceed the budget ceiling.
+        Per-motor current is estimated from actual torque and velocity reported
+        by the MIT reply frame, not from commanded pos_error:
+          I ≈ base + torque_coeff × τ² × (V_nom/V)   (copper loss)
+                   + mech_coeff × |τ × ω| / V         (mechanical power delivery)
+
+        When estimated total current exceeds budget, motors are bin-packed into
+        time slots (heaviest draw first) so each slot stays within budget. Later
+        slots are staggered by stagger_interval_s per slot index. The stagger
+        is refreshed each tick while over budget, releasing progressively as
+        slot-0 torques settle and total current drops. Individual motors are
+        only scaled when a single motor alone exceeds the budget ceiling.
 
         Reactive EMA backstop reduction is distributed non-uniformly: the
-        heaviest motors absorb the cut first so lighter motors can continue at
-        full torque while the big movers are throttled.
+        heaviest motors absorb the cut first so lighter motors keep full torque.
 
         Returns (scaled_commands, stagger_schedule) where stagger_schedule maps
         motor_id → delay_s.
@@ -357,24 +363,16 @@ class PowerManager:
         V = max(state.battery_voltage_v, 8.0)  # guard divide-by-zero on dead battery
         budget = self._effective_budget()
 
-        # 1. Estimate per-motor bus current draw
+        # 1. Estimate per-motor bus current from actual torque + velocity feedback.
+        # τ and ω are one frame delayed (last MIT reply) — fine for budget decisions.
+        # Motors with no feedback yet report 0 → default to base_a (conservatively low).
         estimates: dict[int, float] = {}
         for cmd in commands:
-            if cmd.position is None:
-                continue
-            phys_pos = state.servo_positions.get(cmd.servo_id, 0.0)
-            pos_error = abs(cmd.position - phys_pos)
-            tau_est = min(
-                abs(cmd.torque_ff) + cmd.kp * pos_error,
-                MOTOR_LIMITS.torque_max,
-            )
-            i_est = (
-                b.per_motor_base_a
-                + b.per_motor_torque_coeff * tau_est ** 2 * (b.bus_voltage_nominal_v / V)
-            )
-            if pos_error > b.transient_threshold_rad:
-                i_est *= b.transient_current_multiplier
-            estimates[cmd.servo_id] = i_est
+            tau = abs(state.motor_torques.get(cmd.servo_id, 0.0))
+            omega = abs(state.motor_velocities.get(cmd.servo_id, 0.0))
+            i_copper = b.per_motor_base_a + b.per_motor_torque_coeff * tau ** 2 * (b.bus_voltage_nominal_v / V)
+            i_mech = b.per_motor_mech_coeff * tau * omega / V
+            estimates[cmd.servo_id] = i_copper + i_mech
 
         i_total = sum(estimates.values())
         self._budget_total_est = i_total

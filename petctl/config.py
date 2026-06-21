@@ -176,15 +176,17 @@ class PowerBudgetConfig:
     max_bus_current_a: float = 2.0          # dev: 2.0; prod UPS: 4.0; prod wall: 6.0
     max_peak_current_a: float = 3.0         # dev: 3.0; prod UPS: 5.5; prod wall: 8.0
 
-    # Per-motor bus current model: I ≈ base + coeff × τ² × (V_nom / V_bus)
-    # Derived from bench data (GL40 II, Overcurrent=0.25, ~16.6 W stall power).
+    # Per-motor bus current model using actual torque + velocity feedback:
+    #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
+    #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
+    #
+    # Copper-loss coeff derived from bench data (GL40 II, Overcurrent=0.25,
+    # ~16.6 W stall power). Mechanical coeff is 1/η where η is drivetrain
+    # efficiency; 1.0 is conservative (assumes no regenerative recovery).
     per_motor_base_a: float = 0.06
     per_motor_torque_coeff: float = 20.0
+    per_motor_mech_coeff: float = 1.0        # τ×ω/V multiplier; tune down if regen recovery observed
     bus_voltage_nominal_v: float = 12.0
-
-    # Transient multiplier when a motor is starting a large move
-    transient_threshold_rad: float = 0.15   # pos_error above this = "transitioning"
-    transient_current_multiplier: float = 1.5
 
     # Stagger: over-budget large-delta motors are held for N TX ticks (largest first)
     stagger_interval_s: float = 0.020       # 1 TX tick at 50 Hz
