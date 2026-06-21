@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
-from petctl.config import POWER_BUDGET
+from petctl.config import MOTOR_LIMITS, POWER_BUDGET
 from petctl.types import PowerTelemetry, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
@@ -363,16 +363,42 @@ class PowerManager:
         V = max(state.battery_voltage_v, 8.0)  # guard divide-by-zero on dead battery
         budget = self._effective_budget()
 
-        # 1. Estimate per-motor bus current from actual torque + velocity feedback.
-        # τ and ω are one frame delayed (last MIT reply) — fine for budget decisions.
-        # Motors with no feedback yet report 0 → default to base_a (conservatively low).
+        # 1. Estimate per-motor bus current as max(feedback, command).
+        #
+        # Feedback estimate uses actual torque + velocity from the last MIT reply:
+        #   I_fb = base + torque_coeff × τ² × (V_nom/V) + mech_coeff × |τ×ω| / V
+        #
+        # Command estimate uses commanded pos_error + kp as a worst-case floor:
+        #   I_cmd = base + torque_coeff × τ_cmd² × (V_nom/V)
+        #   where τ_cmd = min(|torque_ff| + kp × pos_error, torque_max)
+        #
+        # Taking the max means: on cold start (τ_fb=0) or whenever a large move
+        # is commanded, the command estimate sets the floor so motors are staggered
+        # conservatively from the first tick. As feedback accrues, the actual load
+        # drives the estimate and lighter motors are released from stagger early.
         estimates: dict[int, float] = {}
         for cmd in commands:
-            tau = abs(state.motor_torques.get(cmd.servo_id, 0.0))
-            omega = abs(state.motor_velocities.get(cmd.servo_id, 0.0))
-            i_copper = b.per_motor_base_a + b.per_motor_torque_coeff * tau ** 2 * (b.bus_voltage_nominal_v / V)
-            i_mech = b.per_motor_mech_coeff * tau * omega / V
-            estimates[cmd.servo_id] = i_copper + i_mech
+            # Feedback estimate (one frame delayed — actual load last tick)
+            tau_fb = abs(state.motor_torques.get(cmd.servo_id, 0.0))
+            omega_fb = abs(state.motor_velocities.get(cmd.servo_id, 0.0))
+            i_fb = (
+                b.per_motor_base_a
+                + b.per_motor_torque_coeff * tau_fb ** 2 * (b.bus_voltage_nominal_v / V)
+                + b.per_motor_mech_coeff * tau_fb * omega_fb / V
+            )
+
+            # Command estimate (worst-case: what we're asking the motor to do)
+            if cmd.position is not None:
+                phys_pos = state.servo_positions.get(cmd.servo_id, 0.0)
+                tau_cmd = min(
+                    abs(cmd.torque_ff) + cmd.kp * abs(cmd.position - phys_pos),
+                    MOTOR_LIMITS.torque_max,
+                )
+                i_cmd = b.per_motor_base_a + b.per_motor_torque_coeff * tau_cmd ** 2 * (b.bus_voltage_nominal_v / V)
+            else:
+                i_cmd = b.per_motor_base_a
+
+            estimates[cmd.servo_id] = max(i_fb, i_cmd)
 
         i_total = sum(estimates.values())
         self._budget_total_est = i_total
