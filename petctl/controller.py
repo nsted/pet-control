@@ -610,6 +610,12 @@ class Controller:
                         await self.backend.disable_motor(_mid)
                     except Exception as e:
                         logger.error("[Controller] disable_motor(%d) error: %s", _mid, e)
+            if pm.drain_voltage_cutoff():
+                try:
+                    await self.backend.disable_torques()
+                    logger.warning("[Controller] Voltage cutoff: all motor torques disabled.")
+                except Exception as e:
+                    logger.error("[Controller] voltage_cutoff disable_torques error: %s", e)
             self._state.power_telemetry = pm.get_telemetry(self._state.battery_voltage_v)
 
             # Handle operator power-reset request
@@ -645,18 +651,24 @@ class Controller:
 
             self._apply_slew_to_commands(commands)
 
-            # 3. Send commands (unless dry run), filtered and scaled by PowerManager
+            # 3. Send commands (unless dry run), gated and scaled by PowerManager
             if not self.dry_run and commands:
-                safe_commands = []
-                for cmd in commands:
-                    if not pm.is_motor_enabled(cmd.servo_id):
-                        continue
+                # 3a. Thermal gating — skip disabled motors
+                enabled = [cmd for cmd in commands if pm.is_motor_enabled(cmd.servo_id)]
+
+                # 3b. Thermal compliance scale (independent of budget; handles WARNING state)
+                for cmd in enabled:
                     scale = pm.get_compliance_scale(cmd.servo_id)
                     if scale != 1.0:
                         cmd.kp *= scale
                         cmd.kd *= scale
                         cmd.torque_ff *= scale
-                    safe_commands.append(cmd)
+
+                # 3c. Predictive budget allocation + stagger schedule
+                safe_commands, stagger_schedule = pm.allocate_budget(enabled, self._state)
+                for _mid, _delay in stagger_schedule.items():
+                    self.backend.set_stagger(_mid, _delay)
+
                 if safe_commands:
                     try:
                         await self.backend.send_commands(safe_commands)

@@ -100,6 +100,13 @@ class Backend(ABC):
         (see `set_home` / `write_home_offsets` in `backends/robot.py`).
         """
 
+    def set_stagger(self, motor_id: int, delay_s: float) -> None:
+        """Delay the next TX frame for motor_id by delay_s seconds.
+
+        Default is a no-op (MockBackend). RobotBackend implements this via a
+        per-motor timestamp dict checked in _motor_tx_loop.
+        """
+
 
 # ---------------------------------------------------------------------------
 # Motion

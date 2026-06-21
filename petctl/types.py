@@ -29,7 +29,7 @@ class PowerTelemetry:
     voltage_state: str = "NORMAL"
     current_amps_raw: float = 0.0
     current_amps_filtered: float = 0.0
-    current_drive_scale: float = 1.0        # 1.0 = full drive; <1.0 = current-limited
+    current_drive_scale: float = 1.0        # reactive EMA backstop scale (1.0 = full drive)
     system_state: str = "RUNNING"
     # Per-motor state (keyed by servo_id)
     motor_states: dict[int, str] = field(default_factory=dict)
@@ -37,6 +37,12 @@ class PowerTelemetry:
     motor_compliance_scales: dict[int, float] = field(default_factory=dict)
     # State transition events since last tick
     events: list[str] = field(default_factory=list)
+    # Power budget telemetry
+    power_source: str = "battery"                                    # "battery" | "wall"
+    estimated_total_current_a: float = 0.0                          # model-predicted aggregate draw
+    per_motor_estimated_current: dict[int, float] = field(default_factory=dict)
+    budget_scale_applied: float = 1.0                               # <1.0 when budget was exceeded
+    voltage_cutoff_active: bool = False                             # True when < low_voltage_cutoff_v
 
 
 @dataclass

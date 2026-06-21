@@ -34,7 +34,7 @@ def _state(
     drive_temps: dict[int, int] | None = None,
     winding_temps: dict[int, int] | None = None,
     err_codes: dict[int, int] | None = None,
-    voltage_v: float = 14.5,
+    voltage_v: float = 12.0,
     current_a: float = 0.0,
 ) -> RobotState:
     """Build a minimal RobotState for testing."""
@@ -64,8 +64,12 @@ def _state(
 class _PM:
     """Thin wrapper to make tests more readable."""
 
-    def __init__(self, thresholds: PowerThresholds = _FAST_THRESHOLDS) -> None:
-        self.pm = PowerManager(thresholds)
+    def __init__(
+        self,
+        thresholds: PowerThresholds = _FAST_THRESHOLDS,
+        reactive_ema_alpha: float | None = None,
+    ) -> None:
+        self.pm = PowerManager(thresholds, reactive_ema_alpha=reactive_ema_alpha)
         self._now = 1000.0  # arbitrary start time
 
     def tick(self, state: RobotState, dt: float = 0.02) -> PowerManager:
@@ -360,28 +364,30 @@ class TestVoltageEMA:
 # ---------------------------------------------------------------------------
 
 class TestCurrentLimiting:
+    # Reactive backstop thresholds: budget=2.0A, start=2.0*1.25=2.5A, zero=2.0*1.5=3.0A
+    # Midpoint of 2.5–3.0 range = 2.75A → scale ≈ 0.5
+
     def test_below_threshold_scale_is_one(self) -> None:
-        """Current well below limit → compliance unaffected."""
+        """Current well below backstop → reactive scale unaffected."""
         w = _PM()
         for _ in range(100):
             w.tick(_state(motor_ids=[M1], current_a=1.0))
-        assert w.pm._current_drive_scale == pytest.approx(1.0)
+        assert w.pm._reactive_scale == pytest.approx(1.0)
         assert w.pm.get_compliance_scale(M1) == pytest.approx(1.0)
 
     def test_above_limit_scale_is_zero(self) -> None:
-        """Current saturated above limit → compliance zeroed."""
+        """Current saturated above backstop cutoff → reactive scale zeroed."""
         w = _PM()
         for _ in range(100):
             w.tick(_state(motor_ids=[M1], current_a=5.0))
-        assert w.pm._current_drive_scale == pytest.approx(0.0, abs=0.01)
-        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.0, abs=0.01)
+        assert w.pm._reactive_scale == pytest.approx(0.0, abs=0.01)
 
     def test_midpoint_scale(self) -> None:
-        """At 3.75A (midpoint of 3.5–4.0 range) → scale ≈ 0.5."""
+        """At 2.75A (midpoint of 2.5–3.0 backstop range) → reactive scale ≈ 0.5."""
         w = _PM()
         for _ in range(100):
-            w.tick(_state(current_a=3.75))
-        assert w.pm._current_drive_scale == pytest.approx(0.5, abs=0.02)
+            w.tick(_state(current_a=2.75))
+        assert w.pm._reactive_scale == pytest.approx(0.5, abs=0.02)
 
     def test_ema_softens_brief_current_spike(self) -> None:
         """A single-tick current spike should not immediately zero compliance."""
@@ -389,19 +395,25 @@ class TestCurrentLimiting:
         for _ in range(50):
             w.tick(_state(current_a=1.0))
         w.tick(_state(current_a=10.0))
-        # EMA: 0.1*10 + 0.9*~1.0 ≈ 1.9A — still well below 3.5A
-        assert w.pm._current_drive_scale == pytest.approx(1.0)
+        # EMA: 0.1*10 + 0.9*~1.0 ≈ 1.9A — still below 2.5A backstop start
+        assert w.pm._reactive_scale == pytest.approx(1.0)
 
-    def test_current_scale_multiplied_with_thermal(self) -> None:
-        """Compliance = thermal_scale × current_scale."""
-        t = PowerThresholds(
-            temp_hysteresis_cooldown_s=0.05,
-            current_ema_alpha=1.0,   # instant EMA for precise test
+    def test_thermal_and_reactive_are_independent(self) -> None:
+        """Thermal scale and reactive EMA backstop are independent signals.
+
+        get_compliance_scale() returns thermal only; reactive scale applies
+        separately via allocate_budget().
+        """
+        w = _PM(
+            PowerThresholds(temp_hysteresis_cooldown_s=0.05),
+            reactive_ema_alpha=1.0,  # instant EMA for precise test
         )
-        w = _PM(t)
-        # Thermal warning (scale=0.5) + current at midpoint (scale=0.5)
-        w.tick(_state(motor_ids=[M1], drive_temps={M1: 58}, current_a=3.75))
-        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.25, abs=0.01)
+        # Thermal warning (scale=0.5) + reactive at midpoint (2.75A → scale≈0.5)
+        w.tick(_state(motor_ids=[M1], drive_temps={M1: 58}, current_a=2.75))
+        # Thermal scale: get_compliance_scale returns thermal only
+        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.5, abs=0.01)
+        # Reactive scale: accessed separately
+        assert w.pm._reactive_scale == pytest.approx(0.5, abs=0.01)
 
 
 # ---------------------------------------------------------------------------

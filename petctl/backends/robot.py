@@ -119,6 +119,8 @@ class RobotBackend(_BackendBase):
         self._latest_battery_current_raw: int = 0
         self._latest_battery_voltage_raw: int = 0
         self._disabled_motor_ids: set[int] = set()
+        # Stagger: motor_id → monotonic time before which this motor's frame is held
+        self._stagger_until: dict[int, float] = {}
 
         # Monotonic timestamp of the last WS message received from the robot.
         # Used by _motor_tx_loop to detect silent TCP drops (no WS close frame).
@@ -270,6 +272,10 @@ class RobotBackend(_BackendBase):
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
             self._pending_frames[sid] = _encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff)
+
+    def set_stagger(self, motor_id: int, delay_s: float) -> None:
+        """Delay the next TX frame for motor_id by delay_s seconds."""
+        self._stagger_until[motor_id] = time.monotonic() + delay_s
 
     @property
     def is_connected(self) -> bool:
@@ -637,21 +643,26 @@ class RobotBackend(_BackendBase):
 
                 # Build one batched WS message with all motor frames (newline-separated).
                 # Arduino splits on '\n' and processes each SLCAN command in order.
+                # Staggered motors (set_stagger) hold their last frame until the delay expires.
                 if self._ws is not None:
                     frames = []
                     for mid in ids:
                         if mid in self._disabled_motor_ids:
                             continue
-                        pending = self._pending_frames.pop(mid, None)
-                        if pending is not None:
-                            frame = pending
-                            self._last_command_time[mid] = t0
+                        if t0 < self._stagger_until.get(mid, 0.0):
+                            # Stagger active: hold last sent frame, leave pending frame for next tick
+                            frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
                         else:
-                            idle_s = t0 - self._last_command_time.get(mid, 0.0)
-                            if idle_s <= LOOP_LIMITS.idle_hold_s:
-                                frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+                            pending = self._pending_frames.pop(mid, None)
+                            if pending is not None:
+                                frame = pending
+                                self._last_command_time[mid] = t0
                             else:
-                                frame = _encode_mit_zero(mid)
+                                idle_s = t0 - self._last_command_time.get(mid, 0.0)
+                                if idle_s <= LOOP_LIMITS.idle_hold_s:
+                                    frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+                                else:
+                                    frame = _encode_mit_zero(mid)
                         self._last_sent_frames[mid] = frame
                         frames.append(frame)
                     if frames:

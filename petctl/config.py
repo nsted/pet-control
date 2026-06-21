@@ -158,6 +158,56 @@ class BatteryConfig:
     voltage_offset_mv: float = -587.9    # mV — two-point empirical fit
 
 
+@dataclass(frozen=True)
+class PowerBudgetConfig:
+    """Predictive power budget constants for current management.
+
+    To switch between dev and production modes, change `max_bus_current_a`:
+      dev (0.5A Overcurrent):   max_bus_current_a=2.0, max_peak_current_a=3.0
+      prod UPS (1.5A Overcurrent): max_bus_current_a=4.0, max_peak_current_a=5.5
+      prod wall:                   max_bus_current_a=6.0, max_peak_current_a=8.0
+
+    The UPS passthrough (TZT DC UPS) is 4A continuous / 6A hardware peak; we
+    stay below the hardware peak with 5.5A. Wall supply is 15A but the slip
+    ring (4×2A conductors) limits aggregate to 8A (brief transient spikes tolerated).
+    """
+
+    # Continuous budget ceiling — single value to change between dev and production
+    max_bus_current_a: float = 2.0          # dev: 2.0; prod UPS: 4.0; prod wall: 6.0
+    max_peak_current_a: float = 3.0         # dev: 3.0; prod UPS: 5.5; prod wall: 8.0
+
+    # Per-motor bus current model: I ≈ base + coeff × τ² × (V_nom / V_bus)
+    # Derived from bench data (GL40 II, Overcurrent=0.25, ~16.6 W stall power).
+    per_motor_base_a: float = 0.06
+    per_motor_torque_coeff: float = 20.0
+    bus_voltage_nominal_v: float = 12.0
+
+    # Transient multiplier when a motor is starting a large move
+    transient_threshold_rad: float = 0.15   # pos_error above this = "transitioning"
+    transient_current_multiplier: float = 1.5
+
+    # Stagger: over-budget large-delta motors are held for N TX ticks (largest first)
+    stagger_interval_s: float = 0.020       # 1 TX tick at 50 Hz
+    max_stagger_motors: int = 4             # cap stagger depth
+
+    # Reactive EMA backstop (belt-and-suspenders over the predictive model)
+    # Thresholds are relative to the effective budget so they scale with power source.
+    reactive_backstop_factor: float = 1.25  # start scaling at budget × 1.25
+    reactive_cutoff_factor: float = 1.50    # scale=0.0 at budget × 1.50
+    reactive_ema_alpha: float = 0.1         # ~0.33 s window at 30 Hz
+
+    # Power source auto-detection via bus voltage
+    # Wall supply ≈14.7V, battery drains 15V→10V — clearly distinguishable
+    wall_voltage_threshold_v: float = 14.3
+    wall_confirm_ticks: int = 3             # consecutive readings required to switch
+    wall_max_bus_current_a: float = 6.0     # slip ring ceiling when on wall
+    wall_max_peak_current_a: float = 8.0
+
+    # Low-voltage motor cutoff (3S LiPo minimum safe discharge ≈10V)
+    low_voltage_cutoff_v: float = 10.0
+    low_voltage_recovery_v: float = 10.5    # hysteresis to prevent flapping
+
+
 # ---------------------------------------------------------------------------
 # Singleton instances — import these
 # ---------------------------------------------------------------------------
@@ -167,6 +217,7 @@ LOOP_LIMITS = ControlLoopLimits()
 BEHAVIOR_LIMITS = BehaviorLimits()
 SENSOR_LIMITS = SensorLimits()
 BATTERY_CONFIG = BatteryConfig()
+POWER_BUDGET = PowerBudgetConfig()
 
 # Total number of modules: head (0) + 6 middle + tail (7).
 NUM_MODULES: int = 8
