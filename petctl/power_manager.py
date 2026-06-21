@@ -137,6 +137,9 @@ class PowerManager:
         self._budget_total_est: float = 0.0
         self._budget_per_motor_est: dict[int, float] = {}
         self._pending_stagger: dict[int, float] = {}
+        # Tracks slot assignment from last tick — stagger delay is only issued when
+        # a motor newly enters a higher slot, not refreshed while it stays there.
+        self._active_stagger_slots: dict[int, int] = {}  # motor_id → slot_idx
 
         # Pending actions — drained once per tick by the Controller
         self._pending_disable_motor_ids: list[int] = []
@@ -439,10 +442,17 @@ class PowerManager:
                     slots.append([motor_id])
                     slot_totals.append(i_est)
 
+            # Issue stagger delays only when a motor newly enters a higher slot.
+            # Don't refresh while it stays in the same slot — the existing deadline
+            # counts down and fires, enabling progressive release one slot at a time.
+            new_slots: dict[int, int] = {}
             for slot_idx, slot in enumerate(slots):
-                if slot_idx > 0:
-                    for motor_id in slot:
-                        stagger_schedule[motor_id] = slot_idx * b.stagger_interval_s
+                for motor_id in slot:
+                    if slot_idx > 0:
+                        new_slots[motor_id] = slot_idx
+                        if self._active_stagger_slots.get(motor_id) != slot_idx:
+                            stagger_schedule[motor_id] = slot_idx * b.stagger_interval_s
+            self._active_stagger_slots = new_slots
 
             if stagger_schedule:
                 logger.debug(
@@ -454,6 +464,7 @@ class PowerManager:
             for motor_id, i_est in estimates.items():
                 per_motor_predictive[motor_id] = budget / i_est if i_est > budget else 1.0
         else:
+            self._active_stagger_slots.clear()
             per_motor_predictive = {mid: 1.0 for mid in estimates}
 
         # 4. Combine predictive and reactive scales per motor (most restrictive wins)
