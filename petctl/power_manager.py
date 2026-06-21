@@ -342,8 +342,10 @@ class PowerManager:
         Returns (scaled_commands, stagger_schedule) where stagger_schedule maps
         motor_id → delay_s for motors to hold in the backend TX loop.
 
-        The reactive EMA backstop scale is combined with the predictive scale —
-        whichever is more restrictive wins.
+        Predictive scale is applied uniformly when aggregate current exceeds budget.
+        Reactive EMA backstop reduction is distributed non-uniformly: the heaviest
+        motors absorb the cut first so lighter motors can continue at full torque.
+        Per-motor scale = min(predictive_global, reactive_per_motor).
         """
         b = POWER_BUDGET
         V = max(state.battery_voltage_v, 8.0)  # guard divide-by-zero on dead battery
@@ -376,16 +378,25 @@ class PowerManager:
         self._budget_total_est = i_total
         self._budget_per_motor_est = dict(estimates)
 
-        # 2. Compute effective scale (most restrictive of predictive and reactive backstop)
-        effective_scale = self._reactive_scale
-        if i_total > budget:
-            predictive_scale = budget / i_total
-            effective_scale = min(effective_scale, predictive_scale)
-        self._budget_scale = effective_scale
+        # 2. Per-motor reactive scale: concentrate reduction on heaviest motors first
+        # so lighter motors keep full torque while big movers are throttled.
+        per_motor_reactive: dict[int, float] = {}
+        if self._reactive_scale < 1.0 and estimates:
+            reduction_remaining = i_total * (1.0 - self._reactive_scale)
+            for motor_id, i_est in sorted(estimates.items(), key=lambda x: x[1], reverse=True):
+                if reduction_remaining <= 0:
+                    per_motor_reactive[motor_id] = 1.0
+                else:
+                    cut = min(reduction_remaining, i_est)
+                    per_motor_reactive[motor_id] = max(0.0, (i_est - cut) / i_est) if i_est > 0 else 1.0
+                    reduction_remaining -= cut
 
-        # 3. Stagger schedule: when over-budget, delay largest-delta transient motors
+        # 3. Predictive scale: proportional when aggregate exceeds budget
+        predictive_scale = 1.0
         stagger_schedule: dict[int, float] = {}
         if i_total > budget:
+            predictive_scale = budget / i_total
+            # Stagger: delay largest-delta transient motors to spread current spikes
             transient = [
                 (mid, d) for mid, d in pos_deltas.items()
                 if d > b.transient_threshold_rad
@@ -395,17 +406,25 @@ class PowerManager:
                 if rank > 0:  # rank 0 (largest delta) gets priority — no delay
                     stagger_schedule[mid] = b.stagger_interval_s * rank
 
-        # 4. Apply scale to commands
-        if effective_scale >= 1.0:
+        # 4. Per-motor scale: most restrictive of predictive and reactive
+        per_motor_scale: dict[int, float] = {
+            mid: min(predictive_scale, per_motor_reactive.get(mid, 1.0))
+            for mid in estimates
+        }
+        self._budget_scale = min(per_motor_scale.values()) if per_motor_scale else 1.0
+
+        # 5. Apply per-motor scales to commands
+        if all(s >= 1.0 for s in per_motor_scale.values()):
             return commands, stagger_schedule
 
         scaled: list[ServoCommand] = []
         for cmd in commands:
-            if cmd.servo_id in estimates:
+            s = per_motor_scale.get(cmd.servo_id, 1.0)
+            if s < 1.0:
                 cmd = replace(cmd,
-                    kp=cmd.kp * effective_scale,
-                    kd=cmd.kd * effective_scale,
-                    torque_ff=cmd.torque_ff * effective_scale,
+                    kp=cmd.kp * s,
+                    kd=cmd.kd * s,
+                    torque_ff=cmd.torque_ff * s,
                 )
             scaled.append(cmd)
         return scaled, stagger_schedule
