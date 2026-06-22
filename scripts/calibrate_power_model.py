@@ -19,10 +19,13 @@ Joint notes:
   - MIT torque feedback has a large zero offset (~0.3 Nm). Corrected by
     measuring tau_offset in Phase 2 and subtracting before regression.
 
-Calibration approach — torque pulses (kp=0):
-  With kp=0, kd=kd_max, torque_ff=T, the motor accelerates smoothly with no
-  position-feedback oscillation. tau_fb ≈ T during the transient before omega
-  gets large. Alternating +T/-T pulses keep the motor near home.
+Calibration approach — torque pulses (kp=0, kd≈0):
+  With kp=0, kd=_KD_PULSE (0.002), torque_ff=T, the motor accelerates smoothly.
+  Using kd_max (0.04) would drive the motor to velocity equilibrium omega_eq=T/kd
+  where tau_fb→0 and I_load→0 — no calibration signal. _KD_PULSE is chosen so
+  that kd×omega_abort << T throughout, keeping tau_fb ≈ T and I_load measurable.
+  Alternating +T/-T pulses keep the motor near home. Settling between pulses uses
+  kd_max (strong regenerative braking) via _idle_cmd.
   Both torque_coeff and mech_coeff are determined from the same dataset because
   tau and omega are separable across pulse magnitudes and within each pulse.
 
@@ -79,6 +82,14 @@ _N_REPS = 20
 # regenerating; further samples corrupt the copper-loss measurement.
 _OMEGA_MAX_PULSE = 15.0  # rad/s
 
+# kd used during torque pulses. Must be << tau_ff/omega_abort so that
+# kd×omega << tau_ff throughout the pulse, keeping tau_fb ≈ tau_ff.
+# With kd_max=0.04 the motor equilibrates at omega_eq=tau_ff/kd (e.g. 12.5 rad/s
+# at 0.5 Nm), driving tau_fb → 0 — no signal to fit. kd=0.002 gives
+# omega_eq=125 rad/s (never reached) and kd×omega < 0.03 Nm at abort=15 rad/s.
+# Settling uses kd_max (strong braking) via _idle_cmd; this only affects pulses.
+_KD_PULSE = 0.002
+
 # Velocity threshold used to decide "motor has settled" between pulses.
 # kd-only braking has time constant J/kd ≈ 0.075 s; settling is fast.
 _SETTLE_OMEGA_RAD_S = 0.10
@@ -126,10 +137,12 @@ async def _collect(
     duration_s: float,
     phase: str,
     cmd_fn=None,
+    extra_cmds: list[ServoCommand] | None = None,
 ) -> list[Sample]:
     """Run at TICK_HZ for duration_s, collecting one Sample per tick.
 
     cmd_fn(t_elapsed) → ServoCommand — called each tick and sent immediately.
+    extra_cmds are appended to every send_commands() batch (used to relax other motors).
     """
     samples: list[Sample] = []
     start = time.monotonic()
@@ -139,8 +152,11 @@ async def _collect(
         if elapsed >= duration_s:
             break
 
+        cmds: list[ServoCommand] = list(extra_cmds) if extra_cmds else []
         if cmd_fn is not None:
-            await backend.send_commands([cmd_fn(elapsed)])
+            cmds.append(cmd_fn(elapsed))
+        if cmds:
+            await backend.send_commands(cmds)
 
         state = await backend.get_state()
         samples.append(Sample(
@@ -168,21 +184,47 @@ def _idle_cmd(pos: float) -> ServoCommand:
     )
 
 
+def _relax_cmd(servo_id: int, pos: float) -> ServoCommand:
+    """kp=0: free-wheeling velocity damper for non-calibration motors.
+
+    Sending this to motors 1-6 removes their position spring (kp_default=0.4)
+    so they can't fight back when joint 7 is pulsed and excite body resonance.
+    kd_max provides enough damping to prevent runaway.
+    """
+    return ServoCommand(
+        servo_id=servo_id,
+        position=pos,
+        kp=0.0,
+        kd=MOTOR_LIMITS.kd_max,
+        torque_ff=0.0,
+    )
+
+
 def _torque_cmd(pos: float, torque_ff: float) -> ServoCommand:
-    """kp=0 with torque feedforward: motor accelerates under torque_ff with damping."""
+    """kp=0 with torque feedforward: motor accelerates under torque_ff with minimal damping.
+
+    Uses _KD_PULSE (not kd_max) so that kd×omega << torque_ff throughout the
+    pulse and tau_fb ≈ torque_ff — the quantity we need for power regression.
+    Settling between pulses uses _idle_cmd with kd_max for fast braking.
+    """
     return ServoCommand(
         servo_id=MOTOR_ID,
         position=pos,
         kp=0.0,
-        kd=MOTOR_LIMITS.kd_max,
+        kd=_KD_PULSE,
         torque_ff=torque_ff,
     )
 
 
-async def _wait_settled(backend: RobotBackend, pos: float) -> float:
+async def _wait_settled(
+    backend: RobotBackend,
+    pos: float,
+    extra_cmds: list[ServoCommand] | None = None,
+) -> float:
     """Send idle (kp=0, kd_max) commands until |omega| < threshold or timeout.
 
     Returns elapsed time. Prints a dot each second so the user can see progress.
+    extra_cmds are sent alongside the idle command each tick (relax other motors).
     """
     start = time.monotonic()
     last_print = start
@@ -193,7 +235,10 @@ async def _wait_settled(backend: RobotBackend, pos: float) -> float:
             print(f" (timeout after {elapsed:.0f} s)")
             break
 
-        await backend.send_commands([_idle_cmd(pos)])
+        cmds = [_idle_cmd(pos)]
+        if extra_cmds:
+            cmds.extend(extra_cmds)
+        await backend.send_commands(cmds)
         state = await backend.get_state()
         omega = state.motor_velocities.get(MOTOR_ID, 0.0)
 
@@ -258,18 +303,23 @@ async def _validate(backend: RobotBackend) -> float:
     return home_pos
 
 
-async def _idle_baseline(backend: RobotBackend, home_pos: float) -> tuple[float, float]:
+async def _idle_baseline(
+    backend: RobotBackend,
+    home_pos: float,
+    extra_cmds: list[ServoCommand] | None = None,
+) -> tuple[float, float]:
     """5 s idle at home (kp=0). Returns (I_idle, tau_offset).
 
     tau_offset is the systematic zero offset in the MIT torque feedback. Since
     gravity is negligible and the motor is at rest with no spring force, any
     non-zero tau_fb is a sensor bias that must be subtracted before regression.
+    extra_cmds are sent alongside each idle command (relax other motors).
     """
     _banner("Phase 2 — Idle baseline (5 s at rest)")
 
     # Wait until truly still, then collect.
-    await _wait_settled(backend, home_pos)
-    samples = await _collect(backend, 5.0, "idle", lambda t: _idle_cmd(home_pos))
+    await _wait_settled(backend, home_pos, extra_cmds)
+    samples = await _collect(backend, 5.0, "idle", lambda t: _idle_cmd(home_pos), extra_cmds)
 
     i_idle = float(np.mean([s.i_bus for s in samples]))
     v_mean = float(np.mean([s.v_bus for s in samples]))
@@ -290,6 +340,7 @@ async def _one_pulse(
     home_pos: float,
     t_ff: float,
     phase_label: str,
+    extra_cmds: list[ServoCommand] | None = None,
 ) -> list[Sample]:
     """Apply one torque pulse, stopping early if |omega| exceeds _OMEGA_MAX_PULSE."""
     samples: list[Sample] = []
@@ -298,7 +349,10 @@ async def _one_pulse(
         t0 = time.monotonic()
         if t0 - start >= _PULSE_DURATION_S:
             break
-        await backend.send_commands([_torque_cmd(home_pos, t_ff)])
+        cmds = [_torque_cmd(home_pos, t_ff)]
+        if extra_cmds:
+            cmds.extend(extra_cmds)
+        await backend.send_commands(cmds)
         state = await backend.get_state()
         omega = state.motor_velocities.get(MOTOR_ID, 0.0)
         samples.append(Sample(
@@ -315,7 +369,11 @@ async def _one_pulse(
     return samples
 
 
-async def _torque_pulses(backend: RobotBackend, home_pos: float) -> list[Sample]:
+async def _torque_pulses(
+    backend: RobotBackend,
+    home_pos: float,
+    extra_cmds: list[ServoCommand] | None = None,
+) -> list[Sample]:
     """Repeated short +T/-T torque pulses to generate (tau, omega, I_bus) data.
 
     kp=0 throughout — no position spring, no oscillation. Each pulse is cut
@@ -323,23 +381,21 @@ async def _torque_pulses(backend: RobotBackend, home_pos: float) -> list[Sample]
     resistive (copper-loss) regime and out of the regenerative regime at high ω.
 
     _N_REPS repetitions per (magnitude, direction) pair improve SNR by sqrt(N).
+    extra_cmds are forwarded to each pulse and settle tick (relax other motors).
     """
     _banner("Phase 3 — Torque pulses (kp=0)")
     all_samples: list[Sample] = []
-    total = len(_PULSE_TORQUES_NM) * 2 * _N_REPS
 
-    n = 0
     for T in _PULSE_TORQUES_NM:
         for sign, label in [(+1, "+"), (-1, "−")]:
             t_ff = sign * T
             phase_label = f"pulse_{label}{T:.1f}Nm"
             rep_samples: list[Sample] = []
 
-            for rep in range(_N_REPS):
-                n += 1
-                pulse = await _one_pulse(backend, home_pos, t_ff, phase_label)
+            for _rep in range(_N_REPS):
+                pulse = await _one_pulse(backend, home_pos, t_ff, phase_label, extra_cmds)
                 rep_samples.extend(pulse)
-                await _wait_settled(backend, home_pos)
+                await _wait_settled(backend, home_pos, extra_cmds)
 
             tau_mean = float(np.mean([abs(s.tau) for s in rep_samples]))
             omega_mean = float(np.mean([abs(s.omega) for s in rep_samples]))
@@ -453,16 +509,29 @@ async def run(host: str, port: int, skip_prompts: bool) -> None:
         # ── Phase 1: validate ──────────────────────────────────────────────────
         home_pos = await _validate(backend)
 
+        # Build relax commands for all other motors at their current positions.
+        # kp=0 removes the position spring so they can't excite body resonance
+        # when motor 7 is pulsed during calibration.
+        state0 = await backend.get_state()
+        other_ids = [m for m in motors if m != MOTOR_ID]
+        relax_cmds: list[ServoCommand] = [
+            _relax_cmd(mid, state0.servo_positions.get(mid, 0.0))
+            for mid in other_ids
+        ]
+        if relax_cmds:
+            print(f"  Relaxing motors {other_ids} (kp=0) to suppress body resonance.")
+            await backend.send_commands(relax_cmds)
+
         # ── Phase 2: idle baseline ─────────────────────────────────────────────
         await _prompt("Phase 2 ready (5 s idle at current position)", skip_prompts)
-        i_idle, tau_offset = await _idle_baseline(backend, home_pos)
+        i_idle, tau_offset = await _idle_baseline(backend, home_pos, relax_cmds)
 
         # ── Phase 3: torque pulses ─────────────────────────────────────────────
         await _prompt(
             "Phase 3 ready (torque pulses — motor 7 will spin briefly, ~3 min total)",
             skip_prompts,
         )
-        pulse_samples = await _torque_pulses(backend, home_pos)
+        pulse_samples = await _torque_pulses(backend, home_pos, relax_cmds)
 
         print(f"\n  Total samples for regression: {len(pulse_samples)}")
 
@@ -502,7 +571,7 @@ async def run(host: str, port: int, skip_prompts: bool) -> None:
         # Brake to a stop then disengage.
         print("\n  Braking motor 7 (kd-only) ...")
         try:
-            await _wait_settled(backend, home_pos)
+            await _wait_settled(backend, home_pos)  # no relax_cmds — cleanup only
         except Exception:
             pass
         await backend.disable_torques()

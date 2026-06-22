@@ -180,13 +180,15 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # torque_coeff calibrated on GL40 II (Overcurrent=0.25) via Module 7 sinusoidal
-    # sweeps — near-static cross-check (|ω|<0.15 rad/s, n=31): 1.19; rounded up to
-    # 1.2 for safety margin. mech_coeff kept at 1.0 (no regen assumed) pending a
-    # cleaner high-velocity dataset.
+    # torque_coeff: near-static cross-check (|ω|<0.15 rad/s, n=31) → 1.19; dynamic
+    # torque-pulse runs (overcurrent=0.25) → 1.0–1.07. Used 1.1 as balanced estimate.
+    # mech_coeff: free-spinning calibration cannot separate τ² and τ×ω features
+    # (both increase together on a free rotor — regression is near-singular). All runs
+    # returned near-zero (0.02–0.03) but this is likely noise. Set to 0.3 as a
+    # conservative mid-range value; the reactive EMA backstop handles actual overcurrent.
     per_motor_base_a: float = 0.06
-    per_motor_torque_coeff: float = 1.2
-    per_motor_mech_coeff: float = 1.0        # 1/eta; tune down if regen recovery observed
+    per_motor_torque_coeff: float = 1.1
+    per_motor_mech_coeff: float = 0.3        # calibration unreliable; reactive backstop covers residual error
     bus_voltage_nominal_v: float = 12.0
 
     # Stagger: over-budget large-delta motors are held for N TX ticks (largest first)
