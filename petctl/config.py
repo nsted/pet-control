@@ -180,14 +180,15 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # torque_coeff: near-static cross-check (|ω|<0.15 rad/s, n=31) → 1.19; dynamic
-    # torque-pulse runs (overcurrent=0.25) → 1.0–1.07. Used 1.1 as balanced estimate.
-    # mech_coeff: free-spinning calibration cannot separate τ² and τ×ω features
-    # (both increase together on a free rotor — regression is near-singular). All runs
-    # returned near-zero (0.02–0.03) but this is likely noise. Set to 0.3 as a
-    # conservative mid-range value; the reactive EMA backstop handles actual overcurrent.
+    # torque_coeff: static-hold calibration, motor 7, user grips tail (kp=0, kd_max,
+    # torque_ff 0.05→0.15 Nm, other motors idle). Per-level R²≈0.88; sample-level
+    # R²=0.21 is low because ADC noise (15 mA/bit) dominates within each level.
+    # Previous near-static estimate (1.19) was confounded: all 7 motors running,
+    # regressing total I_bus against only τ_7² inflated the coefficient.
+    # mech_coeff: uncalibratable from free-spin (τ² and τ×ω collinear on free rotor).
+    # 0.3 is a conservative estimate; the reactive EMA backstop covers residual error.
     per_motor_base_a: float = 0.06
-    per_motor_torque_coeff: float = 1.1
+    per_motor_torque_coeff: float = 0.72
     per_motor_mech_coeff: float = 0.3        # calibration unreliable; reactive backstop covers residual error
     bus_voltage_nominal_v: float = 12.0
 
