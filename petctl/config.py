@@ -180,15 +180,13 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # torque_coeff: static-hold calibration, motor 7, user grips tail (kp=0, kd_max,
-    # torque_ff 0.05→0.15 Nm, other motors idle). Per-level R²≈0.88; sample-level
-    # R²=0.21 is low because ADC noise (15 mA/bit) dominates within each level.
-    # Previous near-static estimate (1.19) was confounded: all 7 motors running,
-    # regressing total I_bus against only τ_7² inflated the coefficient.
+    # torque_coeff: previous static-hold run (0.05–0.15 Nm) gave 0.72 but the signal
+    # was < 1 ADC bit (15 mA/bit) — too noisy to be meaningful.  Reverted to 1.1
+    # pending a re-run at 0.3–0.9 Nm where I_load is well above the noise floor.
     # mech_coeff: uncalibratable from free-spin (τ² and τ×ω collinear on free rotor).
     # 0.3 is a conservative estimate; the reactive EMA backstop covers residual error.
     per_motor_base_a: float = 0.06
-    per_motor_torque_coeff: float = 0.72
+    per_motor_torque_coeff: float = 1.1
     per_motor_mech_coeff: float = 0.3        # calibration unreliable; reactive backstop covers residual error
     bus_voltage_nominal_v: float = 12.0
 

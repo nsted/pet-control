@@ -40,23 +40,28 @@ TICK_HZ  = 30
 DT       = 1.0 / TICK_HZ
 
 # Torque levels to hold against user's hand, in Nm.
-# Stay below the overcurrent=0.25 empirical limit (~0.15 Nm observed peak).
-_TORQUE_LEVELS_NM: list[float] = [0.05, 0.08, 0.10, 0.13, 0.15]
+# At overcurrent=0.25 the motor can draw up to ~1.5 A total bus current; with
+# a 0.62 A idle baseline that leaves ~0.88 A of I_load headroom ≈ 1 Nm of torque.
+# Previous calibration used 0.05–0.15 Nm: I_load was 3–13 mA (< 1 ADC bit at
+# 15 mA/bit) — entirely noise.  At ≥0.5 Nm the signal is well above the floor.
+_TORQUE_LEVELS_NM: list[float] = [0.3, 0.5, 0.7, 0.9]
 
 # Each level is held for this long after the ramp completes.
 _HOLD_DURATION_S = 3.0
 
 # Number of ramp steps from 0 → target and target → 0.
-# Slow ramp avoids sudden jerk if the grip isn't ready.
-_RAMP_STEPS = 8
-_RAMP_DT    = 0.06          # seconds per step → 0.5 s total ramp
+# Slower ramp at higher torques avoids sudden jerk if the grip isn't fully set.
+_RAMP_STEPS = 12
+_RAMP_DT    = 0.08          # seconds per step → ~1 s total ramp
 
 # Skip the first N samples of each hold (let τ_fb stabilise after ramp).
 _HOLD_SKIP_TICKS = 5
 
-# If |omega| exceeds this during a hold, the level is flagged as a grip-slip
-# and excluded from regression.
-_SLIP_OMEGA_RAD_S = 0.5
+# Slip detection: if |omega| during a hold exceeds the idle baseline by more
+# than this margin, the level is flagged as a grip-slip and excluded.
+# The body oscillates at ~1.5-2 rad/s even at rest; threshold must be above
+# that floor or everything gets falsely excluded.
+_SLIP_OMEGA_MARGIN = 1.5   # rad/s above idle baseline
 
 _V_BUS_MIN_SANE = 5.0
 
@@ -95,8 +100,16 @@ def _motor_cmd(pos: float, torque_ff: float = 0.0) -> ServoCommand:
     )
 
 
-async def _send(backend: RobotBackend, cmd: ServoCommand) -> None:
-    await backend.send_commands([cmd])
+def _relax_cmd(servo_id: int, pos: float) -> ServoCommand:
+    """kp=0, kd_max, no torque — motors 1-6 sit limp so their current is stable."""
+    return ServoCommand(servo_id=servo_id, position=pos, kp=0.0,
+                        kd=MOTOR_LIMITS.kd_max, torque_ff=0.0)
+
+
+async def _send(backend: RobotBackend, cmd: ServoCommand,
+                extra: list[ServoCommand] | None = None) -> None:
+    cmds = [cmd] + (extra or [])
+    await backend.send_commands(cmds)
 
 
 async def _collect_hold(
@@ -105,6 +118,7 @@ async def _collect_hold(
     torque_ff: float,
     duration_s: float,
     phase: str,
+    relax_cmds: list[ServoCommand] | None = None,
 ) -> list[Sample]:
     """Hold a fixed torque for duration_s seconds and collect samples."""
     samples: list[Sample] = []
@@ -114,7 +128,7 @@ async def _collect_hold(
         elapsed = t0 - start
         if elapsed >= duration_s:
             break
-        await _send(backend, _motor_cmd(pos, torque_ff))
+        await _send(backend, _motor_cmd(pos, torque_ff), relax_cmds)
         state = await backend.get_state()
         samples.append(Sample(
             phase=phase,
@@ -133,27 +147,35 @@ async def _ramp(
     pos: float,
     t_start: float,
     t_end: float,
+    relax_cmds: list[ServoCommand] | None = None,
 ) -> None:
     """Linearly ramp torque_ff from t_start to t_end over _RAMP_STEPS ticks."""
     for i in range(_RAMP_STEPS + 1):
         frac = i / _RAMP_STEPS
         t_ff = t_start + frac * (t_end - t_start)
-        await _send(backend, _motor_cmd(pos, t_ff))
+        await _send(backend, _motor_cmd(pos, t_ff), relax_cmds)
         await asyncio.sleep(_RAMP_DT)
 
 
-async def _validate(backend: RobotBackend) -> float:
+async def _validate(backend: RobotBackend, motors: set[int]) -> float:
     """4 s warm-up; returns home position. Aborts if ADC or motor not responding."""
     _banner("Phase 1 — Sensor validation (4 s warm-up)")
 
     state = await backend.get_state()
     home_pos = state.servo_positions.get(MOTOR_ID, 0.0)
 
+    # Relax all other motors so their position-hold current doesn't add noise.
+    other_positions = {
+        mid: state.servo_positions.get(mid, 0.0)
+        for mid in motors if mid != MOTOR_ID
+    }
+    relax_cmds = [_relax_cmd(mid, pos) for mid, pos in other_positions.items()]
+
     samples: list[Sample] = []
     start = time.monotonic()
     while time.monotonic() - start < 4.0:
         t0 = time.monotonic()
-        await _send(backend, _motor_cmd(home_pos))
+        await _send(backend, _motor_cmd(home_pos), relax_cmds)
         state = await backend.get_state()
         samples.append(Sample(
             phase="warmup", t=t0 - start,
@@ -179,30 +201,38 @@ async def _validate(backend: RobotBackend) -> float:
         )
 
     print(f"  Motor {MOTOR_ID} OK  (home = {math.degrees(home_pos):.1f}°)")
-    return home_pos
+    return home_pos, relax_cmds
 
 
-async def _idle_baseline(backend: RobotBackend, home_pos: float) -> tuple[float, float]:
-    """5 s idle at rest; returns (I_idle, tau_offset)."""
+async def _idle_baseline(
+    backend: RobotBackend,
+    home_pos: float,
+    relax_cmds: list[ServoCommand],
+) -> tuple[float, float, float]:
+    """5 s idle at rest; returns (I_idle, tau_offset, slip_thresh)."""
     _banner("Phase 2 — Idle baseline (5 s, motor at rest, NOT holding yet)")
-    samples = await _collect_hold(backend, home_pos, 0.0, 5.0, "idle")
-    i_idle     = float(np.mean([s.i_bus for s in samples]))
-    tau_offset = float(np.mean([s.tau   for s in samples]))
-    omega_mean = float(np.mean([abs(s.omega) for s in samples]))
+    samples = await _collect_hold(backend, home_pos, 0.0, 5.0, "idle", relax_cmds)
+    i_idle      = float(np.mean([s.i_bus for s in samples]))
+    tau_offset  = float(np.mean([s.tau   for s in samples]))
+    omega_mean  = float(np.mean([abs(s.omega) for s in samples]))
     print(f"  I_idle     = {i_idle:.4f} A")
     print(f"  tau_offset = {tau_offset:.4f} Nm  (sensor bias at rest)")
-    print(f"  |omega|    = {omega_mean:.4f} rad/s  (should be ~0)")
-    return i_idle, tau_offset
+    print(f"  |omega|    = {omega_mean:.4f} rad/s  (body oscillation baseline)")
+    slip_thresh = omega_mean + _SLIP_OMEGA_MARGIN
+    print(f"  Slip threshold set to {slip_thresh:.2f} rad/s (baseline + {_SLIP_OMEGA_MARGIN} rad/s margin)")
+    return i_idle, tau_offset, slip_thresh
 
 
 async def _static_holds(
     backend: RobotBackend,
     home_pos: float,
+    slip_thresh: float,
+    relax_cmds: list[ServoCommand],
 ) -> list[Sample]:
     """Ramp through torque levels (both directions) while user holds the joint.
 
     Each level: slow ramp up → hold → slow ramp down.
-    Levels where |omega| exceeds _SLIP_OMEGA_RAD_S are flagged (grip slipped).
+    Levels where |omega| exceeds slip_thresh are flagged (grip slipped).
     """
     _banner("Phase 3 — Static holds (you grip the tail joint)")
     all_samples: list[Sample] = []
@@ -213,13 +243,13 @@ async def _static_holds(
             phase_lbl = f"hold_{label}{T:.2f}Nm"
 
             # Ramp up
-            await _ramp(backend, home_pos, 0.0, t_ff)
+            await _ramp(backend, home_pos, 0.0, t_ff, relax_cmds)
 
             # Hold and collect
-            raw = await _collect_hold(backend, home_pos, t_ff, _HOLD_DURATION_S, phase_lbl)
+            raw = await _collect_hold(backend, home_pos, t_ff, _HOLD_DURATION_S, phase_lbl, relax_cmds)
 
             # Ramp back down
-            await _ramp(backend, home_pos, t_ff, 0.0)
+            await _ramp(backend, home_pos, t_ff, 0.0, relax_cmds)
 
             # Analyse hold quality (skip first N ticks)
             usable = raw[_HOLD_SKIP_TICKS:]
@@ -230,7 +260,7 @@ async def _static_holds(
             tau_mean  = float(np.mean([abs(s.tau)   for s in usable]))
             omega_max = float(np.max ([abs(s.omega)  for s in usable]))
             i_mean    = float(np.mean([s.i_bus       for s in usable]))
-            slipped   = omega_max > _SLIP_OMEGA_RAD_S
+            slipped   = omega_max > slip_thresh
 
             status = "SLIP — excluded" if slipped else "OK"
             print(
@@ -314,21 +344,22 @@ async def run(host: str, port: int) -> None:
         return
 
     home_pos = 0.0
+    relax_cmds: list[ServoCommand] = []
     try:
-        home_pos = await _validate(backend)
+        home_pos, relax_cmds = await _validate(backend, motors)
 
         await _prompt("Phase 2 ready — motor will idle at rest for 5 s (do NOT touch the robot)")
-        i_idle, tau_offset = await _idle_baseline(backend, home_pos)
+        i_idle, tau_offset, slip_thresh = await _idle_baseline(backend, home_pos, relax_cmds)
 
         print(
             "\n  Phase 3: GRIP THE TAIL SEGMENT (module 7) FIRMLY.\n"
             "  Resist the motor in both push directions.\n"
-            "  The motor will apply torque in small steps — hold steady.\n"
+            "  The motor will apply torque in steps up to ~0.9 Nm — hold steady.\n"
             "  If the joint slips, that level is automatically excluded.\n"
         )
         await _prompt("Grip the tail joint firmly and hold it, then press Enter")
 
-        hold_samples = await _static_holds(backend, home_pos)
+        hold_samples = await _static_holds(backend, home_pos, slip_thresh, relax_cmds)
 
         await _prompt("You can release the tail now")
 
