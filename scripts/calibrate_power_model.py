@@ -64,20 +64,27 @@ DT       = 1.0 / TICK_HZ
 # Torque magnitudes to apply as brief pulses. Each magnitude is applied twice:
 # once in the + direction and once in the - direction so the motor stays near
 # home and we sample both positive and negative tau_fb.
-_PULSE_TORQUES_NM: list[float] = [0.1, 0.3, 0.5, 0.7, 1.0]
+_PULSE_TORQUES_NM: list[float] = [0.1, 0.2, 0.3, 0.4, 0.5]
 
-# How long each torque pulse lasts. Short enough that the motor doesn't drift
-# far from home; long enough to get good tau and omega variation within a pulse.
-# At T=1.0 Nm and J~0.09: omega_peak ≈ T/J × t = 5.5 rad/s after 0.5 s.
-_PULSE_DURATION_S = 0.5
+# Pulse duration. Must be short enough that the motor doesn't reach vel_max
+# (30 rad/s) before the pulse ends. With J ~ 0.003 kg·m² and T=0.5 Nm:
+# t_max = J × vel_max / T = 0.003 × 30 / 0.5 = 0.18 s — so 0.1 s keeps ω low.
+_PULSE_DURATION_S = 0.10
+
+# Each (magnitude, direction) pair is repeated this many times for averaging.
+# SNR improves as sqrt(N_REPS): 20 reps gives ~4.5× noise reduction.
+_N_REPS = 20
+
+# Abort a pulse early if |omega| exceeds this — motor is at saturation and
+# regenerating; further samples corrupt the copper-loss measurement.
+_OMEGA_MAX_PULSE = 15.0  # rad/s
 
 # Velocity threshold used to decide "motor has settled" between pulses.
-# The braking phase (kp=0, kd=kd_max, torque_ff=0) applies pure velocity damping
-# with time constant J/kd ≈ 2 s; wait until the ringing/drift drops to this level.
-_SETTLE_OMEGA_RAD_S = 0.05
+# kd-only braking has time constant J/kd ≈ 0.075 s; settling is fast.
+_SETTLE_OMEGA_RAD_S = 0.10
 
 # Maximum time to wait for settling between pulses before proceeding anyway.
-_SETTLE_TIMEOUT_S = 20.0
+_SETTLE_TIMEOUT_S = 5.0
 
 # Battery ADC sanity: raw=0 gives V_bus≈-0.59V, I_bus≈12.5A from the calibration formula.
 # Anything below 5 V indicates the head ADS1015 hasn't populated yet or isn't running.
@@ -278,45 +285,72 @@ async def _idle_baseline(backend: RobotBackend, home_pos: float) -> tuple[float,
     return i_idle, tau_offset
 
 
+async def _one_pulse(
+    backend: RobotBackend,
+    home_pos: float,
+    t_ff: float,
+    phase_label: str,
+) -> list[Sample]:
+    """Apply one torque pulse, stopping early if |omega| exceeds _OMEGA_MAX_PULSE."""
+    samples: list[Sample] = []
+    start = time.monotonic()
+    while True:
+        t0 = time.monotonic()
+        if t0 - start >= _PULSE_DURATION_S:
+            break
+        await backend.send_commands([_torque_cmd(home_pos, t_ff)])
+        state = await backend.get_state()
+        omega = state.motor_velocities.get(MOTOR_ID, 0.0)
+        samples.append(Sample(
+            phase=phase_label,
+            t=t0 - start,
+            tau=state.motor_torques.get(MOTOR_ID, 0.0),
+            omega=omega,
+            i_bus=state.battery_current_amps,
+            v_bus=state.battery_voltage_v,
+        ))
+        if abs(omega) >= _OMEGA_MAX_PULSE:
+            break
+        await asyncio.sleep(max(0.0, DT - (time.monotonic() - t0)))
+    return samples
+
+
 async def _torque_pulses(backend: RobotBackend, home_pos: float) -> list[Sample]:
-    """Brief +T/-T torque pulses to generate (tau, omega, I_bus) calibration data.
+    """Repeated short +T/-T torque pulses to generate (tau, omega, I_bus) data.
 
-    kp=0 throughout — no position spring, no oscillation. With kp=0 and
-    kd=kd_max, the motor responds to torque_ff smoothly: it accelerates during
-    the pulse and decelerates under pure velocity damping between pulses.
+    kp=0 throughout — no position spring, no oscillation. Each pulse is cut
+    short if |omega| reaches _OMEGA_MAX_PULSE, keeping the motor in the
+    resistive (copper-loss) regime and out of the regenerative regime at high ω.
 
-    Each magnitude T is applied as a +T pulse then a -T pulse so the motor
-    returns approximately to home before the next magnitude.
-
-    The braking between pulses uses kd-only damping (time constant J/kd ≈ 2 s)
-    and waits until |omega| < _SETTLE_OMEGA_RAD_S before proceeding.
+    _N_REPS repetitions per (magnitude, direction) pair improve SNR by sqrt(N).
     """
     _banner("Phase 3 — Torque pulses (kp=0)")
     all_samples: list[Sample] = []
+    total = len(_PULSE_TORQUES_NM) * 2 * _N_REPS
 
+    n = 0
     for T in _PULSE_TORQUES_NM:
         for sign, label in [(+1, "+"), (-1, "−")]:
             t_ff = sign * T
-            print(f"\n  Pulse {label}{T:.1f} Nm × {_PULSE_DURATION_S:.1f} s ...")
+            phase_label = f"pulse_{label}{T:.1f}Nm"
+            rep_samples: list[Sample] = []
 
-            def cmd_fn(t: float, _pos=home_pos, _tff=t_ff) -> ServoCommand:
-                return _torque_cmd(_pos, _tff)
+            for rep in range(_N_REPS):
+                n += 1
+                pulse = await _one_pulse(backend, home_pos, t_ff, phase_label)
+                rep_samples.extend(pulse)
+                await _wait_settled(backend, home_pos)
 
-            samples = await _collect(backend, _PULSE_DURATION_S, f"pulse_{label}{T:.1f}Nm", cmd_fn)
-
-            tau_peak = float(np.max(np.abs([s.tau for s in samples])))
-            omega_peak = float(np.max(np.abs([s.omega for s in samples])))
-            i_mean = float(np.mean([s.i_bus for s in samples]))
+            tau_mean = float(np.mean([abs(s.tau) for s in rep_samples]))
+            omega_mean = float(np.mean([abs(s.omega) for s in rep_samples]))
+            i_mean = float(np.mean([s.i_bus for s in rep_samples]))
+            n_samp = len(rep_samples)
             print(
-                f"  |τ_fb|_peak = {tau_peak:.4f} Nm   "
-                f"|ω|_peak = {omega_peak:.4f} rad/s   "
-                f"I_bus_mean = {i_mean:.4f} A"
+                f"  {label}{T:.1f} Nm × {_N_REPS} reps ({n_samp} samples):  "
+                f"|τ_fb|={tau_mean:.4f} Nm  |ω|={omega_mean:.3f} rad/s  "
+                f"I_bus={i_mean:.4f} A"
             )
-            all_samples.extend(samples)
-
-            # Brake and wait for motor to settle before next pulse.
-            print(f"  Braking (kd-only) — waiting for |ω| < {_SETTLE_OMEGA_RAD_S} rad/s ...")
-            await _wait_settled(backend, home_pos)
+            all_samples.extend(rep_samples)
 
     return all_samples
 
