@@ -41,6 +41,7 @@ import asyncio
 import datetime
 import json
 import math
+import sys
 import time
 from dataclasses import dataclass
 
@@ -86,11 +87,18 @@ class Sample:
     v_bus: float   # bus voltage (V)
 
 
-def _prompt(msg: str, skip: bool) -> None:
+async def _prompt(msg: str, skip: bool) -> None:
+    """Print a prompt and wait for Enter without blocking the asyncio event loop.
+
+    input() is a blocking call that freezes the entire event loop, killing the
+    backend TX loop's RX watchdog and leaving the motor unresponsive. Running it
+    in a thread executor lets the TX/receive loops keep ticking while we wait.
+    """
     if skip:
         print(f"  [auto] {msg}")
     else:
-        input(f"\n  >>> {msg} — press Enter to continue... ")
+        print(f"\n  >>> {msg} — press Enter to continue... ", end="", flush=True)
+        await asyncio.to_thread(sys.stdin.readline)
 
 
 def _banner(title: str) -> None:
@@ -327,7 +335,7 @@ async def run(host: str, port: int, skip_prompts: bool) -> None:
         "\n  Robot must be lying flat. Module 7 joint must be free to rotate.\n"
         "  All other modules should be unloaded."
     )
-    _prompt("Confirm robot is flat and clear", skip_prompts)
+    await _prompt("Confirm robot is flat and clear", skip_prompts)
 
     home_pos = 0.0
     try:
@@ -335,11 +343,11 @@ async def run(host: str, port: int, skip_prompts: bool) -> None:
         home_pos = await _validate(backend)
 
         # ── Phase 2: idle baseline ─────────────────────────────────────────────
-        _prompt("Phase 2 ready (5 s idle at current position)", skip_prompts)
+        await _prompt("Phase 2 ready (5 s idle at current position)", skip_prompts)
         i_idle = await _idle_baseline(backend, home_pos)
 
         # ── Phase 3: dynamic sweeps ────────────────────────────────────────────
-        _prompt(
+        await _prompt(
             "Phase 3 ready (sinusoidal sweeps — motor 7 will move up to ±45°, ~2.5 min total)",
             skip_prompts,
         )
