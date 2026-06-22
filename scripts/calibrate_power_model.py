@@ -2,21 +2,29 @@
 """
 Fit GL40 II per-motor power model coefficients using Module 7.
 
-The model being fitted:
-    I_bus = I_electronics + base_a
-            + torque_coeff × τ² × (V_nom / V_bus)   [copper loss]
-            + mech_coeff  × |τ × ω| / V_bus          [mechanical power]
+The model being fitted (against measured bus current):
+    I_bus = I_idle + torque_coeff × τ² × (V_nom / V_bus)   [copper loss]
+                   + mech_coeff  × |τ × ω| / V_bus          [mechanical power]
 
-Robot must be lying flat on a surface. The Module 7 joint is Z-axis revolute,
-so gravity contributes no torque when the robot is horizontal. All other motors
-should be in limp mode (not commanded).
+where I_idle = I_electronics + base_a is measured during the idle phase and
+subtracted so the regression only needs to explain the load-dependent terms.
+
+Robot must be lying flat. All other motors should be unloaded.
+Do NOT restrain the motor shaft — it must swing freely so torque and velocity
+vary across the sweep and the two regression features are separable.
+
+Joint geometry: the rotation axis is ~45 deg from the ground when the robot
+lies flat, so rotating the joint moves the segment CoM up and down. Gravity
+contributes an angle-dependent torque (tau_gravity ~ m*g*r*sin(angle)). This
+is fine for calibration — the motor produces real torque fighting gravity,
+giving a valid copper-loss signal. The regression fits tau_fb^2 regardless of
+whether the torque source is gravity or inertia.
 
 Phases:
-  1  Electronics baseline — all motors limp, 5 s of quiescent bus current
-  2  Motor idle           — motor 7 enabled at rest, zero commanded torque, 5 s
-  3  Dynamic sweep        — sinusoidal position commands at varying amplitude
-                            and frequency; collects (τ, ω, I, V) at 30 Hz
-  4  Regression           — least-squares fit; prints PowerBudgetConfig snippet
+  1  Sensor validation    — enable motor 7, wait for MIT replies and battery ADC
+  2  Idle baseline        — 5 s at rest; measures I_electronics + per-motor base_a
+  3  Dynamic sweeps       — sinusoidal position commands at varied amplitude/frequency
+  4  Regression           — least-squares fit; cross-checks copper-loss at ω≈0
 
 Raw samples are saved to a timestamped JSONL file for offline re-analysis.
 
@@ -35,7 +43,6 @@ import json
 import math
 import time
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 
@@ -43,26 +50,30 @@ from petctl.backends.robot import ROBOT_DEFAULT_HOST, ROBOT_DEFAULT_PORT, RobotB
 from petctl.config import MOTOR_LIMITS, POWER_BUDGET
 from petctl.types import ServoCommand
 
-MOTOR_ID   = 7
-TICK_HZ    = 30
-DT         = 1.0 / TICK_HZ
+MOTOR_ID = 7
+TICK_HZ  = 30
+DT       = 1.0 / TICK_HZ
 
-# Sweep schedule: (amplitude_deg, frequency_hz, num_cycles) — lower amps first.
-# Four sweeps span a range of (τ, ω) combinations needed for a well-conditioned fit.
+# Sweep schedule: (amplitude_deg, frequency_hz, num_cycles).
+# kp_default (0.4) used throughout — kp_max (1.5) with kd_max (0.04) is underdamped
+# for the tail segment (kd_crit >> kd_max), causing motor oscillation that
+# overwhelms the commanded velocity range and ruins the regression.
 _SWEEPS: list[tuple[float, float, int]] = [
-    (15.0, 0.10,  5),   # slow + small: low τ, low ω
-    (30.0, 0.20,  6),   # medium: moderate τ and ω
-    (45.0, 0.30,  7),   # larger amplitude: higher τ during acceleration
-    (20.0, 0.50, 10),   # fast + medium: higher ω, separates mech_coeff
+    (15.0, 0.10,  5),   # slow: many near-zero-velocity points for copper-loss cross-check
+    (30.0, 0.20,  6),   # medium: moderate torque and velocity
+    (45.0, 0.30,  7),   # larger amplitude: higher inertial torque
+    (20.0, 0.50, 10),   # fast: higher velocity, separates mech_coeff
+    (10.0, 1.00, 15),   # higher frequency: wider velocity range for mech_coeff fit
 ]
 
-# Torque_ff steps for an optional stationary copper-loss sweep (Phase 3b).
-# Sent with kp=kp_max, kd=kd_max to hold position while injecting torque.
-# Motor will deflect slightly but ω stays near zero, isolating copper loss.
-_TORQUE_STEPS = [0.0, 0.05, 0.10, 0.20, 0.35, 0.50]  # Nm; stays well below torque_max
+# Near-zero velocity threshold for copper-loss cross-check.
+# 0.15 rad/s captures velocity zero crossings from the slow sweeps without
+# including the high-velocity mechanical-power-dominated regime.
+_OMEGA_STATIC = 0.15  # rad/s
 
-# Near-zero velocity threshold for extracting copper-loss-only points
-_OMEGA_ZERO_THRESHOLD = 0.05  # rad/s
+# Battery ADC sanity: raw=0 gives V_bus≈-0.59V, I_bus≈12.5A from the calibration formula.
+# Anything below 5 V indicates the head ADS1015 hasn't populated yet or isn't running.
+_V_BUS_MIN_SANE = 5.0
 
 
 @dataclass
@@ -94,10 +105,9 @@ async def _collect(
     phase: str,
     cmd_fn=None,
 ) -> list[Sample]:
-    """Run for duration_s seconds at TICK_HZ, collecting one Sample per tick.
+    """Run at TICK_HZ for duration_s, collecting one Sample per tick.
 
-    cmd_fn(t_elapsed) → ServoCommand | None  — called each tick; None means
-    no command sent this tick (used for baseline with motor limp).
+    cmd_fn(t_elapsed) → ServoCommand — called each tick and sent immediately.
     """
     samples: list[Sample] = []
     start = time.monotonic()
@@ -108,9 +118,7 @@ async def _collect(
             break
 
         if cmd_fn is not None:
-            cmd = cmd_fn(elapsed)
-            if cmd is not None:
-                await backend.send_commands([cmd])
+            await backend.send_commands([cmd_fn(elapsed)])
 
         state = await backend.get_state()
         samples.append(Sample(
@@ -127,135 +135,119 @@ async def _collect(
     return samples
 
 
-async def _phase1_baseline(backend: RobotBackend) -> float:
-    """Electronics-only quiescent current. All motors limp."""
-    _banner("Phase 1 — Electronics baseline (all motors limp, 5 s)")
-    await backend.disable_torques()
-    await asyncio.sleep(0.5)  # let motor exit MIT mode
-
-    samples = await _collect(backend, 5.0, "baseline")
-    i_baseline = float(np.mean([s.i_bus for s in samples]))
-    v_mean = float(np.mean([s.v_bus for s in samples]))
-    print(f"  I_electronics = {i_baseline:.4f} A  (V_bus = {v_mean:.2f} V)")
-    return i_baseline
+def _hold_cmd(pos: float) -> ServoCommand:
+    return ServoCommand(
+        servo_id=MOTOR_ID,
+        position=pos,
+        kp=MOTOR_LIMITS.kp_default,
+        kd=MOTOR_LIMITS.kd_default,
+        torque_ff=0.0,
+    )
 
 
-async def _phase2_idle(
-    backend: RobotBackend,
-    i_baseline: float,
-) -> tuple[float, float]:
-    """Motor enabled at rest, zero commanded torque. Returns (base_a, home_pos)."""
-    _banner("Phase 2 — Motor idle (5 s at rest)")
+async def _validate(backend: RobotBackend) -> float:
+    """Enable motor 7, wait for MIT replies and battery ADC, return home position.
 
-    # Read current position before enabling
+    Aborts (raises RuntimeError) if battery ADC isn't reporting or motor
+    doesn't appear in position feedback after 4 s.
+
+    NOTE: does NOT call disable_torques(). Disabling all motors sends MIT
+    exit-motor-mode to every motor, which stops the TX loop and causes the
+    Arduino to go silent — triggering a spurious 10 s reconnect that leaves
+    the session in a broken state. Avoid it.
+    """
+    _banner("Phase 1 — Sensor validation (4 s warm-up)")
+
     state = await backend.get_state()
     home_pos = state.servo_positions.get(MOTOR_ID, 0.0)
-    print(f"  Motor 7 home position: {math.degrees(home_pos):.1f}°")
 
-    def cmd_fn(t: float) -> ServoCommand:
-        return ServoCommand(
-            servo_id=MOTOR_ID,
-            position=home_pos,
-            kp=MOTOR_LIMITS.kp_default,
-            kd=MOTOR_LIMITS.kd_default,
-            torque_ff=0.0,
+    # Warm up: send hold commands so MIT reply frames start flowing.
+    samples = await _collect(backend, 4.0, "warmup", lambda t: _hold_cmd(home_pos))
+
+    # --- Battery ADC check ---
+    v_vals = [s.v_bus for s in samples[-30:]]   # last ~1 s
+    v_mean = float(np.mean(v_vals))
+    i_vals = [s.i_bus for s in samples[-30:]]
+    i_mean = float(np.mean(i_vals))
+    print(f"  V_bus = {v_mean:.2f} V   I_bus = {i_mean:.3f} A")
+
+    if v_mean < _V_BUS_MIN_SANE:
+        raise RuntimeError(
+            f"Battery ADC not reporting (V_bus={v_mean:.2f} V — raw=0 gives −0.59 V).\n"
+            "  Check that the head module is powered and the ADS1015 is initialised.\n"
+            "  Without bus-current telemetry this calibration cannot run."
         )
 
-    samples = await _collect(backend, 5.0, "idle", cmd_fn)
+    # --- Motor feedback check ---
+    tau_vals = [s.tau for s in samples[-30:]]
+    pos_ok = MOTOR_ID in (await backend.get_state()).servo_positions
+    tau_nonzero = any(abs(t) > 1e-4 for t in tau_vals)
+    if not pos_ok and not tau_nonzero:
+        raise RuntimeError(
+            f"Motor {MOTOR_ID} not responding — no position or torque feedback after 4 s.\n"
+            "  Verify the motor is powered and the CAN bus is active."
+        )
+
+    print(f"  Motor {MOTOR_ID} feedback OK  (home = {math.degrees(home_pos):.1f}°)")
+    return home_pos
+
+
+async def _idle_baseline(backend: RobotBackend, home_pos: float) -> float:
+    """5 s idle at home position. Returns mean I_bus (electronics + per-motor base_a)."""
+    _banner("Phase 2 — Idle baseline (5 s at rest)")
+
+    samples = await _collect(backend, 5.0, "idle", lambda t: _hold_cmd(home_pos))
+
     i_idle = float(np.mean([s.i_bus for s in samples]))
-    base_a = i_idle - i_baseline
-    print(f"  I_motor_idle  = {i_idle:.4f} A")
-    print(f"  base_a        = {base_a:.4f} A  (idle - electronics)")
-    return base_a, home_pos
+    v_mean = float(np.mean([s.v_bus for s in samples]))
+    tau_mean = float(np.mean([abs(s.tau) for s in samples]))
+    print(f"  I_idle = {i_idle:.4f} A   V_bus = {v_mean:.2f} V   |τ_fb| ≈ {tau_mean:.4f} Nm")
+    print(f"  (I_idle includes electronics quiescent + motor-7 idle draw)")
+    return i_idle
 
 
-async def _phase3_sweeps(
-    backend: RobotBackend,
-    home_pos: float,
-    skip_prompts: bool,
-) -> list[Sample]:
-    """Dynamic sweeps: sinusoidal position commands at varying amplitude/frequency."""
-    _banner("Phase 3a — Dynamic sweeps")
+async def _dynamic_sweeps(backend: RobotBackend, home_pos: float) -> list[Sample]:
+    """Sinusoidal position sweeps at kp_default across 5 (amplitude, frequency) pairs."""
+    _banner("Phase 3 — Dynamic sweeps")
     all_samples: list[Sample] = []
 
     for amp_deg, freq_hz, n_cycles in _SWEEPS:
         amp_rad = math.radians(amp_deg)
         duration_s = n_cycles / freq_hz
-        omega_max = amp_rad * 2 * math.pi * freq_hz
+        omega_peak = amp_rad * 2 * math.pi * freq_hz
 
         print(
-            f"\n  Sweep: ±{amp_deg:.0f}°  {freq_hz:.2f} Hz  "
-            f"{n_cycles} cycles  ({duration_s:.0f} s)  "
-            f"ω_peak≈{omega_max:.2f} rad/s"
+            f"\n  Sweep ±{amp_deg:.0f}°  {freq_hz:.2f} Hz  "
+            f"{n_cycles} cycles  ({duration_s:.0f} s)  ω_peak≈{omega_peak:.2f} rad/s"
         )
 
         def cmd_fn(t: float, _a=amp_rad, _f=freq_hz, _h=home_pos) -> ServoCommand:
-            pos = _h + _a * math.sin(2 * math.pi * _f * t)
             return ServoCommand(
                 servo_id=MOTOR_ID,
-                position=pos,
-                kp=MOTOR_LIMITS.kp_default,
+                position=_h + _a * math.sin(2 * math.pi * _f * t),
+                kp=MOTOR_LIMITS.kp_default,   # kp_max causes underdamped resonance
                 kd=MOTOR_LIMITS.kd_default,
                 torque_ff=0.0,
             )
 
         samples = await _collect(backend, duration_s, f"sweep_{amp_deg:.0f}deg_{freq_hz:.2f}hz", cmd_fn)
-        all_samples.extend(samples)
-        print(f"  Collected {len(samples)} samples")
-
-    return all_samples
-
-
-async def _phase3b_torque_steps(
-    backend: RobotBackend,
-    home_pos: float,
-) -> list[Sample]:
-    """Stationary torque injection to isolate copper-loss at near-zero velocity.
-
-    Motor holds home position with kp_max while torque_ff is stepped. Because
-    the robot is flat (no gravity load), ω stays near zero and copper loss
-    dominates the bus current.
-    """
-    _banner("Phase 3b — Stationary copper-loss sweep (torque_ff steps)")
-    all_samples: list[Sample] = []
-
-    for tau_ff in _TORQUE_STEPS:
-        hold_s = 2.0  # settle + collect at each torque level
-
-        def cmd_fn(t: float, _h=home_pos, _tau=tau_ff) -> ServoCommand:
-            return ServoCommand(
-                servo_id=MOTOR_ID,
-                position=_h,
-                kp=MOTOR_LIMITS.kp_max,
-                kd=MOTOR_LIMITS.kd_max,
-                torque_ff=_tau,
-            )
-
-        # Half a second settle, then collect
-        await _collect(backend, 0.5, "settle", cmd_fn)
-        samples = await _collect(backend, hold_s, f"torque_step_{tau_ff:.2f}Nm", cmd_fn)
-
-        tau_fb_mean = float(np.mean([abs(s.tau) for s in samples]))
-        omega_mean  = float(np.mean([abs(s.omega) for s in samples]))
-        i_mean      = float(np.mean([s.i_bus for s in samples]))
-        print(
-            f"  τ_ff={tau_ff:.2f} Nm  τ_fb≈{tau_fb_mean:.3f} Nm  "
-            f"ω≈{omega_mean:.3f} rad/s  I_bus≈{i_mean:.3f} A"
-        )
+        tau_peak = float(np.max(np.abs([s.tau for s in samples])))
+        print(f"  Collected {len(samples)} samples  |τ_fb|_max = {tau_peak:.4f} Nm")
         all_samples.extend(samples)
 
     return all_samples
+
 
 
 def _fit(
     samples: list[Sample],
-    i_baseline: float,
-    base_a: float,
+    i_idle: float,
 ) -> tuple[float, float]:
     """Least-squares fit of torque_coeff and mech_coeff.
 
-    Fits: I_load = torque_coeff × τ² × (V_nom/V) + mech_coeff × |τ×ω| / V
-    where I_load = I_bus - I_electronics - base_a.
+    Fits: I_load = torque_coeff × τ² × (V_nom/V) + mech_coeff × |τω| / V
+    where I_load = I_bus - I_idle strips the constant idle offset so the
+    regression only explains load-dependent current.
     """
     V_nom = POWER_BUDGET.bus_voltage_nominal_v
 
@@ -264,36 +256,44 @@ def _fit(
     i_bus  = np.array([s.i_bus for s in samples])
     v_bus  = np.clip(np.array([s.v_bus for s in samples]), 8.0, 40.0)
 
-    i_load = i_bus - i_baseline - base_a
+    i_load = i_bus - i_idle
 
     x1 = taus ** 2 * (V_nom / v_bus)       # copper-loss feature
     x2 = np.abs(taus * omegas) / v_bus      # mechanical-power feature
 
+    # Oscillation sanity check: if most samples have velocity far above the commanded
+    # sweep maximum (~1.6 rad/s), the motor was oscillating (likely kp too high).
+    frac_high_omega = float(np.mean(np.abs(omegas) > 2.0))
+    if frac_high_omega > 0.5:
+        print(
+            f"\n  WARNING: {100*frac_high_omega:.0f}% of samples have |omega| > 2 rad/s "
+            f"(commanded max ≈1.6). Motor was likely oscillating — regression will be "
+            f"unreliable. Check kp/kd settings in the sweep commands."
+        )
+
     A = np.column_stack([x1, x2])
-    coeffs, residuals, rank, sv = np.linalg.lstsq(A, i_load, rcond=None)
+    coeffs, _, rank, sv = np.linalg.lstsq(A, i_load, rcond=None)
 
     torque_coeff = float(coeffs[0])
     mech_coeff   = float(coeffs[1])
 
-    # Diagnostics
     i_pred = A @ coeffs
     ss_res = float(np.sum((i_load - i_pred) ** 2))
-    ss_tot = float(np.sum((i_load - np.mean(i_load)) ** 2))
+    ss_tot = float(np.sum((i_load - float(np.mean(i_load))) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    rms = math.sqrt(ss_res / max(len(samples), 1))
 
-    print(f"\n  Fit quality  R²={r2:.4f}  residual_rms={math.sqrt(ss_res / len(samples)):.4f} A")
-    print(f"  Matrix rank: {rank}  singular values: {sv}")
+    print(f"\n  R² = {r2:.4f}   residual rms = {rms:.4f} A")
+    print(f"  Matrix rank = {rank}   singular values = {sv}")
 
-    # Separate copper-loss fit on near-zero-velocity points
-    mask_static = np.abs(omegas) < _OMEGA_ZERO_THRESHOLD
-    n_static = int(np.sum(mask_static))
-    if n_static >= 5:
-        x1_s = x1[mask_static]
-        y_s  = i_load[mask_static]
-        tc_static = float(np.dot(x1_s, y_s) / np.dot(x1_s, x1_s))
-        print(f"  torque_coeff from {n_static} near-static points: {tc_static:.3f}  (cross-check)")
+    # Cross-check: torque_coeff from near-static points only (ω ≈ 0)
+    mask = np.abs(omegas) < _OMEGA_STATIC
+    n_static = int(np.sum(mask))
+    if n_static >= 5 and np.dot(x1[mask], x1[mask]) > 0:
+        tc_static = float(np.dot(x1[mask], i_load[mask]) / np.dot(x1[mask], x1[mask]))
+        print(f"  torque_coeff (near-static, n={n_static}): {tc_static:.3f}  [cross-check]")
     else:
-        print(f"  (< 5 near-static points — skipping copper-loss cross-check)")
+        print(f"  (< 5 near-static points — copper-loss cross-check skipped)")
 
     return torque_coeff, mech_coeff
 
@@ -302,14 +302,11 @@ def _save_jsonl(samples: list[Sample], path: str) -> None:
     with open(path, "w") as f:
         for s in samples:
             f.write(json.dumps({
-                "phase": s.phase,
-                "t": s.t,
-                "tau": s.tau,
-                "omega": s.omega,
-                "i_bus": s.i_bus,
-                "v_bus": s.v_bus,
+                "phase": s.phase, "t": s.t,
+                "tau": s.tau, "omega": s.omega,
+                "i_bus": s.i_bus, "v_bus": s.v_bus,
             }) + "\n")
-    print(f"\n  Raw samples saved → {path}")
+    print(f"  Raw samples → {path}")
 
 
 async def run(host: str, port: int, skip_prompts: bool) -> None:
@@ -327,70 +324,83 @@ async def run(host: str, port: int, skip_prompts: bool) -> None:
         return
 
     print(
-        "\n  Robot must be lying flat on a surface with module 7 free to rotate.\n"
-        "  All other modules should be unloaded (no external forces)."
+        "\n  Robot must be lying flat. Module 7 joint must be free to rotate.\n"
+        "  All other modules should be unloaded."
     )
     _prompt("Confirm robot is flat and clear", skip_prompts)
 
+    home_pos = 0.0
     try:
-        # ── Phase 1 ────────────────────────────────────────────────────────────
-        i_baseline = await _phase1_baseline(backend)
+        # ── Phase 1: validate ──────────────────────────────────────────────────
+        home_pos = await _validate(backend)
 
-        # ── Phase 2 ────────────────────────────────────────────────────────────
-        _prompt("Phase 2 ready (motor 7 will enable at its current position)", skip_prompts)
-        base_a, home_pos = await _phase2_idle(backend, i_baseline)
+        # ── Phase 2: idle baseline ─────────────────────────────────────────────
+        _prompt("Phase 2 ready (5 s idle at current position)", skip_prompts)
+        i_idle = await _idle_baseline(backend, home_pos)
 
-        # ── Phase 3a ───────────────────────────────────────────────────────────
-        _prompt("Phase 3a ready (sinusoidal sweeps — motor 7 will move ±45° max)", skip_prompts)
-        sweep_samples = await _phase3_sweeps(backend, home_pos, skip_prompts)
+        # ── Phase 3: dynamic sweeps ────────────────────────────────────────────
+        _prompt(
+            "Phase 3 ready (sinusoidal sweeps — motor 7 will move up to ±45°, ~2.5 min total)",
+            skip_prompts,
+        )
+        sweep_samples = await _dynamic_sweeps(backend, home_pos)
 
-        # ── Phase 3b ───────────────────────────────────────────────────────────
-        _prompt("Phase 3b ready (stationary torque steps — motor 7 holds position)", skip_prompts)
-        step_samples = await _phase3b_torque_steps(backend, home_pos)
+        print(f"\n  Total samples for regression: {len(sweep_samples)}")
 
-        all_phase3 = sweep_samples + step_samples
-        print(f"\n  Total phase-3 samples: {len(all_phase3)}")
-
-        # ── Phase 4: fit ───────────────────────────────────────────────────────
+        # ── Phase 4: regression ────────────────────────────────────────────────
         _banner("Phase 4 — Regression")
-        torque_coeff, mech_coeff = _fit(all_phase3, i_baseline, base_a)
+        torque_coeff, mech_coeff = _fit(sweep_samples, i_idle)
 
         # ── Results ────────────────────────────────────────────────────────────
         _banner("Results")
-        print(f"  Measured / fitted values (substitute in petctl/config.py):\n")
-        print(f"    per_motor_base_a:       {base_a:.4f}   # was {POWER_BUDGET.per_motor_base_a}")
-        print(f"    per_motor_torque_coeff: {torque_coeff:.3f}  # was {POWER_BUDGET.per_motor_torque_coeff}")
-        print(f"    per_motor_mech_coeff:   {mech_coeff:.4f}  # was {POWER_BUDGET.per_motor_mech_coeff}")
-        print(f"\n  Electronics quiescent (informational, not in config):")
-        print(f"    i_electronics: {i_baseline:.4f} A")
+        print("  Paste into petctl/config.py PowerBudgetConfig:\n")
+        print(f"    per_motor_torque_coeff: {torque_coeff:.3f}   # was {POWER_BUDGET.per_motor_torque_coeff:.1f}")
+        print(f"    per_motor_mech_coeff:   {mech_coeff:.4f}   # was {POWER_BUDGET.per_motor_mech_coeff:.1f}")
+        print(f"\n  Informational (not directly config values):")
+        print(f"    i_idle (electronics + motor-7 base): {i_idle:.4f} A")
+        print(f"    per_motor_base_a ≈ i_idle - I_electronics")
+        print(f"    (measure I_electronics separately with a DC bench supply + ammeter)")
 
-        # Warn about suspicious fit results
         if torque_coeff < 0:
-            print("\n  WARNING: torque_coeff is negative — data may be noisy or motion too gentle.")
-            print("           Increase sweep amplitude or try again with a heavier load.")
+            print(
+                "\n  WARNING: torque_coeff < 0 — τ_fb signal was too weak relative to noise.\n"
+                "  Check that τ_fb is non-zero during sweeps (printed above).\n"
+                "  If |τ_fb|_max ≈ 0 the motor was not in MIT mode during sweeps."
+            )
         if mech_coeff < 0:
-            print("\n  WARNING: mech_coeff is negative — mechanical power term underdetermined.")
-            print("           The fast sweep (0.5 Hz) may have insufficient velocity range.")
+            print(
+                "\n  WARNING: mech_coeff < 0 — mechanical power term underdetermined.\n"
+                "  Try faster sweeps or increase sweep amplitude."
+            )
 
         # ── Save raw data ──────────────────────────────────────────────────────
         ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log = f"power_calib_{ts}.jsonl"
-        _save_jsonl(all_phase3, log)
+        _save_jsonl(sweep_samples, log)
+
+    except RuntimeError as exc:
+        print(f"\n  ABORTED: {exc}")
 
     finally:
-        # Return motor to home and limp
-        print("\n  Returning motor 7 to home (0.0 rad) ...")
-        home_state = await backend.get_state()
-        cur = home_state.servo_positions.get(MOTOR_ID, 0.0)
-        steps = max(30, int(abs(cur) / 0.02))  # ~0.02 rad/step ≈ 1°/step
-        for i in range(steps):
-            frac = (i + 1) / steps
-            await backend.send_commands([
-                ServoCommand(servo_id=MOTOR_ID, position=cur * (1 - frac),
-                             kp=MOTOR_LIMITS.kp_default, kd=MOTOR_LIMITS.kd_default)
-            ])
-            await asyncio.sleep(DT)
-
+        # Return to home and limp
+        print("\n  Returning motor 7 to home ...")
+        try:
+            state = await backend.get_state()
+            cur = state.servo_positions.get(MOTOR_ID, 0.0)
+            steps = max(30, int(abs(cur - home_pos) / 0.02))
+            for i in range(steps):
+                frac = (i + 1) / steps
+                await backend.send_commands([
+                    ServoCommand(
+                        servo_id=MOTOR_ID,
+                        position=cur + (home_pos - cur) * frac,
+                        kp=MOTOR_LIMITS.kp_default,
+                        kd=MOTOR_LIMITS.kd_default,
+                    )
+                ])
+                await asyncio.sleep(DT)
+        except Exception:
+            pass
         await backend.disable_torques()
         await backend.disconnect()
         print("Done.")
@@ -400,9 +410,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calibrate GL40 II power model coefficients")
     parser.add_argument("--host", default=ROBOT_DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=ROBOT_DEFAULT_PORT)
-    parser.add_argument(
-        "--skip-prompts", action="store_true",
-        help="Run all phases without waiting for Enter between them"
-    )
+    parser.add_argument("--skip-prompts", action="store_true")
     args = parser.parse_args()
     asyncio.run(run(args.host, args.port, args.skip_prompts))

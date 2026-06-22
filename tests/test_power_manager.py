@@ -510,8 +510,8 @@ def _alloc_state(
 class TestStaggerCap:
     """max_stagger_motors caps slot depth when many motors are over budget."""
 
-    # τ=0.228 Nm → I_est ≈ 0.06 + 20×0.228² ≈ 1.1A > budget/2 → 1 motor per slot
-    _TAU = 0.228
+    # τ=1.0 Nm → I_est ≈ 0.06 + 1.2×1.0² = 1.26A > budget/2 (1.0A) → 1 motor per slot
+    _TAU = 1.0
 
     def _commands(self, motor_ids: list[int]) -> list[ServoCommand]:
         return [ServoCommand(servo_id=mid, position=None) for mid in motor_ids]

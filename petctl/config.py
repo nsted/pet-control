@@ -180,12 +180,13 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # Copper-loss coeff derived from bench data (GL40 II, Overcurrent=0.25,
-    # ~16.6 W stall power). Mechanical coeff is 1/η where η is drivetrain
-    # efficiency; 1.0 is conservative (assumes no regenerative recovery).
+    # torque_coeff calibrated on GL40 II (Overcurrent=0.25) via Module 7 sinusoidal
+    # sweeps — near-static cross-check (|ω|<0.15 rad/s, n=31): 1.19; rounded up to
+    # 1.2 for safety margin. mech_coeff kept at 1.0 (no regen assumed) pending a
+    # cleaner high-velocity dataset.
     per_motor_base_a: float = 0.06
-    per_motor_torque_coeff: float = 20.0
-    per_motor_mech_coeff: float = 1.0        # τ×ω/V multiplier; tune down if regen recovery observed
+    per_motor_torque_coeff: float = 1.2
+    per_motor_mech_coeff: float = 1.0        # 1/eta; tune down if regen recovery observed
     bus_voltage_nominal_v: float = 12.0
 
     # Stagger: over-budget large-delta motors are held for N TX ticks (largest first)
