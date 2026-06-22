@@ -180,9 +180,9 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # torque_coeff: static-hold calibration, motor 7 mechanically clamped (ω≈0),
-    # kp=0 kd_max torque_ff swept 0.3→0.9 Nm, other motors relaxed.
-    # R²=0.9939, n=672, residual rms=13 mA.  V_bus=14.68 V (adapter).
+    # torque_coeff: two independent mechanically-clamped runs, motor 7, kp=0 kd_max,
+    # torque_ff swept 0.3→0.9 Nm, other motors relaxed.  Run 1: 0.712 (R²=0.9939);
+    # run 2: 0.714 (R²=0.9946).  V_bus=14.6–14.7 V (adapter).
     # mech_coeff: uncalibratable from free-spin (τ² and τ×ω collinear on free rotor).
     # 0.3 is a conservative estimate; the reactive EMA backstop covers residual error.
     per_motor_base_a: float = 0.06
