@@ -155,7 +155,6 @@ class PowerManager:
         self._budget_scale: float = 1.0
         self._budget_total_est: float = 0.0
         self._budget_per_motor_est: dict[int, float] = {}
-        self._predictive_scaled_motors: set[int] = set()  # motors clamped by per-motor predictive scale last tick
 
         # Bin-pack state: active bin + pending queue
         self._active_motor_set: set[int] = set()
@@ -504,31 +503,9 @@ class PowerManager:
                     per_motor_reactive[motor_id] = max(0.0, (i_est - cut) / i_est) if i_est > 0 else 1.0
                     reduction_remaining -= cut
 
-        # 7. Per-motor scale for any active motor whose estimate alone exceeds budget.
-        per_motor_predictive: dict[int, float] = {
-            mid: budget / i_est if i_est > budget else 1.0
-            for mid, i_est in active_estimates.items()
-        }
-        newly_clamped = {mid for mid, s in per_motor_predictive.items() if s < 1.0} - self._predictive_scaled_motors
-        newly_cleared = self._predictive_scaled_motors - {mid for mid, s in per_motor_predictive.items() if s < 1.0}
-        for mid in newly_clamped:
-            i_est = active_estimates[mid]
-            logger.warning(
-                "[PowerManager] Motor %d exceeds budget predictively — clamping "
-                "(I_est=%.2fA budget=%.1fA scale=%.2f)",
-                mid, i_est, budget, per_motor_predictive[mid],
-            )
-            self._log_event(f"motor_{mid}_predictive_clamp: I_est={i_est:.2f}A budget={budget:.1f}A")
-        for mid in newly_cleared:
-            logger.info("[PowerManager] Motor %d predictive clamp released", mid)
-        self._predictive_scaled_motors = {mid for mid, s in per_motor_predictive.items() if s < 1.0}
-
-        # 8. Combine scales (most restrictive wins).
-        per_motor_scale: dict[int, float] = {
-            mid: min(per_motor_predictive.get(mid, 1.0), per_motor_reactive.get(mid, 1.0))
-            for mid in active_estimates
-        }
-        self._budget_scale = min(per_motor_scale.values()) if per_motor_scale else 1.0
+        # 7. Apply reactive scale — per_motor_reactive only contains motors being throttled.
+        self._budget_scale = min(per_motor_reactive.values()) if per_motor_reactive else 1.0
+        per_motor_scale = per_motor_reactive
 
         # 9. Build and return active commands (scaled) + pending IDs.
         cmd_map = {cmd.servo_id: cmd for cmd in commands}
