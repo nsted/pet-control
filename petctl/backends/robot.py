@@ -122,6 +122,11 @@ class RobotBackend(_BackendBase):
         # Stagger: motor_id → monotonic time before which this motor's frame is held
         self._stagger_until: dict[int, float] = {}
 
+        # Auto-recalibration: track how long each module has had cap active with no FSR.
+        self._stuck_since: dict[int, float] = {}   # mod_id → monotonic time stuck started
+        self._last_touch_recal_t: float = 0.0
+        self._needs_touch_recal: bool = False
+
         # Monotonic timestamp of the last WS message received from the robot.
         # Used by _motor_tx_loop to detect silent TCP drops (no WS close frame).
         self._last_rx_time: float = 0.0
@@ -691,8 +696,15 @@ class RobotBackend(_BackendBase):
                 await asyncio.sleep(0.01)
 
     def _apply_cap_filter(self, sensors: dict[int, ModuleSensors]) -> dict[int, ModuleSensors]:
-        """Apply per-pad sliding-window average to capacitive readings."""
+        """Apply per-pad asymmetric cap filter.
+
+        Activation: sliding-window average over cap_filter_window frames (smooth, noise-tolerant).
+        Release: forced to 0.0 once cap_clear_frames consecutive hardware zeros arrive, overriding
+        any historical 1s still in the window.  Prevents post-release noise or MPR121 baseline drift
+        from keeping pads elevated indefinitely.
+        """
         window = SENSOR_LIMITS.cap_filter_window
+        clear_n = SENSOR_LIMITS.cap_clear_frames
         result: dict[int, ModuleSensors] = {}
         for mod_id, ms in sensors.items():
             if mod_id not in self._cap_filter:
@@ -705,11 +717,24 @@ class RobotBackend(_BackendBase):
             for dq, v in zip(f["left"],   ms.touch_left_pads):   dq.append(v)
             for dq, v in zip(f["right"],  ms.touch_right_pads):  dq.append(v)
             for dq, v in zip(f["middle"], ms.touch_middle_pads): dq.append(v)
+
+            def _filtered(dq: collections.deque) -> float:
+                # Count consecutive zeros at the tail.
+                n_zeros = 0
+                for val in reversed(dq):
+                    if val == 0.0:
+                        n_zeros += 1
+                    else:
+                        break
+                if n_zeros >= clear_n:
+                    return 0.0
+                return sum(dq) / len(dq)
+
             result[mod_id] = ModuleSensors(
                 module_id=mod_id,
-                touch_left_pads=tuple(sum(dq) / len(dq) for dq in f["left"]),
-                touch_right_pads=tuple(sum(dq) / len(dq) for dq in f["right"]),
-                touch_middle_pads=tuple(sum(dq) / len(dq) for dq in f["middle"]),
+                touch_left_pads=tuple(_filtered(dq) for dq in f["left"]),
+                touch_right_pads=tuple(_filtered(dq) for dq in f["right"]),
+                touch_middle_pads=tuple(_filtered(dq) for dq in f["middle"]),
                 pressure_left=ms.pressure_left,
                 pressure_right=ms.pressure_right,
                 pressure_middle=ms.pressure_middle,
@@ -724,8 +749,44 @@ class RobotBackend(_BackendBase):
             self._latest_sensor_ts = time.monotonic()
             self._latest_battery_current_raw = batt_cur
             self._latest_battery_voltage_raw = batt_vol
+            self._check_stuck_touch(self._latest_sensors)
         else:
             logger.debug("[RobotBackend] Sensor push parse failed")
+
+    def _check_stuck_touch(self, sensors: dict[int, "ModuleSensors"]) -> None:
+        """Detect pads stuck on due to MPR121 baseline drift and flag for recalibration.
+
+        A module is considered stuck when any face's average is above
+        cap_stuck_min_face AND all FSRs are below cap_stuck_max_fsr — i.e. the
+        capacitive pad reads as touched but there is no physical pressure.  After
+        cap_stuck_timeout_s of continuous stuck state, _needs_touch_recal is set
+        so _receive_loop can schedule calibrate_touch() as a background task.
+        """
+        lim = SENSOR_LIMITS
+        now = time.monotonic()
+        if self._needs_touch_recal:
+            return  # already flagged; wait for it to fire
+        if now - self._last_touch_recal_t < lim.cap_stuck_recal_cooldown_s:
+            return  # in cooldown
+
+        for mod_id, ms in sensors.items():
+            max_face = max(ms.touch_left, ms.touch_right, ms.touch_middle)
+            no_pressure = ms.pressure_total < lim.cap_stuck_max_fsr
+            if max_face > lim.cap_stuck_min_face and no_pressure:
+                if mod_id not in self._stuck_since:
+                    self._stuck_since[mod_id] = now
+                elif now - self._stuck_since[mod_id] >= lim.cap_stuck_timeout_s:
+                    logger.info(
+                        "[RobotBackend] Module %d stuck (cap=%.2f fsr=%.3f) for %.0fs — "
+                        "scheduling touch recalibration",
+                        mod_id, max_face, ms.pressure_total,
+                        now - self._stuck_since[mod_id],
+                    )
+                    self._needs_touch_recal = True
+                    self._stuck_since.clear()
+                    return
+            else:
+                self._stuck_since.pop(mod_id, None)
 
     def _handle_imu_push(self, data: str) -> None:
         """Process an unsolicited IMU push from the Arduino (~25 Hz).
@@ -843,6 +904,63 @@ class RobotBackend(_BackendBase):
         await asyncio.sleep(0.08)
         await self.set_hardware_zero()
 
+    async def calibrate_touch(self) -> bool:
+        """Re-init all MPR121 ICs so they recalibrate their baseline from scratch.
+
+        Sends "calibratetouch" to the head, which reinitialises its three MPR121
+        chips and CAN-broadcasts CALIBRATE_COMMAND to body modules. Use when pads
+        are stuck "on" after a prolonged touch — the MPR121 adaptive baseline drifts
+        during extended contact and this resets it.
+
+        Returns True if the robot acknowledged the command.
+        """
+        data = await self._send_text("calibratetouch", timeout=5.0)
+        return data is not None
+
+    async def _auto_recalibrate_touch(self) -> None:
+        """Background task: recalibrate all MPR121 baselines after stuck-pad detection."""
+        ok = await self.calibrate_touch()
+        if ok:
+            logger.info("[RobotBackend] Auto-recalibration complete — MPR121 baselines reset.")
+        else:
+            logger.warning("[RobotBackend] Auto-recalibration failed (no ACK from robot).")
+
+    async def set_touch_threshold(
+        self,
+        touch12: int,
+        release12: int,
+        touch3: int | None = None,
+        release3: int | None = None,
+    ) -> bool:
+        """Set MPR121 touch/release thresholds on all modules via CAN broadcast.
+
+        touch12/release12: thresholds for side-face electrodes (mpr1, mpr2).
+        touch3/release3:   thresholds for top/middle electrodes (mpr3).
+                           If omitted, mpr12 values are used for mpr3 as well.
+
+        Firmware defaults: head touch12=5/release12=2, touch3=6/release3=3;
+                           body touch12=5/release12=2, touch3=3/release3=1.
+        Constraint: touch > release > 0.
+
+        Returns True if the robot acknowledged the command.
+        """
+        if touch3 is not None and release3 is not None:
+            cmd = f"touchthreshold {touch12} {release12} {touch3} {release3}"
+        else:
+            cmd = f"touchthreshold {touch12} {release12}"
+        data = await self._send_text(cmd, timeout=5.0)
+        ok = data is not None and "invalid" not in data
+        if ok:
+            logger.info(
+                "[RobotBackend] Touch thresholds set: mpr12 %d/%d  mpr3 %s/%s",
+                touch12, release12,
+                touch3 if touch3 is not None else touch12,
+                release3 if release3 is not None else release12,
+            )
+        else:
+            logger.warning("[RobotBackend] Touch threshold command failed: %s", data)
+        return ok
+
     # ------------------------------------------------------------------
     # Auto-reconnect
     # ------------------------------------------------------------------
@@ -955,6 +1073,10 @@ class RobotBackend(_BackendBase):
                         self._handle_slcan_frame(line)
                     elif line.startswith("push:"):
                         self._handle_sensor_push(line[5:])
+                        if self._needs_touch_recal:
+                            self._needs_touch_recal = False
+                            self._last_touch_recal_t = time.monotonic()
+                            asyncio.create_task(self._auto_recalibrate_touch())
                     elif line.startswith("imu:"):
                         self._handle_imu_push(line[4:])
                     elif line.startswith("boot:"):

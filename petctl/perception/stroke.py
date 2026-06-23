@@ -17,9 +17,9 @@ from dataclasses import dataclass, field
 
 from petctl.types import RobotState
 
-CENTROID_PAD_THRESHOLD: float = 0.20  # per-pad minimum to contribute to centroid (stroke detection)
+CENTROID_PAD_THRESHOLD: float = 0.25  # per-pad minimum to contribute to centroid (stroke detection)
 PAD_THRESHOLD: float = 0.35     # per-pad minimum for qualification checks (hold / cradle)
-TOUCH_THRESHOLD: float = 0.08   # minimum touch_total for module-level blob grouping
+TOUCH_THRESHOLD: float = 0.25   # minimum touch_total for module-level blob grouping
 VELOCITY_THRESHOLD: float = 0.6  # body-units/second — below this is not a stroke
 MIN_STROKE_TRAVEL: float = 0.12  # centroid must travel this far (body-units) from window start
                                   # calibrated as VELOCITY_THRESHOLD × (MIN_WINDOW_FRAMES−1) / sensor_hz

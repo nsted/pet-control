@@ -125,6 +125,32 @@ class SensorLimits:
     # spikes while keeping gesture detection responsive to brief touches.
     cap_filter_window: int = 5
 
+    # Consecutive hardware-zero frames required to force a pad to 0.0, overriding
+    # the sliding-window average.  The symmetric average can stay elevated indefinitely
+    # if sporadic post-release noise (or MPR121 baseline drift) interleaves 1s with 0s.
+    # 3 frames at 50 Hz = 60 ms — fast enough for responsive release, long enough to
+    # survive legitimate brief inter-pad gaps during a stroke.
+    cap_clear_frames: int = 3
+
+    # ── Auto-recalibration: stuck-pad detection ───────────────────────────────
+    # A module is "stuck" when any face average exceeds cap_stuck_min_face AND
+    # all FSRs are below cap_stuck_max_fsr (cap active but no physical pressure).
+    # After cap_stuck_timeout_s of continuous stuck state the MPR121 baselines
+    # are reset via calibratetouch.  cap_stuck_recal_cooldown_s prevents hammering.
+
+    # Face average threshold to consider a pad "stuck" (must be high — genuinely
+    # stuck pads report hardware 1 continuously → filtered value near 1.0).
+    cap_stuck_min_face: float = 0.6
+
+    # FSR ceiling: below this the pad can't be a real touch (no physical pressure).
+    cap_stuck_max_fsr: float = 0.05
+
+    # Seconds a module must be continuously stuck before triggering recalibration.
+    cap_stuck_timeout_s: float = 20.0
+
+    # Minimum seconds between consecutive auto-recalibrations.
+    cap_stuck_recal_cooldown_s: float = 60.0
+
 
 @dataclass(frozen=True)
 class BatteryConfig:

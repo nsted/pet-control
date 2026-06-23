@@ -107,6 +107,40 @@ class Backend(ABC):
         per-motor timestamp dict checked in _motor_tx_loop.
         """
 
+    async def calibrate_touch(self) -> bool:
+        """Force all MPR121 ICs to re-calibrate their baseline from scratch.
+
+        Reinitialises the three MPR121 chips on the head and sends a CAN
+        broadcast so body modules do the same.  Use this when pads are stuck
+        "on" after a prolonged touch — it resets the adaptive baseline that
+        drifts during extended contact.
+
+        Returns True if the robot acknowledged the command.
+        Default implementation (MockBackend) is a no-op that returns True.
+        """
+        return True
+
+    async def set_touch_threshold(
+        self,
+        touch12: int,
+        release12: int,
+        touch3: int | None = None,
+        release3: int | None = None,
+    ) -> bool:
+        """Set MPR121 touch/release thresholds on all modules.
+
+        touch12/release12: thresholds for mpr1 and mpr2 (side-face electrodes).
+        touch3/release3:   thresholds for mpr3 (top/middle electrodes).
+                           If omitted, the mpr12 values are used for mpr3 as well.
+
+        Constraints: touch > release > 0.  Firmware defaults are touch12=5,
+        release12=2, touch3=6 (head) / 3 (body), release3=3 (head) / 1 (body).
+
+        Returns True if the robot acknowledged the command.
+        Default implementation (MockBackend) is a no-op that returns True.
+        """
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Motion

@@ -140,6 +140,11 @@ def run(
         "--log-imu",
         help="Print IMU quaternion diagnostics every ~5s",
     ),
+    log_power: bool = typer.Option(
+        False,
+        "--log-power",
+        help="Enable PowerManager debug logs (bin seeding, promotion, thermal, voltage events)",
+    ),
     dev_ui: bool = typer.Option(
         False,
         "--dev-ui",
@@ -157,6 +162,8 @@ def run(
         logging.getLogger("petctl.backends.robot").setLevel(logging.DEBUG)
     if log_imu:
         logging.getLogger("petctl.visualizers.rerun_viz").setLevel(logging.DEBUG)
+    if log_power:
+        logging.getLogger("petctl.power_manager").setLevel(logging.DEBUG)
 
     # --- Build backend ---
     if backend == "mock":
@@ -279,6 +286,104 @@ def info(
             await backend.disconnect()
 
     asyncio.run(_info())
+
+
+@app.command()
+def calibrate_touch(
+    host: str = typer.Option(ROBOT_DEFAULT_HOST, help="Robot hostname or IP"),
+    port: int = typer.Option(ROBOT_DEFAULT_PORT, help="Robot WebSocket port"),
+) -> None:
+    """Re-calibrate MPR121 baseline on all modules.
+
+    Forces all MPR121 capacitive-touch ICs (head + body modules) to reinitialise
+    and recapture a fresh baseline.  Use when pads are stuck 'on' after a
+    prolonged touch — the MPR121 adaptive baseline drifts during extended contact
+    and this resets it.
+    """
+
+    async def _run() -> None:
+        from petctl.backends.robot import RobotBackend
+
+        backend = RobotBackend(host=host, port=port, calibrate_on_connect=False)
+        typer.echo(f"Connecting to {host}:{port}...")
+        ok = await backend.connect()
+        if not ok:
+            typer.echo(f"Could not connect to {host}:{port}", err=True)
+            raise typer.Exit(1)
+        try:
+            typer.echo("Sending calibratetouch...")
+            ack = await backend.calibrate_touch()
+            if ack:
+                typer.echo("Done — MPR121 baselines reset on all modules.")
+            else:
+                typer.echo("No acknowledgement from robot.", err=True)
+                raise typer.Exit(1)
+        finally:
+            await backend.disconnect()
+
+    asyncio.run(_run())
+
+
+@app.command()
+def touch_threshold(
+    touch12: int = typer.Argument(help="Touch threshold for side-face electrodes (mpr1/mpr2)"),
+    release12: int = typer.Argument(help="Release threshold for side-face electrodes (must be < touch12)"),
+    touch3: Optional[int] = typer.Option(
+        None,
+        "--touch3",
+        help="Touch threshold for top/middle electrodes (mpr3). Defaults to touch12.",
+    ),
+    release3: Optional[int] = typer.Option(
+        None,
+        "--release3",
+        help="Release threshold for top/middle electrodes (mpr3). Defaults to release12.",
+    ),
+    host: str = typer.Option(ROBOT_DEFAULT_HOST, help="Robot hostname or IP"),
+    port: int = typer.Option(ROBOT_DEFAULT_PORT, help="Robot WebSocket port"),
+) -> None:
+    """Set MPR121 touch/release thresholds on all modules.
+
+    Thresholds are set on the head directly and broadcast to all body modules
+    via CAN.  Changes are volatile — they reset on next reboot.
+
+    Firmware defaults: touch12=5, release12=2, touch3=6/3, release3=3/1 (head/body).
+
+    Raise thresholds to reduce spurious triggers; lower them to increase sensitivity.
+    Constraint: touch > release > 0.
+    """
+    if release12 >= touch12:
+        typer.echo(f"Invalid: release12={release12} must be < touch12={touch12}", err=True)
+        raise typer.Exit(1)
+    if touch3 is not None and release3 is not None and release3 >= touch3:
+        typer.echo(f"Invalid: release3={release3} must be < touch3={touch3}", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        from petctl.backends.robot import RobotBackend
+
+        backend = RobotBackend(host=host, port=port, calibrate_on_connect=False)
+        typer.echo(f"Connecting to {host}:{port}...")
+        ok = await backend.connect()
+        if not ok:
+            typer.echo(f"Could not connect to {host}:{port}", err=True)
+            raise typer.Exit(1)
+        try:
+            t3_str = str(touch3) if touch3 is not None else f"{touch12} (=touch12)"
+            r3_str = str(release3) if release3 is not None else f"{release12} (=release12)"
+            typer.echo(
+                f"Setting thresholds — mpr12: touch={touch12} release={release12}"
+                f"  mpr3: touch={t3_str} release={r3_str}"
+            )
+            ack = await backend.set_touch_threshold(touch12, release12, touch3, release3)
+            if ack:
+                typer.echo("Done.")
+            else:
+                typer.echo("Robot rejected the command (check: touch > release > 0).", err=True)
+                raise typer.Exit(1)
+        finally:
+            await backend.disconnect()
+
+    asyncio.run(_run())
 
 
 def main() -> None:
