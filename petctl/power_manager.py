@@ -279,14 +279,18 @@ class PowerManager:
         budget = self._effective_budget()
         start = budget * b.reactive_backstop_factor
         zero = budget * b.reactive_cutoff_factor
+        clear = budget * b.reactive_clear_factor
 
-        # Fast-attack, slow-decay: throttle immediately on any raw spike;
-        # recover gradually as the EMA drains back down.
+        # Fast-attack: throttle immediately on any raw spike.
+        # Hysteresis: once engaged, hold until current drops below `clear` (< start)
+        # so ADC noise straddling the start threshold cannot cause rapid on/off cycling.
         v = max(current_a, self._current_ema)
         if v >= zero:
             new_scale = 0.0
         elif v >= start:
             new_scale = 1.0 - (v - start) / (zero - start)
+        elif self._reactive_scale < 1.0 and v >= clear:
+            new_scale = self._reactive_scale  # hysteresis hold
         else:
             new_scale = 1.0
 
