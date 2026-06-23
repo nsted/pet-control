@@ -210,8 +210,12 @@ class PowerManager:
             logger.info("[PowerManager] Voltage recovered: %.2fV (EMA)", self._voltage_ema)
             # Fall through to update display state below
 
-        # Power source detection (wall ≈14.7V, clearly above battery range)
-        if raw_v >= b.wall_voltage_threshold_v:
+        # Power source detection (wall ≈14.7V, 3S LiPo max ≈12.6V).
+        # Uses the EMA (not raw ADC) so noise cannot drive rapid transitions.
+        # Hysteresis: separate entry/exit thresholds (wall_voltage_threshold_v /
+        # wall_return_threshold_v) create a dead band around the entry point.
+        ema_v = self._voltage_ema  # guaranteed non-None: set above
+        if ema_v >= b.wall_voltage_threshold_v:
             if self._power_source == PowerSource.BATTERY:
                 self._wall_confirm_count += 1
                 if self._wall_confirm_count >= b.wall_confirm_ticks:
@@ -226,7 +230,7 @@ class PowerManager:
                     )
                     logger.info("[PowerManager] Power source: wall supply (budget %.1fA→%.1fA)", old_budget, new_budget)
             # else: already wall — keep confirm count pinned
-        else:
+        elif ema_v < b.wall_return_threshold_v:
             if self._power_source == PowerSource.WALL:
                 self._wall_confirm_count -= 1
                 if self._wall_confirm_count <= -b.wall_confirm_ticks:
@@ -242,6 +246,8 @@ class PowerManager:
             else:
                 # Battery mode — reset any partial wall-confirm count
                 self._wall_confirm_count = 0
+        # else: EMA is in the dead band (wall_return_threshold_v ≤ ema_v < wall_voltage_threshold_v)
+        # — do not change the confirm counter; hysteresis holds current source stable
 
         # Low warning display (below cutoff this is superseded by CUTOFF state)
         if not self._voltage_cutoff_active and self._voltage_ema is not None:

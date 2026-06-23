@@ -232,10 +232,14 @@ class PowerBudgetConfig:
     reactive_recovery_multiplier: float = 3.0  # EMA drains N× faster when current is falling
 
     # Power source auto-detection via bus voltage
-    # Wall supply ≈14.7V, battery drains 15V→10V — clearly distinguishable
-    wall_voltage_threshold_v: float = 14.3
-    wall_confirm_ticks: int = 3             # consecutive readings required to switch
-    wall_max_bus_current_a: float = 6.0     # slip ring ceiling when on wall
+    # Wall supply ≈14.7V, 3S LiPo max ≈12.6V — clearly distinguishable.
+    # Detection uses the voltage EMA (not raw ADC) to reject noise.
+    # Hysteresis: enter wall at wall_voltage_threshold_v, exit at wall_return_threshold_v
+    # so ADC wobble around the entry threshold cannot cause rapid transitions.
+    wall_voltage_threshold_v: float = 14.3   # EMA must exceed this to confirm wall
+    wall_return_threshold_v: float = 13.8    # EMA must drop below this to return to battery
+    wall_confirm_ticks: int = 50             # ~0.25 s at 200 Hz controller rate
+    wall_max_bus_current_a: float = 2.5      # dev: 2.5A; prod: 6.0A (slip ring ceiling)
     wall_max_peak_current_a: float = 8.0
 
     # Low-voltage motor cutoff (3S LiPo minimum safe discharge ≈10V)
