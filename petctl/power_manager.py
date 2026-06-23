@@ -155,6 +155,7 @@ class PowerManager:
         self._budget_scale: float = 1.0
         self._budget_total_est: float = 0.0
         self._budget_per_motor_est: dict[int, float] = {}
+        self._predictive_scaled_motors: set[int] = set()  # motors clamped by per-motor predictive scale last tick
 
         # Bin-pack state: active bin + pending queue
         self._active_motor_set: set[int] = set()
@@ -295,6 +296,17 @@ class PowerManager:
                 f"reactive_backstop: {self._reactive_scale:.2f}→{new_scale:.2f} "
                 f"(I_ema={v:.2f}A budget={budget:.1f}A)"
             )
+            if self._reactive_scale == 1.0 and new_scale < 1.0:
+                logger.warning(
+                    "[PowerManager] Current limit reached — reactive backstop engaged "
+                    "(I=%.2fA EMA=%.2fA budget=%.1fA scale→%.2f)",
+                    current_a, self._current_ema, budget, new_scale,
+                )
+            elif self._reactive_scale < 1.0 and new_scale == 1.0:
+                logger.info(
+                    "[PowerManager] Reactive backstop cleared (I=%.2fA EMA=%.2fA budget=%.1fA)",
+                    current_a, self._current_ema, budget,
+                )
         self._reactive_scale = new_scale
 
     # ------------------------------------------------------------------
@@ -497,6 +509,19 @@ class PowerManager:
             mid: budget / i_est if i_est > budget else 1.0
             for mid, i_est in active_estimates.items()
         }
+        newly_clamped = {mid for mid, s in per_motor_predictive.items() if s < 1.0} - self._predictive_scaled_motors
+        newly_cleared = self._predictive_scaled_motors - {mid for mid, s in per_motor_predictive.items() if s < 1.0}
+        for mid in newly_clamped:
+            i_est = active_estimates[mid]
+            logger.warning(
+                "[PowerManager] Motor %d exceeds budget predictively — clamping "
+                "(I_est=%.2fA budget=%.1fA scale=%.2f)",
+                mid, i_est, budget, per_motor_predictive[mid],
+            )
+            self._log_event(f"motor_{mid}_predictive_clamp: I_est={i_est:.2f}A budget={budget:.1f}A")
+        for mid in newly_cleared:
+            logger.info("[PowerManager] Motor %d predictive clamp released", mid)
+        self._predictive_scaled_motors = {mid for mid, s in per_motor_predictive.items() if s < 1.0}
 
         # 8. Combine scales (most restrictive wins).
         per_motor_scale: dict[int, float] = {
