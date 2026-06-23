@@ -673,14 +673,22 @@ class Controller:
                         cmd.kd *= scale
                         cmd.torque_ff *= scale
 
-                # 3c. Predictive budget allocation + stagger schedule
-                safe_commands, stagger_schedule = pm.allocate_budget(enabled, self._state)
-                for _mid, _delay in stagger_schedule.items():
-                    self.backend.set_stagger(_mid, _delay)
-
-                if safe_commands:
+                # 3c. Budget bin-pack: active bin fires now; pending motors are idled.
+                active_commands, pending_ids = pm.allocate_budget(enabled, self._state)
+                idle_commands = [
+                    ServoCommand(
+                        servo_id=mid,
+                        position=self._state.servo_positions.get(mid, 0.0),
+                        kp=0.0,
+                        kd=0.0,
+                        torque_ff=0.0,
+                    )
+                    for mid in pending_ids
+                ]
+                to_send = active_commands + idle_commands
+                if to_send:
                     try:
-                        await self.backend.send_commands(safe_commands)
+                        await self.backend.send_commands(to_send)
                     except Exception as e:
                         logger.error("[Controller] Backend send_commands error: %s", e)
 

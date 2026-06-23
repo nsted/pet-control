@@ -485,7 +485,7 @@ class TestCurrentLimitingAsymmetricDecay:
 
 
 # ---------------------------------------------------------------------------
-# allocate_budget — stagger cap enforcement
+# allocate_budget — bin-pack seeding, priority ordering, and promotion
 # ---------------------------------------------------------------------------
 
 def _alloc_state(
@@ -493,59 +493,138 @@ def _alloc_state(
     voltage_v: float = 12.0,
     torques: dict[int, float] | None = None,
     velocities: dict[int, float] | None = None,
+    current_a: float = 0.0,
 ) -> RobotState:
     """Minimal RobotState for allocate_budget() tests."""
     rs = RobotState(
         motor_torques=torques or {},
         motor_velocities=velocities or {},
+        battery_current_raw=0,
     )
     rs.__class__ = type(
         "_AllocRobotState",
         (RobotState,),
-        {"battery_voltage_v": property(lambda self: voltage_v)},
+        {
+            "battery_voltage_v": property(lambda self: voltage_v),
+            "battery_current_amps": property(lambda self: current_a),
+        },
     )
     return rs
 
 
-class TestStaggerCap:
-    """max_stagger_motors caps slot depth when many motors are over budget."""
+def _commands(motor_ids: list[int]) -> list[ServoCommand]:
+    return [ServoCommand(servo_id=mid, position=None) for mid in motor_ids]
 
-    # τ=1.0 Nm → I_est ≈ 0.06 + 1.2×1.0² = 1.26A > budget/2 (1.0A) → 1 motor per slot
-    _TAU = 1.0
 
-    def _commands(self, motor_ids: list[int]) -> list[ServoCommand]:
-        return [ServoCommand(servo_id=mid, position=None) for mid in motor_ids]
+class TestBinPackSeed:
+    """Active bin is seeded from the priority-ordered pending queue up to budget."""
 
-    def test_delay_capped_when_motors_exceed_max_slots(self) -> None:
-        """5 motors needing 5 slots are capped to max_stagger_motors=4 slots."""
-        from petctl.config import POWER_BUDGET as b
+    def test_seed_puts_one_motor_at_dev_budget(self) -> None:
+        """At dev budget (2A) with worst-case 2A/motor, only 1 motor seeds the active bin."""
+        from petctl.power_manager import BinPackPolicy
 
         motor_ids = [1, 2, 3, 4, 5]
-        state = _alloc_state(
-            torques={mid: self._TAU for mid in motor_ids},
-            velocities={mid: 0.0 for mid in motor_ids},
-        )
-        pm = PowerManager()
-        _, stagger_schedule = pm.allocate_budget(self._commands(motor_ids), state)
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=motor_ids))
+        active, pending = pm.allocate_budget(_commands(motor_ids), state)
 
-        max_allowed_delay = (b.max_stagger_motors - 1) * b.stagger_interval_s
-        assert stagger_schedule, "expected some motors to be staggered"
-        assert all(
-            delay <= max_allowed_delay + 1e-9
-            for delay in stagger_schedule.values()
-        )
+        assert len(pm._active_motor_set) == 1
+        assert pm._active_motor_set == {1}   # first in explicit priority
+        assert set(pending) == {2, 3, 4, 5}
 
-    def test_delay_not_capped_when_at_limit(self) -> None:
-        """Exactly max_stagger_motors motors → no capping, full delay range used."""
+    def test_seed_respects_priority_order(self) -> None:
+        """Pending queue is ordered by BinPackPolicy.priority."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3, 4, 5]
+        priority = [5, 3, 1, 4, 2]
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=priority))
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert pending == [3, 1, 4, 2]   # motor 5 seeded, rest in priority order
+
+    def test_seed_fills_multiple_motors_on_wall_budget(self) -> None:
+        """At wall budget (6A, 14.6V → ~1.64A/motor), seed fits 3 motors."""
         from petctl.config import POWER_BUDGET as b
+        from petctl.power_manager import BinPackPolicy
 
-        motor_ids = list(range(1, b.max_stagger_motors + 1))
-        state = _alloc_state(
-            torques={mid: self._TAU for mid in motor_ids},
-            velocities={mid: 0.0 for mid in motor_ids},
-        )
-        pm = PowerManager()
-        _, stagger_schedule = pm.allocate_budget(self._commands(motor_ids), state)
+        motor_ids = [1, 2, 3, 4, 5, 6, 7]
+        state = _alloc_state(voltage_v=14.6)
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=motor_ids))
+        # Trigger wall power source detection (requires wall_confirm_ticks consecutive readings)
+        for _ in range(b.wall_confirm_ticks + 1):
+            pm.update(state, now=0.0)
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
 
-        max_allowed_delay = (b.max_stagger_motors - 1) * b.stagger_interval_s
-        assert all(delay <= max_allowed_delay + 1e-9 for delay in stagger_schedule.values())
+        assert len(pm._active_motor_set) == 3
+        assert pm._active_motor_set == {1, 2, 3}
+        assert pending == [4, 5, 6, 7]
+
+    def test_no_pending_when_all_fit(self) -> None:
+        """When all motors fit within budget, pending queue is empty."""
+        from petctl.power_manager import BinPackPolicy
+
+        # 1 motor at 2A/motor ≤ 2A budget → all fit
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=[1]))
+        active, pending = pm.allocate_budget(_commands([1]), state)
+
+        assert pm._active_motor_set == {1}
+        assert pending == []
+
+
+class TestBinPackPromotion:
+    """Motors are promoted from pending when bus current EMA shows headroom."""
+
+    def test_promotion_when_ema_below_threshold(self) -> None:
+        """Pending motor is promoted when _current_ema < budget × headroom_factor."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3]
+        policy = BinPackPolicy(priority=motor_ids, headroom_factor=0.8)
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=policy)
+
+        # First tick: seed with motor 1, motors 2 and 3 pending
+        pm.allocate_budget(_commands(motor_ids), state)
+        assert pm._active_motor_set == {1}
+
+        # Force EMA well below threshold (budget=2A, threshold=1.6A → EMA=0.5A → headroom)
+        pm._current_ema = 0.5
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert 2 in pm._active_motor_set, "motor 2 should have been promoted"
+        assert 2 not in pending
+
+    def test_no_promotion_when_ema_above_threshold(self) -> None:
+        """No promotion when bus current EMA is at or above budget × headroom_factor."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3]
+        policy = BinPackPolicy(priority=motor_ids, headroom_factor=0.8)
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=policy)
+
+        pm.allocate_budget(_commands(motor_ids), state)
+        pm._current_ema = 1.7   # 1.7A > 2A × 0.8 = 1.6A → no headroom
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert pm._active_motor_set == {1}
+        assert pending == [2, 3]
+
+    def test_eviction_when_motor_no_longer_commanded(self) -> None:
+        """Motors removed from commands are evicted from active set and pending queue."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3]
+        policy = BinPackPolicy(priority=motor_ids)
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=policy)
+
+        pm.allocate_budget(_commands(motor_ids), state)
+        # Now remove motor 1 (which was seeded into active) from commands
+        pm.allocate_budget(_commands([2, 3]), state)
+
+        assert 1 not in pm._active_motor_set
+        assert 1 not in pm._pending_queue

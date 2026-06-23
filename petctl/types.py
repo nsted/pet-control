@@ -43,6 +43,8 @@ class PowerTelemetry:
     per_motor_estimated_current: dict[int, float] = field(default_factory=dict)
     budget_scale_applied: float = 1.0                               # <1.0 when budget was exceeded
     voltage_cutoff_active: bool = False                             # True when < low_voltage_cutoff_v
+    active_motor_ids: list[int] = field(default_factory=list)       # motors in the current active bin
+    pending_motor_ids: list[int] = field(default_factory=list)      # motors queued awaiting headroom
 
 
 @dataclass

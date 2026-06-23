@@ -189,6 +189,10 @@ class PowerBudgetConfig:
     per_motor_torque_coeff: float = 0.71
     per_motor_mech_coeff: float = 0.3        # calibration unreliable; reactive backstop covers residual error
     bus_voltage_nominal_v: float = 12.0
+    # Worst-case power per motor (watts) used as a floor when feedback is unavailable
+    # (cold start, first tick after a move begins). Yields 2.0A at 12V, ~1.6A at 14.6V.
+    # This ensures slot 0 holds at most 2–3 motors under realistic operating conditions.
+    per_motor_worst_case_w: float = 24.0
 
     # Stagger: over-budget large-delta motors are held for N TX ticks (largest first)
     stagger_interval_s: float = 0.020       # 1 TX tick at 50 Hz

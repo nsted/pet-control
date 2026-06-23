@@ -8,12 +8,14 @@ which then calls the backend. PowerManager only consumes RobotState and produces
 Protection layers (in priority order):
   1. Thermal: per-motor temperature state machine (WARNING → DISABLED → EMERGENCY)
   2. Voltage cutoff: disables all motor torques below low_voltage_cutoff_v
-  3. Feedback budget: estimates per-motor current from actual torque + velocity
-     feedback (I ≈ copper-loss + mechanical-power/V); bin-packs motors into time
-     slots so each slot stays within budget; stagger releases progressively as
-     slot-0 torques settle; individual motors only scaled if they alone exceed budget
+  3. Feedback budget: motors are bin-packed into an active set and a pending queue
+     ordered by BinPackPolicy.priority. The initial active bin is seeded from the
+     front of the queue until the budget would be exceeded (using a worst-case
+     per-motor current floor). Pending motors are promoted one step at a time as
+     the measured bus current EMA shows headroom below budget × headroom_factor.
+     Individual motors are only scaled when a single motor alone exceeds the budget.
   4. Reactive EMA backstop: measured bus current safety net — reduction is
-     concentrated on the heaviest-drawing motors so lighter ones keep full torque
+     concentrated on the heaviest-drawing motors so lighter ones keep full torque.
 
 ERR nibble codes from the GL40 II reply frame (upper 4 bits of byte 0):
     0 = Disable, 1 = Enable, 9 = Under-voltage, A = Over-current,
@@ -29,13 +31,28 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
-from petctl.config import MOTOR_LIMITS, POWER_BUDGET
+from petctl.config import POWER_BUDGET
 from petctl.types import PowerTelemetry, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
 
 # ERR codes that mean the driver itself detected overtemperature
 _ERR_OVERTEMP_CODES: frozenset[int] = frozenset({0xB, 0xC})
+
+
+@dataclass
+class BinPackPolicy:
+    """Controls which motors are prioritized in the active bin and when to promote pending motors.
+
+    priority: explicit motor ID ordering — first IDs enter the active bin first.
+              None = ascending motor ID. Default is middle-out (4,3,5,2,6,1,7).
+    add_step: how many motors to promote per tick when headroom is confirmed.
+    headroom_factor: promote when bus current EMA < budget × this value.
+    """
+
+    priority: list[int] | None = None
+    add_step: int = 1
+    headroom_factor: float = 0.8
 
 
 class MotorThermalState(Enum):
@@ -91,21 +108,23 @@ class _MotorPowerState:
 
 class PowerManager:
     """
-    Motor protection and predictive power budget state machine.
+    Motor protection and feedback-driven power budget state machine.
 
     Pure logic — no I/O. Feed it RobotState every tick; drain disable events
     and query compliance scales to gate motor commands.
 
     Power budget flow (called by Controller each tick after update()):
       1. is_motor_enabled() / get_compliance_scale() — thermal gating
-      2. allocate_budget(commands, state) — predictive scale + stagger schedule
-      3. take_stagger_schedule() — stagger delays to pass to backend.set_stagger()
+      2. allocate_budget(commands, state) — returns (active_commands, pending_ids)
+         active_commands: commands for motors in the current bin (may be scaled)
+         pending_ids: motor IDs held back; Controller should send zero-torque to these
     """
 
     def __init__(
         self,
         thresholds: PowerThresholds = PowerThresholds(),
         reactive_ema_alpha: float | None = None,
+        bin_policy: BinPackPolicy | None = None,
     ) -> None:
         self.thresholds = thresholds
         # Allow override for testing (default comes from POWER_BUDGET.reactive_ema_alpha)
@@ -132,14 +151,15 @@ class PowerManager:
         self._last_current_a: float = 0.0
         self._reactive_scale: float = 1.0
 
-        # Budget state (populated by allocate_budget, drained by get_telemetry)
+        # Budget state (populated by allocate_budget)
         self._budget_scale: float = 1.0
         self._budget_total_est: float = 0.0
         self._budget_per_motor_est: dict[int, float] = {}
-        self._pending_stagger: dict[int, float] = {}
-        # Tracks slot assignment from last tick — stagger delay is only issued when
-        # a motor newly enters a higher slot, not refreshed while it stays there.
-        self._active_stagger_slots: dict[int, int] = {}  # motor_id → slot_idx
+
+        # Bin-pack state: active bin + pending queue
+        self._active_motor_set: set[int] = set()
+        self._pending_queue: list[int] = []
+        self._bin_policy: BinPackPolicy = bin_policy or BinPackPolicy(priority=[4, 3, 5, 2, 6, 1, 7])
 
         # Pending actions — drained once per tick by the Controller
         self._pending_disable_motor_ids: list[int] = []
@@ -176,18 +196,18 @@ class PowerManager:
         else:
             self._voltage_ema = t.voltage_ema_alpha * raw_v + (1.0 - t.voltage_ema_alpha) * self._voltage_ema
 
-        # Low-voltage cutoff (motor kill at battery floor)
-        if raw_v < b.low_voltage_cutoff_v:
+        # Low-voltage cutoff (motor kill at battery floor) — uses EMA to ignore transient sags
+        if self._voltage_ema < b.low_voltage_cutoff_v:
             if not self._voltage_cutoff_active:
                 self._voltage_cutoff_active = True
                 self._pending_voltage_cutoff = True
                 self._voltage_state = VoltageState.CUTOFF
-                self._log_event(f"voltage_cutoff: {raw_v:.2f}V < {b.low_voltage_cutoff_v:.1f}V — disabling all motors")
-                logger.warning("[PowerManager] Voltage cutoff at %.2fV", raw_v)
-        elif self._voltage_cutoff_active and raw_v >= b.low_voltage_recovery_v:
+                self._log_event(f"voltage_cutoff: {self._voltage_ema:.2f}V < {b.low_voltage_cutoff_v:.1f}V — disabling all motors")
+                logger.warning("[PowerManager] Voltage cutoff at %.2fV (EMA)", self._voltage_ema)
+        elif self._voltage_cutoff_active and self._voltage_ema >= b.low_voltage_recovery_v:
             self._voltage_cutoff_active = False
-            self._log_event(f"voltage_cutoff_recovered: {raw_v:.2f}V >= {b.low_voltage_recovery_v:.1f}V")
-            logger.info("[PowerManager] Voltage recovered: %.2fV", raw_v)
+            self._log_event(f"voltage_cutoff_recovered: {self._voltage_ema:.2f}V >= {b.low_voltage_recovery_v:.1f}V")
+            logger.info("[PowerManager] Voltage recovered: %.2fV (EMA)", self._voltage_ema)
             # Fall through to update display state below
 
         # Power source detection (wall ≈14.7V, clearly above battery range)
@@ -347,49 +367,45 @@ class PowerManager:
     # Predictive budget allocation
     # ------------------------------------------------------------------
 
+    def set_policy(self, policy: BinPackPolicy) -> None:
+        """Replace the active bin-pack policy. Takes effect on the next allocate_budget() call."""
+        self._bin_policy = policy
+
     def allocate_budget(
         self, commands: list[ServoCommand], state: RobotState
-    ) -> tuple[list[ServoCommand], dict[int, float]]:
-        """Feedback-driven current estimation with slot-based stagger when over budget.
+    ) -> tuple[list[ServoCommand], list[int]]:
+        """Feedback-driven bin-pack: seed an active bin then promote as measured current allows.
 
         Per-motor current is estimated from actual torque and velocity reported
-        by the MIT reply frame, not from commanded pos_error:
-          I ≈ base + torque_coeff × τ² × (V_nom/V)   (copper loss)
-                   + mech_coeff × |τ × ω| / V         (mechanical power delivery)
+        by the MIT reply frame, floored at a worst-case power draw so cold-start
+        bin-packing is conservative:
+          I = max(base + torque_coeff × τ² × (V_nom/V) + mech_coeff × |τ×ω| / V,
+                  per_motor_worst_case_w / V)
 
-        When estimated total current exceeds budget, motors are bin-packed into
-        time slots (heaviest draw first) so each slot stays within budget. Later
-        slots are staggered by stagger_interval_s per slot index. The stagger
-        is refreshed each tick while over budget, releasing progressively as
-        slot-0 torques settle and total current drops. Individual motors are
-        only scaled when a single motor alone exceeds the budget ceiling.
+        On each tick:
+          1. Evict motors no longer commanded from the active set and pending queue.
+          2. Insert newly commanded motors into the pending queue in priority order
+             (BinPackPolicy.priority; None = ascending ID).
+          3. Seed the active bin (if empty) by greedily filling from the front of
+             the queue until budget would be exceeded.
+          4. Promote up to add_step motors from the pending queue whenever the
+             measured bus current EMA is below budget × headroom_factor.
+          5. Apply reactive EMA scale to active motor commands (heaviest-first).
+          6. Scale any individual active motor whose estimate alone exceeds budget.
 
-        Reactive EMA backstop reduction is distributed non-uniformly: the
-        heaviest motors absorb the cut first so lighter motors keep full torque.
-
-        Returns (scaled_commands, stagger_schedule) where stagger_schedule maps
-        motor_id → delay_s.
+        Returns (active_commands, pending_ids).
+          active_commands: commands for motors in the active bin, possibly scaled.
+          pending_ids: motor IDs held back this tick; the Controller idles these.
         """
         b = POWER_BUDGET
-        V = max(state.battery_voltage_v, 8.0)  # guard divide-by-zero on dead battery
+        V = max(state.battery_voltage_v, 8.0)
         budget = self._effective_budget()
+        policy = self._bin_policy
+        worst_case_a = b.per_motor_worst_case_w / V
 
-        # 1. Estimate per-motor bus current as max(feedback, command).
-        #
-        # Feedback estimate uses actual torque + velocity from the last MIT reply:
-        #   I_fb = base + torque_coeff × τ² × (V_nom/V) + mech_coeff × |τ×ω| / V
-        #
-        # Command estimate uses commanded pos_error + kp as a worst-case floor:
-        #   I_cmd = base + torque_coeff × τ_cmd² × (V_nom/V)
-        #   where τ_cmd = min(|torque_ff| + kp × pos_error, torque_max)
-        #
-        # Taking the max means: on cold start (τ_fb=0) or whenever a large move
-        # is commanded, the command estimate sets the floor so motors are staggered
-        # conservatively from the first tick. As feedback accrues, the actual load
-        # drives the estimate and lighter motors are released from stagger early.
+        # 1. Estimate per-motor bus current (feedback + worst-case floor).
         estimates: dict[int, float] = {}
         for cmd in commands:
-            # Feedback estimate (one frame delayed — actual load last tick)
             tau_fb = abs(state.motor_torques.get(cmd.servo_id, 0.0))
             omega_fb = abs(state.motor_velocities.get(cmd.servo_id, 0.0))
             i_fb = (
@@ -397,30 +413,72 @@ class PowerManager:
                 + b.per_motor_torque_coeff * tau_fb ** 2 * (b.bus_voltage_nominal_v / V)
                 + b.per_motor_mech_coeff * tau_fb * omega_fb / V
             )
+            estimates[cmd.servo_id] = max(i_fb, worst_case_a)
 
-            # Command estimate (worst-case: what we're asking the motor to do)
-            if cmd.position is not None:
-                phys_pos = state.servo_positions.get(cmd.servo_id, 0.0)
-                tau_cmd = min(
-                    abs(cmd.torque_ff) + cmd.kp * abs(cmd.position - phys_pos),
-                    MOTOR_LIMITS.torque_max,
-                )
-                i_cmd = b.per_motor_base_a + b.per_motor_torque_coeff * tau_cmd ** 2 * (b.bus_voltage_nominal_v / V)
-            else:
-                i_cmd = b.per_motor_base_a
-
-            estimates[cmd.servo_id] = max(i_fb, i_cmd)
-
-        i_total = sum(estimates.values())
-        self._budget_total_est = i_total
         self._budget_per_motor_est = dict(estimates)
+        commanded_ids = set(estimates)
 
-        # 2. Per-motor reactive scale: distribute _reactive_scale reduction onto
-        # heaviest motors first so lighter motors keep full torque.
+        # 2. Evict motors no longer commanded.
+        self._active_motor_set &= commanded_ids
+        self._pending_queue = [mid for mid in self._pending_queue if mid in commanded_ids]
+
+        # 3. Insert newly commanded motors into the pending queue in priority order.
+        known = self._active_motor_set | set(self._pending_queue)
+        new_motors = commanded_ids - known
+        if new_motors:
+            all_pending = set(self._pending_queue) | new_motors
+            if policy.priority:
+                p_idx = {mid: i for i, mid in enumerate(policy.priority)}
+                self._pending_queue = sorted(all_pending, key=lambda m: p_idx.get(m, len(policy.priority)))
+            else:
+                self._pending_queue = sorted(all_pending)
+
+        # 4. Seed active bin from the front of the pending queue if currently empty.
+        just_seeded = False
+        if not self._active_motor_set:
+            accumulated = 0.0
+            to_promote: list[int] = []
+            for mid in list(self._pending_queue):
+                i_est = estimates.get(mid, worst_case_a)
+                if accumulated + i_est <= budget:
+                    to_promote.append(mid)
+                    accumulated += i_est
+                else:
+                    break
+            for mid in to_promote:
+                self._active_motor_set.add(mid)
+                self._pending_queue.remove(mid)
+            if to_promote:
+                just_seeded = True
+                logger.debug(
+                    "[PowerManager] bin seeded: %s (%.2fA est / %.1fA budget)",
+                    to_promote, accumulated, budget,
+                )
+
+        # 5. Promote from pending when measured bus current EMA shows headroom.
+        # Skip on the same tick as seeding — the seed motors haven't fired yet so
+        # the EMA doesn't reflect their draw. Promotion is purely EMA-gated on
+        # subsequent ticks; the reactive backstop handles any post-promotion spike.
+        promoted: list[int] = []
+        if not just_seeded and self._pending_queue and self._current_ema < budget * policy.headroom_factor:
+            for _ in range(policy.add_step):
+                if not self._pending_queue:
+                    break
+                candidate = self._pending_queue.pop(0)
+                self._active_motor_set.add(candidate)
+                promoted.append(candidate)
+            if promoted:
+                logger.debug("[PowerManager] promoted motor(s) %s (I_ema=%.2fA)", promoted, self._current_ema)
+
+        self._budget_total_est = sum(estimates.get(m, worst_case_a) for m in self._active_motor_set)
+
+        # 6. Reactive EMA scale — distribute reduction onto heaviest active motors first.
+        active_estimates = {mid: estimates[mid] for mid in self._active_motor_set if mid in estimates}
         per_motor_reactive: dict[int, float] = {}
-        if self._reactive_scale < 1.0 and estimates:
-            reduction_remaining = i_total * (1.0 - self._reactive_scale)
-            for motor_id, i_est in sorted(estimates.items(), key=lambda x: x[1], reverse=True):
+        if self._reactive_scale < 1.0 and active_estimates:
+            total_active = sum(active_estimates.values())
+            reduction_remaining = total_active * (1.0 - self._reactive_scale)
+            for motor_id, i_est in sorted(active_estimates.items(), key=lambda x: x[1], reverse=True):
                 if reduction_remaining <= 0:
                     per_motor_reactive[motor_id] = 1.0
                 else:
@@ -428,80 +486,32 @@ class PowerManager:
                     per_motor_reactive[motor_id] = max(0.0, (i_est - cut) / i_est) if i_est > 0 else 1.0
                     reduction_remaining -= cut
 
-        # 3. Stagger schedule: bin-pack motors into time slots when over budget.
-        # Slot 0 fires immediately; later slots are delayed to spread current draw.
-        stagger_schedule: dict[int, float] = {}
-        per_motor_predictive: dict[int, float] = {}
+        # 7. Per-motor scale for any active motor whose estimate alone exceeds budget.
+        per_motor_predictive: dict[int, float] = {
+            mid: budget / i_est if i_est > budget else 1.0
+            for mid, i_est in active_estimates.items()
+        }
 
-        if i_total > budget:
-            sorted_motors = sorted(estimates.items(), key=lambda x: x[1], reverse=True)
-            slots: list[list[int]] = []
-            slot_totals: list[float] = []
-
-            for motor_id, i_est in sorted_motors:
-                placed = False
-                for slot_idx in range(len(slots)):
-                    if slot_totals[slot_idx] + i_est <= budget:
-                        slots[slot_idx].append(motor_id)
-                        slot_totals[slot_idx] += i_est
-                        placed = True
-                        break
-                if not placed:
-                    if len(slots) < b.max_stagger_motors:
-                        slots.append([motor_id])
-                        slot_totals.append(i_est)
-                    else:
-                        # Stagger depth capped — overflow into last slot
-                        slots[-1].append(motor_id)
-                        slot_totals[-1] += i_est
-
-            # Issue stagger delays only when a motor newly enters a higher slot.
-            # Don't refresh while it stays in the same slot — the existing deadline
-            # counts down and fires, enabling progressive release one slot at a time.
-            new_slots: dict[int, int] = {}
-            for slot_idx, slot in enumerate(slots):
-                for motor_id in slot:
-                    if slot_idx > 0:
-                        new_slots[motor_id] = slot_idx
-                        if self._active_stagger_slots.get(motor_id) != slot_idx:
-                            stagger_schedule[motor_id] = slot_idx * b.stagger_interval_s
-            self._active_stagger_slots = new_slots
-
-            if stagger_schedule:
-                logger.debug(
-                    "[PowerManager] budget: %.2fA > %.1fA — staggering %d motors across %d slots",
-                    i_total, budget, len(stagger_schedule), len(slots),
-                )
-
-            # Only scale individual motors that alone exceed the full budget
-            for motor_id, i_est in estimates.items():
-                per_motor_predictive[motor_id] = budget / i_est if i_est > budget else 1.0
-        else:
-            self._active_stagger_slots.clear()
-            per_motor_predictive = {mid: 1.0 for mid in estimates}
-
-        # 4. Combine predictive and reactive scales per motor (most restrictive wins)
+        # 8. Combine scales (most restrictive wins).
         per_motor_scale: dict[int, float] = {
             mid: min(per_motor_predictive.get(mid, 1.0), per_motor_reactive.get(mid, 1.0))
-            for mid in estimates
+            for mid in active_estimates
         }
         self._budget_scale = min(per_motor_scale.values()) if per_motor_scale else 1.0
 
-        # 5. Apply per-motor scales to commands
-        if all(s >= 1.0 for s in per_motor_scale.values()):
-            return commands, stagger_schedule
-
-        scaled: list[ServoCommand] = []
-        for cmd in commands:
-            s = per_motor_scale.get(cmd.servo_id, 1.0)
+        # 9. Build and return active commands (scaled) + pending IDs.
+        cmd_map = {cmd.servo_id: cmd for cmd in commands}
+        active_commands: list[ServoCommand] = []
+        for mid in self._active_motor_set:
+            cmd = cmd_map.get(mid)
+            if cmd is None:
+                continue
+            s = per_motor_scale.get(mid, 1.0)
             if s < 1.0:
-                cmd = replace(cmd,
-                    kp=cmd.kp * s,
-                    kd=cmd.kd * s,
-                    torque_ff=cmd.torque_ff * s,
-                )
-            scaled.append(cmd)
-        return scaled, stagger_schedule
+                cmd = replace(cmd, kp=cmd.kp * s, kd=cmd.kd * s, torque_ff=cmd.torque_ff * s)
+            active_commands.append(cmd)
+
+        return active_commands, list(self._pending_queue)
 
     def _effective_budget(self) -> float:
         """Current budget ceiling based on detected power source."""
@@ -662,4 +672,6 @@ class PowerManager:
             per_motor_estimated_current=dict(self._budget_per_motor_est),
             budget_scale_applied=self._budget_scale,
             voltage_cutoff_active=self._voltage_cutoff_active,
+            active_motor_ids=sorted(self._active_motor_set),
+            pending_motor_ids=list(self._pending_queue),
         )
