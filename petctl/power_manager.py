@@ -307,6 +307,11 @@ class PowerManager:
 
         new_scale = max(0.0, 1.0 - p_term - self._current_integral)
 
+        # Rate-limit scale descent to prevent sudden gain drops causing motor position jumps.
+        # Recovery is unrestricted — I term and EMA already limit how fast it rises.
+        max_drop = b.reactive_scale_max_rate * dt
+        new_scale = max(new_scale, self._reactive_scale - max_drop)
+
         if new_scale != self._reactive_scale:
             self._log_event(
                 f"reactive_backstop: {self._reactive_scale:.2f}→{new_scale:.2f} "
