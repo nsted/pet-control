@@ -174,6 +174,7 @@ class PowerManager:
         self._reactive_scale: float = 1.0
         self._current_integral: float = 0.0   # I term; maps to scale reduction [0, 1]
         self._last_current_t: float = 0.0
+        self._last_status_log_t: float = 0.0
 
         # Peak current tracking: running high-water mark while above budget
         self._peak_current_a: float = 0.0    # highest reading seen since last drop below budget
@@ -397,6 +398,13 @@ class PowerManager:
                             new_scale, current_a, self._current_ema, self._current_ema_fast, budget,
                         )
         self._reactive_scale = new_scale
+
+        if now - self._last_status_log_t >= 1.0:
+            self._last_status_log_t = now
+            logger.info(
+                "[PowerManager] I=%.2fA budget=%.1fA scale=%.2f EMA=%.2fA integral=%.2f",
+                current_a, budget, self._reactive_scale, self._current_ema, self._current_integral,
+            )
 
     # ------------------------------------------------------------------
     # Thermal protection
