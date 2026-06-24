@@ -153,6 +153,7 @@ class PowerManager:
         self._reactive_scale: float = 1.0
         self._current_integral: float = 0.0   # I term; maps to scale reduction [0, 1]
         self._last_current_t: float = 0.0
+        self._last_dt: float = 0.0            # dt from last update(); used by allocate_budget
 
         # Budget state (populated by allocate_budget)
         self._budget_scale: float = 1.0
@@ -281,6 +282,7 @@ class PowerManager:
 
         dt = min(now - self._last_current_t, 0.1) if self._last_current_t > 0.0 else 0.0
         self._last_current_t = now
+        self._last_dt = dt
 
         budget = self._effective_budget()
         start = budget * b.reactive_backstop_factor
@@ -533,7 +535,10 @@ class PowerManager:
         #    The reactive backstop then adjusts further based on measured bus current.
         cmd_map = {cmd.servo_id: cmd for cmd in commands}
         active_cmd_list = [cmd_map[mid] for mid in self._active_motor_set if mid in cmd_map]
-        pred_s = self._compute_predictive_scale(active_cmd_list, state)
+        pred_s_raw = self._compute_predictive_scale(active_cmd_list, state)
+        max_step = POWER_BUDGET.reactive_scale_max_rate * self._last_dt
+        pred_s = max(pred_s_raw, self._predictive_scale - max_step)
+        pred_s = min(pred_s, self._predictive_scale + max_step)
         self._predictive_scale = pred_s
         if pred_s < 1.0:
             cmd_map = {

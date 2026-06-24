@@ -454,7 +454,7 @@ class TestCurrentLimitingAsymmetricDecay:
         """After sustained overcurrent clears, scale starts recovering quickly because
         asymmetric EMA decay (recovery_multiplier=3×) brings EMA below the P-start
         threshold within ~2 ticks. Full recovery is slower — bounded by the I term
-        draining at ki_decay rate (~40 ticks) and the rate limiter (~17 ticks)."""
+        draining at ki_decay rate (~40 ticks) and the rate limiter (~50 ticks at 1.0/s)."""
         w = _PM()
         for _ in range(100):
             w.tick(_state(current_a=5.0))  # EMA saturates; scale→0, I term→1

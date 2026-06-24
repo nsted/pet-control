@@ -233,7 +233,7 @@ class PowerBudgetConfig:
     reactive_recovery_multiplier: float = 3.0  # EMA drains N× faster when current is falling
     reactive_integral_ki: float = 0.5       # I gain: integral units per amp·second over budget
     reactive_integral_ki_decay: float = 3.0  # I drains N× faster when current is below clear
-    reactive_scale_max_rate: float = 3.0    # max scale drop per second — limits jerk on engagement
+    reactive_scale_max_rate: float = 1.0    # max scale change per second — limits jerk on engagement
 
     # Power source auto-detection via bus voltage
     # Wall supply ≈14.7V, 3S LiPo max ≈12.6V — clearly distinguishable.
