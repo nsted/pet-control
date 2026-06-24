@@ -175,12 +175,8 @@ class PowerManager:
         self._current_integral: float = 0.0   # I term; maps to scale reduction [0, 1]
         self._last_current_t: float = 0.0
 
-        # Peak current tracking (rolling 10-second window)
-        _PEAK_WINDOW_S = 10.0
-        self._peak_window_s: float = _PEAK_WINDOW_S
-        self._peak_current_a: float = 0.0    # peak in current window
-        self._peak_window_start_t: float = 0.0  # wall-time start of current window
-        self._last_logged_peak_a: float = 0.0   # last peak we emitted a log line for
+        # Peak current tracking: running high-water mark while above budget
+        self._peak_current_a: float = 0.0    # highest reading seen since last drop below budget
 
         # Budget state (populated by allocate_budget)
         self._budget_scale: float = 1.0
@@ -316,26 +312,16 @@ class PowerManager:
         dt = min(now - self._last_current_t, 0.1) if self._last_current_t > 0.0 else 0.0
         self._last_current_t = now
 
-        # Rolling peak: track max over a 10-second window; log when it exceeds budget.
-        if self._peak_window_start_t == 0.0:
-            self._peak_window_start_t = now
-        self._peak_current_a = max(self._peak_current_a, current_a)
-        if now - self._peak_window_start_t >= self._peak_window_s:
-            budget_now = self._effective_budget()
-            if self._peak_current_a > budget_now:
-                logger.warning(
-                    "[PowerManager] Peak current last %.0fs: %.2fA (budget=%.1fA, over by %.2fA)",
-                    self._peak_window_s, self._peak_current_a, budget_now,
-                    self._peak_current_a - budget_now,
-                )
-            else:
-                logger.info(
-                    "[PowerManager] Peak current last %.0fs: %.2fA (budget=%.1fA)",
-                    self._peak_window_s, self._peak_current_a, budget_now,
-                )
-            self._last_logged_peak_a = self._peak_current_a
-            self._peak_current_a = 0.0
-            self._peak_window_start_t = now
+        # Peak tracking: log immediately when current exceeds budget and sets a new high.
+        budget_now = self._effective_budget()
+        if current_a > budget_now and current_a > self._peak_current_a:
+            self._peak_current_a = current_a
+            logger.warning(
+                "[PowerManager] Current spike: %.2fA (budget=%.1fA, over by %.2fA)",
+                current_a, budget_now, current_a - budget_now,
+            )
+        elif current_a <= budget_now and self._peak_current_a > 0.0:
+            self._peak_current_a = 0.0  # reset peak once we're back under budget
 
         budget = self._effective_budget()
         start = budget * b.reactive_backstop_factor
