@@ -128,6 +128,7 @@ class PowerManager:
         reactive_ema_alpha: float | None = None,
         bin_policy: BinPackPolicy | None = None,
         reactive_integral_ki: float | None = None,
+        reactive_integral_ki_drain_ratio: float | None = None,
         reactive_scale_recovery_rate: float | None = None,
         budget_override: float | None = None,
     ) -> None:
@@ -139,6 +140,10 @@ class PowerManager:
         )
         self._reactive_integral_ki: float = (
             reactive_integral_ki if reactive_integral_ki is not None else POWER_BUDGET.reactive_integral_ki
+        )
+        self._reactive_integral_ki_drain_ratio: float = (
+            reactive_integral_ki_drain_ratio if reactive_integral_ki_drain_ratio is not None
+            else POWER_BUDGET.reactive_integral_ki_drain_ratio
         )
         self._reactive_scale_recovery_rate: float = (
             reactive_scale_recovery_rate if reactive_scale_recovery_rate is not None else POWER_BUDGET.reactive_scale_recovery_rate
@@ -305,12 +310,16 @@ class PowerManager:
         else:
             p_term = 0.0
 
-        # I term: symmetric integrator — error = raw current minus budget.
-        # Builds when over, drains when under, no dead band.
-        # Clamped to [0, 1]: integral can't go negative because scale can't exceed 1.0.
+        # I term: asymmetric integrator — builds fast when over budget, drains slowly when under.
+        # Slow drain (ki_drain_ratio << 1) keeps the scale slightly suppressed after an overage,
+        # preventing the motor from rushing to catch its setpoint and re-spiking current.
+        # Zero steady-state error is preserved: the integral will eventually drain fully.
         error = current_a - budget
+        ki_eff = self._reactive_integral_ki if error > 0 else (
+            self._reactive_integral_ki * self._reactive_integral_ki_drain_ratio
+        )
         self._current_integral = max(0.0, min(1.0,
-            self._current_integral + self._reactive_integral_ki * error * dt
+            self._current_integral + ki_eff * error * dt
         ))
 
         new_scale = max(0.0, 1.0 - p_term - self._current_integral)

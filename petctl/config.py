@@ -230,9 +230,10 @@ class PowerBudgetConfig:
     reactive_cutoff_factor: float = 1.50    # P term = 1.0 (full cut) at budget × 1.50
     reactive_ema_alpha: float = 0.033       # ~30 sample window (~1.0 s at 30 Hz)
     reactive_recovery_multiplier: float = 1.0  # EMA drains N× faster when current is falling
-    reactive_integral_ki: float = 5.0       # I gain: symmetric integrator — error = current − budget
+    reactive_integral_ki: float = 2.0           # I gain: how fast integral builds when over budget
+    reactive_integral_ki_drain_ratio: float = 0.1  # drain speed = ki × this; < 1 slows release to damp oscillation
     reactive_scale_max_rate: float = 0.3        # max scale decrease per second (attack)
-    reactive_scale_recovery_rate: float = 1.0  # max scale increase per second (recovery)
+    reactive_scale_recovery_rate: float = 2.0  # max scale increase per second (recovery)
 
     # Power source auto-detection via bus voltage
     # Wall supply ≈14.7V, 3S LiPo max ≈12.6V — clearly distinguishable.

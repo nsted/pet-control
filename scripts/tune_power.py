@@ -52,38 +52,36 @@ _KP = MOTOR_LIMITS.kp_default
 _KD = MOTOR_LIMITS.kd_default
 
 _STABILIZE_S = 2.0
-_RAMP_S      = 4.0
-_HOLD_S      = 9.0
 
 _IDLE_BASELINE_A = 0.62
 
-_SCHEMA = "v3"   # v2: one-sided I + dead band; v3: symmetric integrator
+_SCHEMA = "v4"   # v2: one-sided I + dead band; v3: symmetric integrator; v4: asymmetric drain ratio
 
 # Parameter search bounds (actual space; converted to log internally)
 # Tuning axes: ki (integrator gain) and recovery_rate (scale rise speed)
 _BOUNDS = np.array([
-    [0.5,  30.0],   # ki
+    [0.1,   5.0],   # ki  (ki>5 gives oscillation even with drain ratio; cap here)
     [0.1,   5.0],   # recovery_rate
 ])
 _LOG_BOUNDS = np.log(_BOUNDS)
 
-# Default grid for first run (no history)
+# Default grid for first v4 run (informed by v3 surrogate optimum: ki~2.5, rcvry~1.15)
 _DEFAULT_GRID: list[tuple[float, float]] = [
-    (5.0,  1.0),
-    (5.0,  0.5),
-    (5.0,  2.0),
-    (10.0, 1.0),
-    (10.0, 0.5),
-    (10.0, 2.0),
+    (2.5,  1.0),
+    (1.0,  1.0),
+    (1.0,  0.5),
+    (1.0,  2.0),
     (2.0,  1.0),
     (2.0,  0.5),
-    (15.0, 1.0),
-    (15.0, 0.5),
-    (3.0,  1.5),
-    (7.0,  1.5),
-    (5.0,  3.0),
-    (10.0, 3.0),
     (2.0,  2.0),
+    (0.5,  1.0),
+    (0.5,  2.0),
+    (3.0,  1.0),
+    (5.0,  1.0),
+    (1.5,  1.5),
+    (3.0,  0.5),
+    (0.3,  1.0),
+    (4.0,  2.0),
 ]
 
 
@@ -138,6 +136,7 @@ def _surrogate_minimum(coeffs: np.ndarray, x_init: np.ndarray) -> np.ndarray:
 class TrialResult(NamedTuple):
     ki: float
     recovery_rate: float
+    ki_drain_ratio: float
     mean_a: float
     std_a: float
     max_a: float
@@ -147,8 +146,8 @@ class TrialResult(NamedTuple):
     hold_trace: list[float]
 
 
-def _load_history(budget: float) -> list[TrialResult]:
-    """Load all schema-v3 JSONL files; filter to compatible budget."""
+def _load_history(budget: float, ki_drain_ratio: float, hold_s: float) -> list[TrialResult]:
+    """Load schema-v4 JSONL files; filter by budget, ki_drain_ratio, and hold_s."""
     results: list[TrialResult] = []
     for path in sorted(glob.glob("power_tune_*.jsonl")):
         try:
@@ -159,8 +158,13 @@ def _load_history(budget: float) -> list[TrialResult]:
                         continue
                     if abs(d.get("budget", budget) - budget) > 0.1:
                         continue
+                    if abs(d.get("ki_drain_ratio", ki_drain_ratio) - ki_drain_ratio) > 0.01:
+                        continue
+                    if abs(d.get("hold_s", hold_s) - hold_s) > 0.5:
+                        continue
                     results.append(TrialResult(
                         ki=d["ki"], recovery_rate=d["recovery_rate"],
+                        ki_drain_ratio=d.get("ki_drain_ratio", ki_drain_ratio),
                         mean_a=d["mean_a"], std_a=d["std_a"], max_a=d["max_a"],
                         peak_count=d["peak_count"], temp_peak=d.get("temp_peak", 0),
                         score=d["score"], hold_trace=d.get("hold_trace", []),
@@ -308,27 +312,31 @@ async def _run_trial(
     relax_cmds: list[ServoCommand],
     ki: float,
     recovery_rate: float,
+    ki_drain_ratio: float,
     budget: float,
     peak_limit: float,
     trial_num: int,
     total_trials: int,
+    ramp_s: float = 4.0,
+    hold_s: float = 9.0,
 ) -> TrialResult:
     pm = PowerManager(
         reactive_integral_ki=ki,
+        reactive_integral_ki_drain_ratio=ki_drain_ratio,
         reactive_scale_recovery_rate=recovery_rate,
         budget_override=budget,
     )
 
     n_stab  = int(_STABILIZE_S * TICK_HZ)
-    n_ramp  = int(_RAMP_S      * TICK_HZ)
-    n_hold  = int(_HOLD_S      * TICK_HZ)
+    n_ramp  = int(ramp_s       * TICK_HZ)
+    n_hold  = int(hold_s       * TICK_HZ)
     n_total = n_stab + n_ramp + n_hold
 
-    ramp_rate = target_delta / _RAMP_S
+    ramp_rate = target_delta / ramp_s
     hold_trace: list[float] = []
     temp_peak: int = 0
 
-    eta_s = int((total_trials - trial_num) * (_STABILIZE_S + _RAMP_S + _HOLD_S))
+    eta_s = int((total_trials - trial_num) * (_STABILIZE_S + ramp_s + hold_s))
     print(
         f"  [{trial_num:2d}/{total_trials}]  ki={ki:.2f}  rcvry={recovery_rate:.3f}"
         f"  (~{eta_s}s left) ...",
@@ -371,7 +379,7 @@ async def _run_trial(
     )
 
     return TrialResult(
-        ki=ki, recovery_rate=recovery_rate,
+        ki=ki, recovery_rate=recovery_rate, ki_drain_ratio=ki_drain_ratio,
         mean_a=float(np.mean(arr)), std_a=float(np.std(arr)),
         max_a=float(np.max(arr)), peak_count=peak_count,
         temp_peak=temp_peak, score=score, hold_trace=list(arr),
@@ -423,6 +431,7 @@ def _print_results(
 
     _banner("Best config — paste into petctl/config.py PowerBudgetConfig")
     print(f"    reactive_integral_ki: float = {best.ki}")
+    print(f"    reactive_integral_ki_drain_ratio: float = {best.ki_drain_ratio}")
     print(f"    reactive_scale_recovery_rate: float = {best.recovery_rate}")
 
 
@@ -430,12 +439,12 @@ def _print_results(
 # Main
 # ---------------------------------------------------------------------------
 
-async def run(host: str, port: int, target_delta: float, budget: float, n_trials: int, seed: int | None) -> None:
+async def run(host: str, port: int, target_delta: float, budget: float, n_trials: int, seed: int | None, ramp_s: float = 4.0, hold_s: float = 9.0, rest_s: float = 0.0, ki_drain_ratio: float = 0.1) -> None:
     rng = np.random.default_rng(seed)
 
-    history = _load_history(budget)
+    history = _load_history(budget, ki_drain_ratio, hold_s)
     gen = len(history) // n_trials if n_trials else 0
-    print(f"Loaded {len(history)} historical results (generation {gen}).")
+    print(f"Loaded {len(history)} historical results (generation {gen}, hold={hold_s}s, ki_drain_ratio={ki_drain_ratio}).")
 
     trials, coeffs, log_pred_opt = _generate_trials(history, n_trials, rng)
 
@@ -485,24 +494,34 @@ async def run(host: str, port: int, target_delta: float, budget: float, n_trials
         await backend.get_state()
         await asyncio.sleep(max(0.0, DT - (time.monotonic() - t0)))
 
-    trial_s = int(_STABILIZE_S + _RAMP_S + _HOLD_S)
+    trial_s = int(_STABILIZE_S + ramp_s + hold_s + rest_s)
     total_s = len(trials) * trial_s
-    print(f"\n  {len(trials)} trials × {trial_s}s = ~{total_s // 60}m{total_s % 60}s")
+    print(f"\n  {len(trials)} trials × {trial_s}s (hold={hold_s:.0f}s rest={rest_s:.0f}s) = ~{total_s // 60}m{total_s % 60}s")
     await _prompt(f"Confirm motor {MOTOR_ID} is clamped and ready")
 
     new_results: list[TrialResult] = []
     _banner("Trials")
+
+    relax_m7 = ServoCommand(servo_id=MOTOR_ID, position=home_pos, kp=0.0, kd=MOTOR_LIMITS.kd_max, torque_ff=0.0)
 
     try:
         for i, (ki, recovery_rate) in enumerate(trials, 1):
             await _cool_if_needed(backend, home_pos, relax_cmds)
             r = await _run_trial(
                 backend, home_pos, target_delta, relax_cmds,
-                ki, recovery_rate,
+                ki, recovery_rate, ki_drain_ratio,
                 budget, peak_limit,
                 trial_num=i, total_trials=len(trials),
+                ramp_s=ramp_s, hold_s=hold_s,
             )
             new_results.append(r)
+            if rest_s > 0:
+                rest_end = time.monotonic() + rest_s
+                while time.monotonic() < rest_end:
+                    t0 = time.monotonic()
+                    await backend.send_commands([relax_m7] + relax_cmds)
+                    await backend.get_state()
+                    await asyncio.sleep(max(0.0, DT - (time.monotonic() - t0)))
     except KeyboardInterrupt:
         print("\n  Interrupted.")
 
@@ -526,6 +545,7 @@ async def run(host: str, port: int, target_delta: float, budget: float, n_trials
             f.write(json.dumps({
                 "schema": _SCHEMA, "budget": budget,
                 "ki": r.ki, "recovery_rate": r.recovery_rate,
+                "ki_drain_ratio": r.ki_drain_ratio, "hold_s": hold_s,
                 "mean_a": r.mean_a, "std_a": r.std_a, "max_a": r.max_a,
                 "peak_count": r.peak_count, "temp_peak": r.temp_peak,
                 "score": r.score, "hold_trace": r.hold_trace,
@@ -574,5 +594,16 @@ if __name__ == "__main__":
                         help="Trials per run (default: 15).")
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducible perturbations.")
+    parser.add_argument("--hold", type=float, default=9.0,
+                        help="Hold phase duration in seconds (scored window, default: 9.0).")
+    parser.add_argument("--ramp", type=float, default=4.0,
+                        help="Ramp phase duration in seconds (default: 4.0).")
+    parser.add_argument("--rest", type=float, default=0.0,
+                        help="Rest between trials in seconds — motors relaxed (default: 0).")
+    parser.add_argument("--ki-drain-ratio", type=float, default=0.1,
+                        help="I-term drain rate relative to build rate (default: 0.1). "
+                             "Lower = slower drain = more oscillation damping.")
     args = parser.parse_args()
-    asyncio.run(run(args.host, args.port, args.delta, args.budget, args.n_trials, args.seed))
+    asyncio.run(run(args.host, args.port, args.delta, args.budget, args.n_trials, args.seed,
+                    ramp_s=args.ramp, hold_s=args.hold, rest_s=args.rest,
+                    ki_drain_ratio=args.ki_drain_ratio))
