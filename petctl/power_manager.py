@@ -553,7 +553,7 @@ class PowerManager:
                 continue
             s = per_motor_scale.get(mid, 1.0)
             if s < 1.0:
-                cmd = replace(cmd, kp=cmd.kp * s, kd=cmd.kd * s, torque_ff=cmd.torque_ff * s)
+                cmd = replace(cmd, kp=cmd.kp * s, torque_ff=cmd.torque_ff * s)
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
