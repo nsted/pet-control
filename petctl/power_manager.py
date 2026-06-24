@@ -328,6 +328,21 @@ class PowerManager:
                     "[PowerManager] Reactive backstop cleared (I=%.2fA EMA=%.2fA budget=%.1fA)",
                     current_a, self._current_ema, budget,
                 )
+            else:
+                # Log each time scale crosses a significant threshold so depth is visible.
+                for threshold in (0.9, 0.75, 0.5, 0.25):
+                    if self._reactive_scale > threshold >= new_scale:
+                        logger.warning(
+                            "[PowerManager] Backstop deepening: scale→%.2f "
+                            "(I=%.2fA EMA=%.2fA budget=%.1fA)",
+                            new_scale, current_a, self._current_ema, budget,
+                        )
+                    elif self._reactive_scale < threshold <= new_scale:
+                        logger.info(
+                            "[PowerManager] Backstop recovering: scale→%.2f "
+                            "(I=%.2fA EMA=%.2fA budget=%.1fA)",
+                            new_scale, current_a, self._current_ema, budget,
+                        )
         self._reactive_scale = new_scale
 
     # ------------------------------------------------------------------
@@ -538,7 +553,7 @@ class PowerManager:
                 continue
             s = per_motor_scale.get(mid, 1.0)
             if s < 1.0:
-                cmd = replace(cmd, torque_ff=cmd.torque_ff * s)
+                cmd = replace(cmd, kp=cmd.kp * s, kd=cmd.kd * s, torque_ff=cmd.torque_ff * s)
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
