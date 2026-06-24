@@ -289,8 +289,8 @@ class PowerManager:
         zero  = budget * b.reactive_cutoff_factor
         clear = budget * b.reactive_clear_factor
 
-        # P term: fast-attack on raw spike or EMA overage.
-        v = max(current_a, self._current_ema)
+        # P term: EMA-only so brief oscillatory peaks don't engage the backstop.
+        v = self._current_ema
         if v >= zero:
             p_term = 1.0
         elif v >= start:
@@ -311,10 +311,11 @@ class PowerManager:
 
         new_scale = max(0.0, 1.0 - p_term - self._current_integral)
 
-        # Rate-limit both descent and recovery: prevents sudden torque steps in either direction.
-        max_step = b.reactive_scale_max_rate * dt
-        new_scale = max(new_scale, self._reactive_scale - max_step)
-        new_scale = min(new_scale, self._reactive_scale + max_step)
+        # Asymmetric rate limits: attack fast, recover slowly to prevent hunting.
+        max_down = b.reactive_scale_max_rate * dt
+        max_up = b.reactive_scale_recovery_rate * dt
+        new_scale = max(new_scale, self._reactive_scale - max_down)
+        new_scale = min(new_scale, self._reactive_scale + max_up)
 
         if new_scale != self._reactive_scale:
             self._log_event(
@@ -536,9 +537,10 @@ class PowerManager:
         cmd_map = {cmd.servo_id: cmd for cmd in commands}
         active_cmd_list = [cmd_map[mid] for mid in self._active_motor_set if mid in cmd_map]
         pred_s_raw = self._compute_predictive_scale(active_cmd_list, state)
-        max_step = POWER_BUDGET.reactive_scale_max_rate * self._last_dt
-        pred_s = max(pred_s_raw, self._predictive_scale - max_step)
-        pred_s = min(pred_s, self._predictive_scale + max_step)
+        max_down = POWER_BUDGET.reactive_scale_max_rate * self._last_dt
+        max_up = POWER_BUDGET.reactive_scale_recovery_rate * self._last_dt
+        pred_s = max(pred_s_raw, self._predictive_scale - max_down)
+        pred_s = min(pred_s, self._predictive_scale + max_up)
         self._predictive_scale = pred_s
         if pred_s < 1.0:
             cmd_map = {
