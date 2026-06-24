@@ -226,15 +226,15 @@ class PowerBudgetConfig:
 
     # Reactive EMA backstop (belt-and-suspenders over the predictive model)
     # Thresholds are relative to the effective budget so they scale with power source.
-    reactive_backstop_factor: float = 1.00  # P term starts at budget
-    reactive_cutoff_factor: float = 1.50    # P term = 1.0 (full cut) at budget × 1.50
+    reactive_backstop_factor: float = 0.85  # P term starts at 85% of budget (compensates for fast-EMA lag)
+    reactive_cutoff_factor: float = 1.10    # P term = 1.0 (full cut) at budget × 1.10 — steep ramp
     reactive_ema_alpha: float = 0.033       # ~30 sample window (~1.0 s at 30 Hz); drives I term
-    reactive_ema_alpha_fast: float = 0.3    # ~3 sample window (~90 ms at 30 Hz); drives P term
+    reactive_ema_alpha_fast: float = 0.5    # ~2 sample window (~33 ms at 30 Hz); drives P term
     reactive_recovery_multiplier: float = 1.0  # EMA drains N× faster when current is falling
-    reactive_integral_ki: float = 5.0           # I gain: how fast integral builds when over budget
-    reactive_integral_ki_drain_ratio: float = 0.1  # drain speed = ki × this; < 1 slows release to damp oscillation
-    reactive_scale_max_rate: float = 4.0        # max scale decrease per second (attack)
-    reactive_scale_recovery_rate: float = 2.0  # max scale increase per second (recovery)
+    reactive_integral_ki: float = 1.5           # I gain: how fast integral builds when over budget
+    reactive_integral_ki_drain_ratio: float = 0.15  # drain speed = ki × this; slow to maintain suppression between spikes
+    reactive_scale_max_rate: float = 20.0       # max scale decrease per second (attack); direct ratio cap handles spikes
+    reactive_scale_recovery_rate: float = 0.5  # max scale increase per second; slow to let setpoint-tracking work
     enable_per_motor_torque_cap: bool = True    # predictive cap: τ_max = sqrt((budget/n - base) / torque_coeff)
 
     # Power source auto-detection via bus voltage

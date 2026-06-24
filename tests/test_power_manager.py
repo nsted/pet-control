@@ -425,8 +425,8 @@ class TestTelemetry:
         assert t.current_amps_raw == pytest.approx(2.0)
         # Slow EMA: alpha=0.033; after 1 tick from 0 → 0.033 × 2.0 = 0.066
         assert t.current_amps_filtered == pytest.approx(0.033 * 2.0, abs=0.005)
-        # Fast EMA: alpha=0.3; after 1 tick from 0 → 0.3 × 2.0 = 0.6
-        assert t.current_amps_filtered_fast == pytest.approx(0.3 * 2.0, abs=0.01)
+        # Fast EMA: alpha=0.5; after 1 tick from 0 → 0.5 × 2.0 = 1.0
+        assert t.current_amps_filtered_fast == pytest.approx(0.5 * 2.0, abs=0.01)
         assert t.current_drive_scale == pytest.approx(1.0)
 
     def test_telemetry_current_scale_saturated(self) -> None:
@@ -455,8 +455,8 @@ class TestTelemetry:
 class TestCurrentLimitingAsymmetricDecay:
     def test_ema_decays_faster_on_recovery(self) -> None:
         """After sustained overcurrent clears, scale recovers because:
-          - Fast EMA (alpha=0.3) drains below the P-start threshold in ~4 ticks, releasing P term.
-          - I term then drains slowly (ki × drain_ratio), so full recovery takes ~60+ more ticks.
+          - Fast EMA (alpha=0.5) drains below the P-start threshold in ~4 ticks, releasing P term.
+          - I term then drains slowly (ki × drain_ratio), so full recovery takes ~220+ more ticks.
         Slow EMA is telemetry only and not in the control path."""
         w = _PM()
         for _ in range(100):
@@ -469,9 +469,9 @@ class TestCurrentLimitingAsymmetricDecay:
             w.tick(_state(current_a=1.0))
         assert w.pm._reactive_scale > 0.0
 
-        # Full recovery: integral drains at ki × drain_ratio × |error| × dt = 5×0.1×1×0.02 = 0.01/tick.
-        # Starting at 1.0, needs ~100 more ticks to drain fully → scale reaches 1.0.
-        for _ in range(110):
+        # Full recovery: integral drains at ki × drain_ratio × |error| × dt = 1.5×0.15×1×0.02 = 0.0045/tick.
+        # Starting at ~1.0, needs ~222 more ticks to drain fully → scale reaches 1.0.
+        for _ in range(240):
             w.tick(_state(current_a=1.0))
         assert w.pm._reactive_scale == pytest.approx(1.0, abs=0.01)
 

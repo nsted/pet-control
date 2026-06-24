@@ -327,10 +327,11 @@ class PowerManager:
         start = budget * b.reactive_backstop_factor
         zero  = budget * b.reactive_cutoff_factor
 
-        # P term: fast EMA only — catches spikes within 2–3 ticks, releases once
-        # current drops (fast EMA drains in ~4 ticks). Sustained overcurrent is handled
-        # by the I term (raw current, builds fast, drains slowly). Slow EMA is telemetry.
-        v = self._current_ema_fast
+        # P term: use max(current_a, EMA_fast) so P fires on the actual current with
+        # no lag on the first spike tick. EMA_fast handles recovery (when current drops,
+        # EMA_fast > current_a keeps P non-zero while the scale is still suppressed).
+        # Sustained overcurrent is handled by the I term.
+        v = max(current_a, self._current_ema_fast)
         if v >= zero:
             p_term = 1.0
         elif v >= start:
@@ -357,6 +358,12 @@ class PowerManager:
         max_up = self._reactive_scale_recovery_rate * dt
         new_scale = max(new_scale, self._reactive_scale - max_down)
         new_scale = min(new_scale, self._reactive_scale + max_up)
+
+        # Direct ratio cap: when actual current exceeds budget, bypass the rate limiter
+        # and immediately snap scale to budget/current. This handles the 1-tick latency
+        # gap where the rate limit alone can't respond fast enough to a sudden spike.
+        if current_a > budget:
+            new_scale = min(new_scale, budget / current_a)
 
         if new_scale != self._reactive_scale:
             self._log_event(
@@ -578,8 +585,14 @@ class PowerManager:
         #    changed each tick, snapping individual motor scales discontinuously.
         self._budget_scale = self._reactive_scale
 
-        # Predictive per-motor torque_ff cap: solve τ_max from I ≈ base + coeff × τ²
+        # Predictive per-motor torque cap: solve τ_max from I ≈ base + coeff × τ²
         # so each motor cannot draw more than its budget share even before any EMA reacts.
+        #
+        # Uses the ACTUAL reported torque (tau_actual from the MIT reply) rather than
+        # cmd.kp × pos_error, because the effective motor gain in MIT mode doesn't map
+        # linearly to N·m/rad in our kp units. tau_actual reflects what the motor is
+        # truly applying — including fight-back against clamps or user-induced forces.
+        # kp is scaled down proportionally so the motor becomes compliant when over budget.
         if b.enable_per_motor_torque_cap and self._active_motor_set:
             n_active = len(self._active_motor_set)
             budget_per_motor = budget / max(1, n_active)
@@ -587,8 +600,15 @@ class PowerManager:
             tau_max = math.sqrt(headroom / b.per_motor_torque_coeff) if b.per_motor_torque_coeff > 0 else float("inf")
             for mid in list(cmd_map):
                 cmd = cmd_map[mid]
-                if abs(cmd.torque_ff) > tau_max:
-                    cmd_map[mid] = replace(cmd, torque_ff=math.copysign(tau_max, cmd.torque_ff))
+                tau_actual = abs(state.motor_torques.get(mid, 0.0))
+                tau_ff_capped = math.copysign(min(abs(cmd.torque_ff), tau_max), cmd.torque_ff) if cmd.torque_ff != 0.0 else 0.0
+                if tau_actual > tau_max:
+                    # Motor is over-torquing (fighting clamp or external force).
+                    # Scale kp down so next command applies at most tau_max total torque.
+                    kp_scale = tau_max / tau_actual
+                    cmd_map[mid] = replace(cmd, kp=cmd.kp * kp_scale, torque_ff=tau_ff_capped)
+                elif abs(cmd.torque_ff) > tau_max:
+                    cmd_map[mid] = replace(cmd, torque_ff=tau_ff_capped)
 
         active_commands: list[ServoCommand] = []
         for mid in self._active_motor_set:
@@ -596,7 +616,18 @@ class PowerManager:
             if cmd is None:
                 continue
             if self._reactive_scale < 1.0:
-                cmd = replace(cmd, kp=cmd.kp * self._reactive_scale, kd=cmd.kd * self._reactive_scale, torque_ff=cmd.torque_ff * self._reactive_scale)
+                s = self._reactive_scale
+                # Anti-windup setpoint tracking: blend commanded position toward
+                # actual to prevent error from accumulating during suppression.
+                # Without this, motors surge to close the backlog when scale releases,
+                # causing the next current spike. The blend releases proportionally
+                # as scale recovers, so the motor closes error gradually.
+                if cmd.position is not None:
+                    actual_pos = state.servo_positions.get(mid, cmd.position)
+                    blended_pos = actual_pos + s * (cmd.position - actual_pos)
+                    cmd = replace(cmd, position=blended_pos, kp=cmd.kp * s, kd=cmd.kd * s, torque_ff=cmd.torque_ff * s)
+                else:
+                    cmd = replace(cmd, kp=cmd.kp * s, kd=cmd.kd * s, torque_ff=cmd.torque_ff * s)
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
