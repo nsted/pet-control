@@ -128,7 +128,6 @@ class PowerManager:
         reactive_ema_alpha: float | None = None,
         bin_policy: BinPackPolicy | None = None,
         reactive_integral_ki: float | None = None,
-        reactive_integral_ki_decay: float | None = None,
         reactive_scale_recovery_rate: float | None = None,
         budget_override: float | None = None,
     ) -> None:
@@ -140,9 +139,6 @@ class PowerManager:
         )
         self._reactive_integral_ki: float = (
             reactive_integral_ki if reactive_integral_ki is not None else POWER_BUDGET.reactive_integral_ki
-        )
-        self._reactive_integral_ki_decay: float = (
-            reactive_integral_ki_decay if reactive_integral_ki_decay is not None else POWER_BUDGET.reactive_integral_ki_decay
         )
         self._reactive_scale_recovery_rate: float = (
             reactive_scale_recovery_rate if reactive_scale_recovery_rate is not None else POWER_BUDGET.reactive_scale_recovery_rate
@@ -299,7 +295,6 @@ class PowerManager:
         budget = self._effective_budget()
         start = budget * b.reactive_backstop_factor
         zero  = budget * b.reactive_cutoff_factor
-        clear = budget * b.reactive_clear_factor
 
         # P term: EMA-only so brief oscillatory peaks don't engage the backstop.
         v = self._current_ema
@@ -310,16 +305,13 @@ class PowerManager:
         else:
             p_term = 0.0
 
-        # I term: integrates sustained overage so current converges to budget.
-        # One-sided: builds when over budget, drains when clearly below (clear threshold).
-        # I term provides persistence so P-term hysteresis is no longer needed.
-        overage = current_a - budget
-        if overage > 0.0:
-            self._current_integral = min(1.0, self._current_integral + self._reactive_integral_ki * overage * dt)
-        elif current_a < clear:
-            drain = self._reactive_integral_ki * self._reactive_integral_ki_decay * (clear - current_a) * dt
-            self._current_integral = max(0.0, self._current_integral - drain)
-        # else: between clear and budget — I term holds (dead band prevents hunting)
+        # I term: symmetric integrator — error = raw current minus budget.
+        # Builds when over, drains when under, no dead band.
+        # Clamped to [0, 1]: integral can't go negative because scale can't exceed 1.0.
+        error = current_a - budget
+        self._current_integral = max(0.0, min(1.0,
+            self._current_integral + self._reactive_integral_ki * error * dt
+        ))
 
         new_scale = max(0.0, 1.0 - p_term - self._current_integral)
 
