@@ -232,7 +232,7 @@ class PowerBudgetConfig:
     reactive_recovery_multiplier: float = 1.0  # EMA drains N× faster when current is falling
     reactive_integral_ki: float = 2.0           # I gain: how fast integral builds when over budget
     reactive_integral_ki_drain_ratio: float = 0.1  # drain speed = ki × this; < 1 slows release to damp oscillation
-    reactive_scale_max_rate: float = 1.0        # max scale decrease per second (attack)
+    reactive_scale_max_rate: float = 4.0        # max scale decrease per second (attack)
     reactive_scale_recovery_rate: float = 2.0  # max scale increase per second (recovery)
 
     # Power source auto-detection via bus voltage
