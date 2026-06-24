@@ -307,10 +307,10 @@ class PowerManager:
 
         new_scale = max(0.0, 1.0 - p_term - self._current_integral)
 
-        # Rate-limit scale descent to prevent sudden gain drops causing motor position jumps.
-        # Recovery is unrestricted — I term and EMA already limit how fast it rises.
-        max_drop = b.reactive_scale_max_rate * dt
-        new_scale = max(new_scale, self._reactive_scale - max_drop)
+        # Rate-limit both descent and recovery: prevents sudden torque steps in either direction.
+        max_step = b.reactive_scale_max_rate * dt
+        new_scale = max(new_scale, self._reactive_scale - max_step)
+        new_scale = min(new_scale, self._reactive_scale + max_step)
 
         if new_scale != self._reactive_scale:
             self._log_event(
@@ -538,7 +538,7 @@ class PowerManager:
                 continue
             s = per_motor_scale.get(mid, 1.0)
             if s < 1.0:
-                cmd = replace(cmd, kp=cmd.kp * s, kd=cmd.kd * s, torque_ff=cmd.torque_ff * s)
+                cmd = replace(cmd, torque_ff=cmd.torque_ff * s)
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
