@@ -146,10 +146,12 @@ class PowerManager:
         self._power_source: PowerSource = PowerSource.BATTERY
         self._wall_confirm_count: int = 0  # positive = confirming wall; negative = confirming return to battery
 
-        # Reactive EMA backstop (belt-and-suspenders behind predictive model)
+        # Reactive PI backstop
         self._current_ema: float = 0.0
         self._last_current_a: float = 0.0
         self._reactive_scale: float = 1.0
+        self._current_integral: float = 0.0   # I term; maps to scale reduction [0, 1]
+        self._last_current_t: float = 0.0
 
         # Budget state (populated by allocate_budget)
         self._budget_scale: float = 1.0
@@ -176,7 +178,7 @@ class PowerManager:
             return
 
         self._update_voltage(state.battery_voltage_v)
-        self._update_current(state.battery_current_amps)
+        self._update_current(state.battery_current_amps, now)
         self._update_motors(state, now)
 
     # ------------------------------------------------------------------
@@ -264,11 +266,10 @@ class PowerManager:
     # Reactive EMA backstop
     # ------------------------------------------------------------------
 
-    def _update_current(self, current_a: float) -> None:
+    def _update_current(self, current_a: float, now: float) -> None:
         b = POWER_BUDGET
         alpha = self._reactive_ema_alpha
-        # Asymmetric EMA: build up at normal alpha, drain faster when current is falling
-        # so transient spikes don't suppress torque long after actual load has cleared.
+        # Asymmetric EMA: build up at normal alpha, drain faster when current is falling.
         if current_a >= self._current_ema:
             self._current_ema = alpha * current_a + (1.0 - alpha) * self._current_ema
         else:
@@ -276,23 +277,35 @@ class PowerManager:
             self._current_ema = decay_alpha * current_a + (1.0 - decay_alpha) * self._current_ema
         self._last_current_a = current_a
 
+        dt = min(now - self._last_current_t, 0.1) if self._last_current_t > 0.0 else 0.0
+        self._last_current_t = now
+
         budget = self._effective_budget()
         start = budget * b.reactive_backstop_factor
-        zero = budget * b.reactive_cutoff_factor
+        zero  = budget * b.reactive_cutoff_factor
         clear = budget * b.reactive_clear_factor
 
-        # Fast-attack: throttle immediately on any raw spike.
-        # Hysteresis: once engaged, hold until current drops below `clear` (< start)
-        # so ADC noise straddling the start threshold cannot cause rapid on/off cycling.
+        # P term: fast-attack on raw spike or EMA overage.
         v = max(current_a, self._current_ema)
         if v >= zero:
-            new_scale = 0.0
+            p_term = 1.0
         elif v >= start:
-            new_scale = 1.0 - (v - start) / (zero - start)
-        elif self._reactive_scale < 1.0 and v >= clear:
-            new_scale = self._reactive_scale  # hysteresis hold
+            p_term = (v - start) / (zero - start)
         else:
-            new_scale = 1.0
+            p_term = 0.0
+
+        # I term: integrates sustained overage so current converges to budget.
+        # One-sided: builds when over budget, drains when clearly below (clear threshold).
+        # I term provides persistence so P-term hysteresis is no longer needed.
+        overage = current_a - budget
+        if overage > 0.0:
+            self._current_integral = min(1.0, self._current_integral + b.reactive_integral_ki * overage * dt)
+        elif current_a < clear:
+            drain = b.reactive_integral_ki * b.reactive_integral_ki_decay * (clear - current_a) * dt
+            self._current_integral = max(0.0, self._current_integral - drain)
+        # else: between clear and budget — I term holds (dead band prevents hunting)
+
+        new_scale = max(0.0, 1.0 - p_term - self._current_integral)
 
         if new_scale != self._reactive_scale:
             self._log_event(

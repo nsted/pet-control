@@ -226,11 +226,13 @@ class PowerBudgetConfig:
 
     # Reactive EMA backstop (belt-and-suspenders over the predictive model)
     # Thresholds are relative to the effective budget so they scale with power source.
-    reactive_backstop_factor: float = 1.00  # start scaling at budget
-    reactive_cutoff_factor: float = 1.50    # scale=0.0 at budget × 1.50
-    reactive_clear_factor: float = 0.90     # release throttle only below budget × 0.90 (hysteresis)
+    reactive_backstop_factor: float = 1.00  # P term starts at budget
+    reactive_cutoff_factor: float = 1.50    # P term = 1.0 (full cut) at budget × 1.50
+    reactive_clear_factor: float = 0.90     # I term drains only below budget × 0.90
     reactive_ema_alpha: float = 0.2         # ~0.17 s window at 30 Hz; attack direction
     reactive_recovery_multiplier: float = 3.0  # EMA drains N× faster when current is falling
+    reactive_integral_ki: float = 0.5       # I gain: integral units per amp·second over budget
+    reactive_integral_ki_decay: float = 3.0  # I drains N× faster when current is below clear
 
     # Power source auto-detection via bus voltage
     # Wall supply ≈14.7V, 3S LiPo max ≈12.6V — clearly distinguishable.
