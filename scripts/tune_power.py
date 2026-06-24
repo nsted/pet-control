@@ -162,6 +162,9 @@ def _load_history(budget: float, ki_drain_ratio: float, hold_s: float) -> list[T
                         continue
                     if abs(d.get("hold_s", hold_s) - hold_s) > 0.5:
                         continue
+                    # Reject disconnected-state samples (idle baseline only, no motor load)
+                    if d.get("mean_a", 0.0) < 0.8 or d.get("std_a", 1.0) < 0.01:
+                        continue
                     results.append(TrialResult(
                         ki=d["ki"], recovery_rate=d["recovery_rate"],
                         ki_drain_ratio=d.get("ki_drain_ratio", ki_drain_ratio),
@@ -284,9 +287,11 @@ async def _cool_if_needed(
         t0 = time.monotonic()
         await backend.send_commands([relax_m7] + relax_cmds)
         state = await backend.get_state()
-        temp = _m7_temp(state)
+        new_temp = _m7_temp(state)
+        if new_temp > 0:  # 0°C = invalid reading (e.g., post-reconnect), keep last known temp
+            temp = new_temp
         print(f"\r  [COOL] M7 temp: {temp:3d}°C  (target ≤{cool_c}°C)  ", end="", flush=True)
-        await asyncio.sleep(max(0.0, 2.0 - (time.monotonic() - t0)))
+        await asyncio.sleep(max(0.0, 1.0 - (time.monotonic() - t0)))
     print(f"\r  [COOL] M7 temp: {temp:3d}°C — resuming.               ")
 
 
@@ -370,6 +375,10 @@ async def _run_trial(
         await asyncio.sleep(max(0.0, DT - (time.monotonic() - t0)))
 
     arr = np.array(hold_trace)
+    if np.mean(arr) < 0.8:
+        # Disconnected or motor not driving — discard this trial
+        print(f"  [SKIP] mean={np.mean(arr):.3f}A < 0.8A — discarding (disconnected?)")
+        raise RuntimeError("invalid trial: motor not under load")
     score = _score(arr, budget, peak_limit)
     peak_count = int(np.sum(arr > peak_limit))
 
@@ -507,13 +516,16 @@ async def run(host: str, port: int, target_delta: float, budget: float, n_trials
     try:
         for i, (ki, recovery_rate) in enumerate(trials, 1):
             await _cool_if_needed(backend, home_pos, relax_cmds)
-            r = await _run_trial(
-                backend, home_pos, target_delta, relax_cmds,
-                ki, recovery_rate, ki_drain_ratio,
-                budget, peak_limit,
-                trial_num=i, total_trials=len(trials),
-                ramp_s=ramp_s, hold_s=hold_s,
-            )
+            try:
+                r = await _run_trial(
+                    backend, home_pos, target_delta, relax_cmds,
+                    ki, recovery_rate, ki_drain_ratio,
+                    budget, peak_limit,
+                    trial_num=i, total_trials=len(trials),
+                    ramp_s=ramp_s, hold_s=hold_s,
+                )
+            except RuntimeError:
+                continue  # invalid trial (disconnected), skip and continue
             new_results.append(r)
             if rest_s > 0:
                 rest_end = time.monotonic() + rest_s
