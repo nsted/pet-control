@@ -269,11 +269,14 @@ class RobotBackend(_BackendBase):
                 max_step = LOOP_LIMITS.max_speed_rad_s * dt
                 delta = p_target - last_p
                 pos_rad = last_p + max(min(delta, max_step), -max_step)
-                vel = (pos_rad - last_p) / dt
+                if cmd.velocity is not None:
+                    vel = cmd.velocity
+                else:
+                    vel = (pos_rad - last_p) / dt
                 vel = max(MOTOR_LIMITS.vel_min, min(MOTOR_LIMITS.vel_max, vel))
             else:
                 pos_rad = last_p
-                vel = 0.0
+                vel = cmd.velocity if cmd.velocity is not None else 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
             self._pending_frames[sid] = _encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff)

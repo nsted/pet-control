@@ -26,6 +26,7 @@ ERR nibble codes from the GL40 II reply frame (upper 4 bits of byte 0):
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -157,6 +158,7 @@ class PowerManager:
         self._budget_scale: float = 1.0
         self._budget_total_est: float = 0.0
         self._budget_per_motor_est: dict[int, float] = {}
+        self._predictive_scale: float = 1.0
 
         # Bin-pack state: active bin + pending queue
         self._active_motor_set: set[int] = set()
@@ -526,7 +528,20 @@ class PowerManager:
 
         self._budget_total_est = sum(estimates.get(m, worst_case_a) for m in self._active_motor_set)
 
-        # 6. Reactive EMA scale — distribute reduction onto heaviest active motors first.
+        # 6. Predictive pre-filter: if the forward model says these commands would exceed
+        #    budget, scale kp and t_ff down before the reactive backstop sees them.
+        #    The reactive backstop then adjusts further based on measured bus current.
+        cmd_map = {cmd.servo_id: cmd for cmd in commands}
+        active_cmd_list = [cmd_map[mid] for mid in self._active_motor_set if mid in cmd_map]
+        pred_s = self._compute_predictive_scale(active_cmd_list, state)
+        self._predictive_scale = pred_s
+        if pred_s < 1.0:
+            cmd_map = {
+                cmd.servo_id: replace(cmd, kp=cmd.kp * pred_s, torque_ff=cmd.torque_ff * pred_s)
+                for cmd in commands
+            }
+
+        # 7. Reactive EMA scale — distribute reduction onto heaviest active motors first.
         active_estimates = {mid: estimates[mid] for mid in self._active_motor_set if mid in estimates}
         per_motor_reactive: dict[int, float] = {}
         if self._reactive_scale < 1.0 and active_estimates:
@@ -540,23 +555,113 @@ class PowerManager:
                     per_motor_reactive[motor_id] = max(0.0, (i_est - cut) / i_est) if i_est > 0 else 1.0
                     reduction_remaining -= cut
 
-        # 7. Apply reactive scale — per_motor_reactive only contains motors being throttled.
+        # 8. Build and return active commands (scaled) + pending IDs.
         self._budget_scale = min(per_motor_reactive.values()) if per_motor_reactive else 1.0
-        per_motor_scale = per_motor_reactive
 
-        # 9. Build and return active commands (scaled) + pending IDs.
-        cmd_map = {cmd.servo_id: cmd for cmd in commands}
         active_commands: list[ServoCommand] = []
         for mid in self._active_motor_set:
             cmd = cmd_map.get(mid)
             if cmd is None:
                 continue
-            s = per_motor_scale.get(mid, 1.0)
+            s = per_motor_reactive.get(mid, 1.0)
             if s < 1.0:
                 cmd = replace(cmd, kp=cmd.kp * s, torque_ff=cmd.torque_ff * s)
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
+
+    def _compute_predictive_scale(
+        self, commands: list[ServoCommand], state: RobotState
+    ) -> float:
+        """Find the largest s ∈ [0,1] such that forward-modelled total bus current ≤ budget.
+
+        Per-motor predicted torque when kp and t_ff are scaled by s (kd unchanged):
+            τᵢ(s) = s·Aᵢ + Bᵢ
+            Aᵢ = kp·(p_des − θ)  + t_ff          (scalable part)
+            Bᵢ = kd·(v_des − ω)                   (kd part; v_des = cmd.velocity or ω)
+
+        When cmd.velocity is None, v_des = ω so Bᵢ = 0 and the kd contribution is
+        not predicted. The reactive EMA backstop covers any resulting residual error.
+
+        Predicted current:
+            Iᵢ(s) = base + coeff·τᵢ(s)²·(V_nom/V) + mech·|τᵢ(s)|·|ω|/V
+
+        I_total(s) is an upward-opening quadratic in s. When I(0) < budget < I(1),
+        it crosses the budget exactly once from below to above in (0,1) and binary
+        search converges to that crossing.
+        """
+        b = POWER_BUDGET
+        V = max(state.battery_voltage_v, 8.0)
+        budget = self._effective_budget()
+        Vn = b.bus_voltage_nominal_v
+
+        terms: list[tuple[float, float, float]] = []  # (A, B, omega)
+        for cmd in commands:
+            theta = state.servo_positions.get(cmd.servo_id, cmd.position or 0.0)
+            omega = state.motor_velocities.get(cmd.servo_id, 0.0)
+            v_des = cmd.velocity if cmd.velocity is not None else omega
+            p_des = cmd.position if cmd.position is not None else theta
+            A = cmd.kp * (p_des - theta) + cmd.torque_ff
+            B = cmd.kd * (v_des - omega)
+            terms.append((A, B, omega))
+
+        def i_total(s: float) -> float:
+            total = 0.0
+            for A, B, om in terms:
+                tau = s * A + B
+                total += (
+                    b.per_motor_base_a
+                    + b.per_motor_torque_coeff * tau ** 2 * Vn / V
+                    + b.per_motor_mech_coeff * abs(tau) * abs(om) / V
+                )
+            return total
+
+        if i_total(1.0) <= budget:
+            return 1.0
+
+        i_at_0 = i_total(0.0)
+        if i_at_0 >= budget:
+            # kd contribution alone exceeds budget; scaling kp/t_ff cannot help.
+            logger.warning(
+                "[PowerManager] Predicted I at s=0: %.2fA >= budget %.1fA — kd dominant, cannot reduce further",
+                i_at_0, budget,
+            )
+            return 0.0
+
+        # I(0) < budget < I(1): binary search for the crossing point.
+        # The quadratic opens upward and crosses budget once from below to above in (0,1).
+        lo, hi = 0.0, 1.0
+        for _ in range(16):
+            mid = (lo + hi) * 0.5
+            if i_total(mid) > budget:
+                hi = mid
+            else:
+                lo = mid
+        s = lo
+
+        actual = i_total(s)
+        if actual > budget:
+            logger.warning(
+                "[PowerManager] Predictive scale s=%.3f still predicts %.2fA > budget %.1fA",
+                s, actual, budget,
+            )
+
+        prev = self._predictive_scale
+        if prev == 1.0 and s < 1.0:
+            logger.warning(
+                "[PowerManager] Predictive budget engaged: s=%.2f (predicted %.2fA → budget %.1fA)",
+                s, i_total(1.0), budget,
+            )
+        elif prev < 1.0 and s == 1.0:
+            logger.info("[PowerManager] Predictive budget cleared")
+        elif prev < 1.0 and s < 1.0:
+            for threshold in (0.9, 0.75, 0.5, 0.25):
+                if prev > threshold >= s:
+                    logger.warning("[PowerManager] Predictive scale deepening: s=%.2f", s)
+                elif prev < threshold <= s:
+                    logger.info("[PowerManager] Predictive scale recovering: s=%.2f", s)
+
+        return s
 
     def _effective_budget(self) -> float:
         """Current budget ceiling based on detected power source."""
@@ -701,6 +806,7 @@ class PowerManager:
             current_amps_raw=self._last_current_a,
             current_amps_filtered=self._current_ema,
             current_drive_scale=self._reactive_scale,
+            predictive_scale=self._predictive_scale,
             system_state=self._system_state.value,
             motor_states={
                 mid: ms.thermal_state.value for mid, ms in self._motor_states.items()

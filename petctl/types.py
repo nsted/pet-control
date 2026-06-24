@@ -30,6 +30,7 @@ class PowerTelemetry:
     current_amps_raw: float = 0.0
     current_amps_filtered: float = 0.0
     current_drive_scale: float = 1.0        # reactive EMA backstop scale (1.0 = full drive)
+    predictive_scale: float = 1.0           # forward-model pre-filter scale applied before reactive
     system_state: str = "RUNNING"
     # Per-motor state (keyed by servo_id)
     motor_states: dict[int, str] = field(default_factory=dict)
@@ -405,6 +406,7 @@ class ServoCommand:
 
     servo_id: int
     position: float | None = None
+    velocity: float | None = None
     kp: float = MOTOR_LIMITS.kp_default
     kd: float = MOTOR_LIMITS.kd_default
     torque_ff: float = 0.0
