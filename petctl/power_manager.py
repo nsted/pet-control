@@ -546,31 +546,18 @@ class PowerManager:
                 for cmd in commands
             }
 
-        # 7. Reactive EMA scale — distribute reduction onto heaviest active motors first.
-        active_estimates = {mid: estimates[mid] for mid in self._active_motor_set if mid in estimates}
-        per_motor_reactive: dict[int, float] = {}
-        if self._reactive_scale < 1.0 and active_estimates:
-            total_active = sum(active_estimates.values())
-            reduction_remaining = total_active * (1.0 - self._reactive_scale)
-            for motor_id, i_est in sorted(active_estimates.items(), key=lambda x: x[1], reverse=True):
-                if reduction_remaining <= 0:
-                    per_motor_reactive[motor_id] = 1.0
-                else:
-                    cut = min(reduction_remaining, i_est)
-                    per_motor_reactive[motor_id] = max(0.0, (i_est - cut) / i_est) if i_est > 0 else 1.0
-                    reduction_remaining -= cut
-
-        # 8. Build and return active commands (scaled) + pending IDs.
-        self._budget_scale = min(per_motor_reactive.values()) if per_motor_reactive else 1.0
+        # 7. Reactive EMA scale — apply uniformly across all active motors.
+        #    Heaviest-first distribution was causing lurches: noisy tau_fb rankings
+        #    changed each tick, snapping individual motor scales discontinuously.
+        self._budget_scale = self._reactive_scale
 
         active_commands: list[ServoCommand] = []
         for mid in self._active_motor_set:
             cmd = cmd_map.get(mid)
             if cmd is None:
                 continue
-            s = per_motor_reactive.get(mid, 1.0)
-            if s < 1.0:
-                cmd = replace(cmd, kp=cmd.kp * s, torque_ff=cmd.torque_ff * s)
+            if self._reactive_scale < 1.0:
+                cmd = replace(cmd, kp=cmd.kp * self._reactive_scale, torque_ff=cmd.torque_ff * self._reactive_scale)
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
