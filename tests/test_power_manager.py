@@ -423,7 +423,10 @@ class TestTelemetry:
         w.tick(_state(current_a=2.0))
         t = w.pm.get_telemetry(14.5)
         assert t.current_amps_raw == pytest.approx(2.0)
-        assert t.current_amps_filtered == pytest.approx(0.4, abs=0.01)  # 0.2 * 2.0
+        # Slow EMA: alpha=0.033; after 1 tick from 0 → 0.033 × 2.0 = 0.066
+        assert t.current_amps_filtered == pytest.approx(0.033 * 2.0, abs=0.005)
+        # Fast EMA: alpha=0.3; after 1 tick from 0 → 0.3 × 2.0 = 0.6
+        assert t.current_amps_filtered_fast == pytest.approx(0.3 * 2.0, abs=0.01)
         assert t.current_drive_scale == pytest.approx(1.0)
 
     def test_telemetry_current_scale_saturated(self) -> None:
@@ -451,22 +454,24 @@ class TestTelemetry:
 
 class TestCurrentLimitingAsymmetricDecay:
     def test_ema_decays_faster_on_recovery(self) -> None:
-        """After sustained overcurrent clears, scale starts recovering quickly because
-        asymmetric EMA decay (recovery_multiplier=3×) brings EMA below the P-start
-        threshold within ~2 ticks. Full recovery is slower — bounded by the I term
-        draining at ki_decay rate (~40 ticks) and the rate limiter (~50 ticks at 1.0/s)."""
+        """After sustained overcurrent clears, scale recovers because:
+          - Fast EMA (alpha=0.3) drains below the P-start threshold in ~4 ticks, releasing P term.
+          - I term then drains slowly (ki × drain_ratio), so full recovery takes ~60+ more ticks.
+        Slow EMA is telemetry only and not in the control path."""
         w = _PM()
         for _ in range(100):
-            w.tick(_state(current_a=5.0))  # EMA saturates; scale→0, I term→1
+            w.tick(_state(current_a=5.0))  # fast EMA saturates; scale→0, I term→1
         assert w.pm._reactive_scale == pytest.approx(0.0, abs=0.01)
 
-        # Fast EMA drain brings P term to zero within ~2 ticks → scale starts rising
-        for _ in range(5):
+        # Fast EMA drains from 5A→below 2A budget threshold in ~4 ticks at 1A input,
+        # P term→0, rate limiter allows scale to tick upward.
+        for _ in range(6):
             w.tick(_state(current_a=1.0))
         assert w.pm._reactive_scale > 0.0
 
-        # Full recovery after I term drains and rate limiter allows it (~50 more ticks)
-        for _ in range(60):
+        # Full recovery: integral drains at ki × drain_ratio × |error| × dt = 5×0.1×1×0.02 = 0.01/tick.
+        # Starting at 1.0, needs ~100 more ticks to drain fully → scale reaches 1.0.
+        for _ in range(110):
             w.tick(_state(current_a=1.0))
         assert w.pm._reactive_scale == pytest.approx(1.0, abs=0.01)
 

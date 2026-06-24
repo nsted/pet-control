@@ -126,6 +126,7 @@ class PowerManager:
         self,
         thresholds: PowerThresholds = PowerThresholds(),
         reactive_ema_alpha: float | None = None,
+        reactive_ema_alpha_fast: float | None = None,
         bin_policy: BinPackPolicy | None = None,
         reactive_integral_ki: float | None = None,
         reactive_integral_ki_drain_ratio: float | None = None,
@@ -137,6 +138,9 @@ class PowerManager:
         # Allow override for testing (defaults come from POWER_BUDGET)
         self._reactive_ema_alpha: float = (
             reactive_ema_alpha if reactive_ema_alpha is not None else POWER_BUDGET.reactive_ema_alpha
+        )
+        self._reactive_ema_alpha_fast: float = (
+            reactive_ema_alpha_fast if reactive_ema_alpha_fast is not None else POWER_BUDGET.reactive_ema_alpha_fast
         )
         self._reactive_integral_ki: float = (
             reactive_integral_ki if reactive_integral_ki is not None else POWER_BUDGET.reactive_integral_ki
@@ -164,11 +168,19 @@ class PowerManager:
         self._wall_confirm_count: int = 0  # positive = confirming wall; negative = confirming return to battery
 
         # Reactive PI backstop
-        self._current_ema: float = 0.0
+        self._current_ema: float = 0.0       # slow EMA — drives I term
+        self._current_ema_fast: float = 0.0  # fast EMA — drives P term
         self._last_current_a: float = 0.0
         self._reactive_scale: float = 1.0
         self._current_integral: float = 0.0   # I term; maps to scale reduction [0, 1]
         self._last_current_t: float = 0.0
+
+        # Peak current tracking (rolling 10-second window)
+        _PEAK_WINDOW_S = 10.0
+        self._peak_window_s: float = _PEAK_WINDOW_S
+        self._peak_current_a: float = 0.0    # peak in current window
+        self._peak_window_start_t: float = 0.0  # wall-time start of current window
+        self._last_logged_peak_a: float = 0.0   # last peak we emitted a log line for
 
         # Budget state (populated by allocate_budget)
         self._budget_scale: float = 1.0
@@ -286,23 +298,53 @@ class PowerManager:
     def _update_current(self, current_a: float, now: float) -> None:
         b = POWER_BUDGET
         alpha = self._reactive_ema_alpha
-        # Asymmetric EMA: build up at normal alpha, drain faster when current is falling.
+        # Slow EMA: ~30-sample window; drives I term (sustained over-budget detection).
         if current_a >= self._current_ema:
             self._current_ema = alpha * current_a + (1.0 - alpha) * self._current_ema
         else:
             decay_alpha = min(1.0, alpha * b.reactive_recovery_multiplier)
             self._current_ema = decay_alpha * current_a + (1.0 - decay_alpha) * self._current_ema
+        # Fast EMA: ~3-sample window; drives P term for rapid spike response.
+        alpha_fast = self._reactive_ema_alpha_fast
+        if current_a >= self._current_ema_fast:
+            self._current_ema_fast = alpha_fast * current_a + (1.0 - alpha_fast) * self._current_ema_fast
+        else:
+            decay_alpha_fast = min(1.0, alpha_fast * b.reactive_recovery_multiplier)
+            self._current_ema_fast = decay_alpha_fast * current_a + (1.0 - decay_alpha_fast) * self._current_ema_fast
         self._last_current_a = current_a
 
         dt = min(now - self._last_current_t, 0.1) if self._last_current_t > 0.0 else 0.0
         self._last_current_t = now
 
+        # Rolling peak: track max over a 10-second window; log when it exceeds budget.
+        if self._peak_window_start_t == 0.0:
+            self._peak_window_start_t = now
+        self._peak_current_a = max(self._peak_current_a, current_a)
+        if now - self._peak_window_start_t >= self._peak_window_s:
+            budget_now = self._effective_budget()
+            if self._peak_current_a > budget_now:
+                logger.warning(
+                    "[PowerManager] Peak current last %.0fs: %.2fA (budget=%.1fA, over by %.2fA)",
+                    self._peak_window_s, self._peak_current_a, budget_now,
+                    self._peak_current_a - budget_now,
+                )
+            else:
+                logger.info(
+                    "[PowerManager] Peak current last %.0fs: %.2fA (budget=%.1fA)",
+                    self._peak_window_s, self._peak_current_a, budget_now,
+                )
+            self._last_logged_peak_a = self._peak_current_a
+            self._peak_current_a = 0.0
+            self._peak_window_start_t = now
+
         budget = self._effective_budget()
         start = budget * b.reactive_backstop_factor
         zero  = budget * b.reactive_cutoff_factor
 
-        # P term: EMA-only so brief oscillatory peaks don't engage the backstop.
-        v = self._current_ema
+        # P term: fast EMA only — catches spikes within 2–3 ticks, releases once
+        # current drops (fast EMA drains in ~4 ticks). Sustained overcurrent is handled
+        # by the I term (raw current, builds fast, drains slowly). Slow EMA is telemetry.
+        v = self._current_ema_fast
         if v >= zero:
             p_term = 1.0
         elif v >= start:
@@ -333,18 +375,18 @@ class PowerManager:
         if new_scale != self._reactive_scale:
             self._log_event(
                 f"reactive_backstop: {self._reactive_scale:.2f}→{new_scale:.2f} "
-                f"(I_ema={v:.2f}A budget={budget:.1f}A)"
+                f"(I_ema={self._current_ema:.2f}A I_ema_fast={self._current_ema_fast:.2f}A budget={budget:.1f}A)"
             )
             if self._reactive_scale == 1.0 and new_scale < 1.0:
                 logger.warning(
                     "[PowerManager] Current limit reached — reactive backstop engaged "
-                    "(I=%.2fA EMA=%.2fA budget=%.1fA scale→%.2f)",
-                    current_a, self._current_ema, budget, new_scale,
+                    "(I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA scale→%.2f)",
+                    current_a, self._current_ema, self._current_ema_fast, budget, new_scale,
                 )
             elif self._reactive_scale < 1.0 and new_scale == 1.0:
                 logger.info(
-                    "[PowerManager] Reactive backstop cleared (I=%.2fA EMA=%.2fA budget=%.1fA)",
-                    current_a, self._current_ema, budget,
+                    "[PowerManager] Reactive backstop cleared (I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA)",
+                    current_a, self._current_ema, self._current_ema_fast, budget,
                 )
             else:
                 # Log each time scale crosses a significant threshold so depth is visible.
@@ -352,14 +394,14 @@ class PowerManager:
                     if self._reactive_scale > threshold >= new_scale:
                         logger.warning(
                             "[PowerManager] Backstop deepening: scale→%.2f "
-                            "(I=%.2fA EMA=%.2fA budget=%.1fA)",
-                            new_scale, current_a, self._current_ema, budget,
+                            "(I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA)",
+                            new_scale, current_a, self._current_ema, self._current_ema_fast, budget,
                         )
                     elif self._reactive_scale < threshold <= new_scale:
                         logger.info(
                             "[PowerManager] Backstop recovering: scale→%.2f "
-                            "(I=%.2fA EMA=%.2fA budget=%.1fA)",
-                            new_scale, current_a, self._current_ema, budget,
+                            "(I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA)",
+                            new_scale, current_a, self._current_ema, self._current_ema_fast, budget,
                         )
         self._reactive_scale = new_scale
 
@@ -550,13 +592,25 @@ class PowerManager:
         #    changed each tick, snapping individual motor scales discontinuously.
         self._budget_scale = self._reactive_scale
 
+        # Predictive per-motor torque_ff cap: solve τ_max from I ≈ base + coeff × τ²
+        # so each motor cannot draw more than its budget share even before any EMA reacts.
+        if b.enable_per_motor_torque_cap and self._active_motor_set:
+            n_active = len(self._active_motor_set)
+            budget_per_motor = budget / max(1, n_active)
+            headroom = max(0.0, budget_per_motor - b.per_motor_base_a)
+            tau_max = math.sqrt(headroom / b.per_motor_torque_coeff) if b.per_motor_torque_coeff > 0 else float("inf")
+            for mid in list(cmd_map):
+                cmd = cmd_map[mid]
+                if abs(cmd.torque_ff) > tau_max:
+                    cmd_map[mid] = replace(cmd, torque_ff=math.copysign(tau_max, cmd.torque_ff))
+
         active_commands: list[ServoCommand] = []
         for mid in self._active_motor_set:
             cmd = cmd_map.get(mid)
             if cmd is None:
                 continue
             if self._reactive_scale < 1.0:
-                cmd = replace(cmd, kp=cmd.kp * self._reactive_scale, torque_ff=cmd.torque_ff * self._reactive_scale)
+                cmd = replace(cmd, kp=cmd.kp * self._reactive_scale, kd=cmd.kd * self._reactive_scale, torque_ff=cmd.torque_ff * self._reactive_scale)
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
@@ -705,6 +759,8 @@ class PowerManager:
             voltage_state=self._voltage_state.value,
             current_amps_raw=self._last_current_a,
             current_amps_filtered=self._current_ema,
+            current_amps_filtered_fast=self._current_ema_fast,
+            current_amps_peak=self._peak_current_a,
             current_drive_scale=self._reactive_scale,
             system_state=self._system_state.value,
             motor_states={
