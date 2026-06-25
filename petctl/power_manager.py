@@ -17,6 +17,9 @@ Protection layers (in priority order):
      motor commands uniformly when EMA exceeds budget. P term engages at budget,
      reaches full cut at budget × reactive_cutoff_factor. I term integrates sustained
      overage to prevent the scale from recovering prematurely.
+  5. Sustained peak cutoff: global emergency stop when raw current exceeds
+     max_peak_current_a continuously for peak_current_cutoff_s (0.5 s). Timer resets
+     the moment current drops back below the peak limit.
 
 ERR nibble codes from the GL40 II reply frame (upper 4 bits of byte 0):
     0 = Disable, 1 = Enable, 9 = Under-voltage, A = Over-current,
@@ -179,6 +182,7 @@ class PowerManager:
         # Peak current tracking
         self._peak_current_a: float = 0.0    # highest reading seen since last drop below budget
         self._window_peak_a: float = 0.0     # max current seen in the current 1-s status window
+        self._peak_overage_start: float | None = None  # monotonic time when current first exceeded peak limit
 
         # Budget state (populated by allocate_budget)
         self._budget_scale: float = 1.0
@@ -326,6 +330,29 @@ class PowerManager:
             )
         elif current_a <= budget_now and self._peak_current_a > 0.0:
             self._peak_current_a = 0.0  # reset peak once we're back under budget
+
+        # Sustained peak cutoff: emergency stop if current stays above the peak limit.
+        peak_limit = self._effective_peak_budget()
+        if current_a > peak_limit:
+            if self._peak_overage_start is None:
+                self._peak_overage_start = now
+                logger.warning(
+                    "[PowerManager] Current exceeded peak limit: %.2fA > %.1fA — starting %.1fs cutoff timer",
+                    current_a, peak_limit, POWER_BUDGET.peak_current_cutoff_s,
+                )
+            elif now - self._peak_overage_start >= POWER_BUDGET.peak_current_cutoff_s:
+                self._trigger_global_emergency(
+                    f"peak_current_sustained: {current_a:.2f}A > {peak_limit:.1f}A "
+                    f"for {now - self._peak_overage_start:.2f}s"
+                )
+                return
+        else:
+            if self._peak_overage_start is not None:
+                logger.info(
+                    "[PowerManager] Peak current overage cleared (%.2fA <= %.1fA, lasted %.3fs)",
+                    current_a, peak_limit, now - self._peak_overage_start,
+                )
+            self._peak_overage_start = None
 
         budget = self._effective_budget()
         start = budget * b.reactive_backstop_factor
@@ -659,6 +686,11 @@ class PowerManager:
             return self._budget_override
         b = POWER_BUDGET
         return b.wall_max_bus_current_a if self._power_source == PowerSource.WALL else b.max_bus_current_a
+
+    def _effective_peak_budget(self) -> float:
+        """Peak current limit above which sustained draw triggers an emergency stop."""
+        b = POWER_BUDGET
+        return b.wall_max_peak_current_a if self._power_source == PowerSource.WALL else b.max_peak_current_a
 
     # ------------------------------------------------------------------
     # Internal helpers

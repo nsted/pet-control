@@ -248,6 +248,10 @@ class PowerBudgetConfig:
     wall_max_bus_current_a: float = 2.5      # dev: 2.5A; prod: 6.0A (slip ring ceiling)
     wall_max_peak_current_a: float = 8.0
 
+    # Sustained peak cutoff: global emergency stop when measured current exceeds
+    # max_peak_current_a (or wall equivalent) for this long without dropping back.
+    peak_current_cutoff_s: float = 0.5
+
     # Low-voltage motor cutoff (3S LiPo minimum safe discharge ≈10V)
     low_voltage_cutoff_v: float = 10.0
     low_voltage_recovery_v: float = 10.5    # hysteresis to prevent flapping
