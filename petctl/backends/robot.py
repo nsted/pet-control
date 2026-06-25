@@ -60,6 +60,7 @@ class RobotBackend(_BackendBase):
         auto_reconnect: bool = True,
         reconnect_delay: float = 2.0,
         motor_ids: Optional[Sequence[int]] = None,
+        fsr_offsets: Optional[dict[int, dict[str, float]]] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -67,6 +68,9 @@ class RobotBackend(_BackendBase):
         self.calibration_samples = calibration_samples
         self.auto_reconnect = auto_reconnect
         self.reconnect_delay = reconnect_delay
+        # Per-module FSR zero-pressure offsets: {module_id: {face: float}}.
+        # Subtracted after normalization; values from scripts/calibrate_fsr.py.
+        self._fsr_offsets: dict[int, dict[str, float]] = fsr_offsets or {}
         if motor_ids is None:
             self._configured_motor_ids: Optional[tuple[int, ...]] = None
         else:
@@ -605,14 +609,15 @@ class RobotBackend(_BackendBase):
             if mod_id == 0:
                 middle_pads = middle_pads[::-1]
 
+            fsr_off = self._fsr_offsets.get(mod_id, {})
             modules[mod_id] = ModuleSensors(
                 module_id=mod_id,
                 touch_left_pads=left_pads,
                 touch_right_pads=right_pads,
                 touch_middle_pads=middle_pads,
-                pressure_middle=_normalize_pressure(middle_p),
-                pressure_left=_normalize_pressure(left_p),
-                pressure_right=_normalize_pressure(right_p),
+                pressure_left=max(0.0, _normalize_pressure(left_p) - fsr_off.get("left", 0.0)),
+                pressure_right=max(0.0, _normalize_pressure(right_p) - fsr_off.get("right", 0.0)),
+                pressure_middle=max(0.0, _normalize_pressure(middle_p) - fsr_off.get("middle", 0.0)),
             )
         return modules, battery_current_raw, battery_voltage_raw
 

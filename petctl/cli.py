@@ -14,7 +14,9 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
+import os
 import sys
 from typing import Optional
 
@@ -35,6 +37,26 @@ def _parse_motor_ids(s: Optional[str]) -> Optional[tuple[int, ...]]:
         return None
     parts = [int(p.strip()) for p in str(s).split(",") if p.strip()]
     return tuple(parts) if parts else None
+
+
+_FSR_OFFSETS_FILE = "fsr_offsets.json"
+
+
+def _load_fsr_offsets() -> Optional[dict[int, dict[str, float]]]:
+    """Load fsr_offsets.json from the current directory, if present."""
+    if not os.path.exists(_FSR_OFFSETS_FILE):
+        return None
+    try:
+        with open(_FSR_OFFSETS_FILE) as f:
+            data = json.load(f)
+        offsets = {int(k): v for k, v in data["offsets"].items()}
+        logging.getLogger(__name__).info(
+            "[cli] Loaded FSR offsets from %s (%d modules)", _FSR_OFFSETS_FILE, len(offsets)
+        )
+        return offsets
+    except Exception as e:
+        logging.getLogger(__name__).warning("[cli] Could not load %s: %s", _FSR_OFFSETS_FILE, e)
+        return None
 
 
 @app.command()
@@ -180,6 +202,7 @@ def run(
             port=port,
             calibrate_on_connect=calibrate,
             motor_ids=_parse_motor_ids(motors),
+            fsr_offsets=_load_fsr_offsets(),
         )
     else:
         typer.echo(f"Unknown backend '{backend}'. Choose: mock, robot", err=True)
