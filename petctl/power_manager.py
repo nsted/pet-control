@@ -436,7 +436,7 @@ class PowerManager:
             )
             window_peak = self._window_peak_a
             self._window_peak_a = 0.0
-            log_fn = logger.warning if window_peak > budget * 0.9 else logger.info
+            log_fn = logger.warning if window_peak > budget * 0.9 else logger.debug
             log_fn(
                 "[PowerManager] I=%.2fA peak=%.2fA budget=%.1fA scale=%.2f EMA=%.2fA integral=%.2f  τ[Nm]:%s",
                 current_a, window_peak, budget, self._reactive_scale, self._current_ema,

@@ -240,26 +240,26 @@ class KeyboardMotion(Motion):
                             self._selected = int(char)
                             msg = "module %s selected" % char
                         return
-                    if char in ("K", "k") and self._ctrl_held:
+                    if char in ("K", "k", "\x0b") and self._ctrl_held:
                         self._adjustment_enabled = not self._adjustment_enabled
                         msg = "adjustment %s" % ("enabled" if self._adjustment_enabled else "disabled")
                         return
-                    if char in ("R", "r") and self._ctrl_held:
+                    if char in ("R", "r", "\x12") and self._ctrl_held:
                         self._reset_requested = True
                         msg = "reset requested"
                         return
-                    if char in ("H", "h") and self._ctrl_held:
+                    if char in ("H", "h", "\x08") and self._ctrl_held:
                         self._save_home_requested = True
                         msg = "save home requested"
                         return
-                    if char in ("D", "d") and self._ctrl_held:
+                    if char in ("D", "d", "\x04") and self._ctrl_held:
                         self._deactivate_requested = True
                         msg = "deactivate motors requested"
                         return
-                    if char in ("L", "l") and self._ctrl_held:
+                    if char in ("L", "l", "\x0c") and self._ctrl_held:
                         toggle_labels = True
                         msg = "toggle sensor labels"
-                    if char in ("V", "v") and self._ctrl_held:
+                    if char in ("V", "v", "\x16") and self._ctrl_held:
                         toggle_viewer = True
                         msg = "toggle viewer"
                 except AttributeError:
