@@ -199,8 +199,8 @@ class PowerBudgetConfig:
     """
 
     # Continuous budget ceiling — single value to change between dev and production
-    max_bus_current_a: float = 2.0          # dev: 2.0; prod UPS: 4.0; prod wall: 6.0
-    max_peak_current_a: float = 3.0         # dev: 3.0; prod UPS: 5.5; prod wall: 8.0
+    max_bus_current_a: float = 4.0          # dev: 2.0; prod UPS: 4.0; prod wall: 6.0
+    max_peak_current_a: float = 5.5         # dev: 3.0; prod UPS: 5.5; prod wall: 8.0
 
     # Per-motor bus current model using actual torque + velocity feedback:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
@@ -245,7 +245,7 @@ class PowerBudgetConfig:
     wall_voltage_threshold_v: float = 14.3   # EMA must exceed this to confirm wall
     wall_return_threshold_v: float = 13.8    # EMA must drop below this to return to battery
     wall_confirm_ticks: int = 50             # ~0.25 s at 200 Hz controller rate
-    wall_max_bus_current_a: float = 2.5      # dev: 2.5A; prod: 6.0A (slip ring ceiling)
+    wall_max_bus_current_a: float = 6.0      # dev: 2.5A; prod: 6.0A (slip ring ceiling)
     wall_max_peak_current_a: float = 8.0
 
     # Sustained peak cutoff: global emergency stop when measured current exceeds
