@@ -28,8 +28,10 @@ class PowerTelemetry:
     voltage_ema_v: Optional[float] = None   # heavy EMA — for display only, not safety
     voltage_state: str = "NORMAL"
     current_amps_raw: float = 0.0
-    current_amps_filtered: float = 0.0
-    current_drive_scale: float = 1.0        # 1.0 = full drive; <1.0 = current-limited
+    current_amps_filtered: float = 0.0      # slow EMA (~1 s window); drives I term
+    current_amps_filtered_fast: float = 0.0  # fast EMA (~90 ms window); drives P term
+    current_amps_peak: float = 0.0          # max raw current seen in the current 1-s status window
+    current_drive_scale: float = 1.0        # reactive EMA backstop scale (1.0 = full drive)
     system_state: str = "RUNNING"
     # Per-motor state (keyed by servo_id)
     motor_states: dict[int, str] = field(default_factory=dict)
@@ -37,6 +39,14 @@ class PowerTelemetry:
     motor_compliance_scales: dict[int, float] = field(default_factory=dict)
     # State transition events since last tick
     events: list[str] = field(default_factory=list)
+    # Power budget telemetry
+    power_source: str = "battery"                                    # "battery" | "wall"
+    estimated_total_current_a: float = 0.0                          # model-predicted aggregate draw
+    per_motor_estimated_current: dict[int, float] = field(default_factory=dict)
+    budget_scale_applied: float = 1.0                               # <1.0 when budget was exceeded
+    voltage_cutoff_active: bool = False                             # True when < low_voltage_cutoff_v
+    active_motor_ids: list[int] = field(default_factory=list)       # motors in the current active bin
+    pending_motor_ids: list[int] = field(default_factory=list)      # motors queued awaiting headroom
 
 
 @dataclass
@@ -397,6 +407,7 @@ class ServoCommand:
 
     servo_id: int
     position: float | None = None
+    velocity: float | None = None
     kp: float = MOTOR_LIMITS.kp_default
     kd: float = MOTOR_LIMITS.kd_default
     torque_ff: float = 0.0

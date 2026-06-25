@@ -21,3 +21,9 @@ env/
 
 # macOS
 .DS_Store
+
+# Secrets
+.webui_secret_key
+
+# Screen logs
+screenlog.*

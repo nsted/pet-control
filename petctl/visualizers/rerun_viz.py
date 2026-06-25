@@ -477,6 +477,8 @@ class RerunVisualizer(Visualizer):
         rr.log("power/voltage/state", rr.TextLog(pt.voltage_state))
         rr.log("power/current/raw_a", rr.Scalars(pt.current_amps_raw))
         rr.log("power/current/filtered_a", rr.Scalars(pt.current_amps_filtered))
+        rr.log("power/current/filtered_fast_a", rr.Scalars(pt.current_amps_filtered_fast))
+        rr.log("power/current/peak_10s_a", rr.Scalars(pt.current_amps_peak))
         rr.log("power/current/drive_scale", rr.Scalars(pt.current_drive_scale))
         rr.log("power/global_state", rr.TextLog(pt.system_state))
         for mid, state_str in pt.motor_states.items():

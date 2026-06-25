@@ -936,6 +936,92 @@ class StrokeCurlMotion(Motion):
         return _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
 
 
+class TouchCurlMotion(Motion):
+    """Idle until touched; curl toward the hand with full power; fade to idle on release.
+
+    Touch on any module activates it and its two neighbors.  All activated
+    modules set a position target toward the touched face (slalom signs) and
+    command it with full kp/kd.  When the hand leaves, kp/kd scale linearly
+    from 1→0 over FADE_S — the joint holds its position with decreasing grip
+    then freespins.  No commands are emitted for motors at gain=0, so the
+    power manager can evict them from the active set.
+    """
+
+    name = "touch-curl"
+
+    TARGET_DEG: float = 45.0
+    MODULE_TOUCH_THRESHOLD: float = 0.06
+    DIRECTION_THRESHOLD: float = 0.15
+    FADE_S: float = 3.0
+
+    def __init__(self) -> None:
+        from petctl.perception.stroke import PAD_THRESHOLD
+        self._PAD_THRESHOLD = PAD_THRESHOLD
+        self._target_rad: dict[int, float] = {}
+        self._gain: dict[int, float] = {}
+        self._curl_dir: float = 0.0
+        self._was_active: set[int] = set()
+
+    def on_start(self, controller: "Controller") -> None:
+        self._target_rad = {}
+        self._gain = {}
+        self._curl_dir = 0.0
+        self._was_active = set()
+        logger.info("[BEHAVIOR] TouchCurl")
+        logger.debug("[BEHAVIOR] TouchCurl: idle until touched; curl toward hand; %.1fs torque fade on release.", self.FADE_S)
+
+    def update(self, state: RobotState) -> list[ServoCommand]:
+        dt = max(state.dt, 1e-4)
+        active = state.active_servo_ids
+
+        new_dir = _sense_face_direction(state, self._PAD_THRESHOLD, self.DIRECTION_THRESHOLD)
+        if new_dir != 0.0:
+            self._curl_dir = new_dir
+        elif self._curl_dir == 0.0:
+            self._curl_dir = 1.0
+
+        directly_touched: set[int] = {
+            sid for sid in active
+            if (s := state.sensors.get(sid)) is not None and s.touch_total >= self.MODULE_TOUCH_THRESHOLD
+        }
+        touching: set[int] = directly_touched | {
+            nb for sid in directly_touched for nb in (sid - 1, sid + 1)
+            if nb in active
+        }
+
+        cmds: list[ServoCommand] = []
+        for sid in sorted(active):
+            if sid in touching:
+                sign = (1.0 if sid % 2 == 1 else -1.0) * self._curl_dir
+                self._target_rad[sid] = math.radians(sign * self.TARGET_DEG)
+                self._gain[sid] = 1.0
+            else:
+                g = self._gain.get(sid, 0.0)
+                if g > 0.0:
+                    self._gain[sid] = max(0.0, g - dt / self.FADE_S)
+
+            gain = self._gain.get(sid, 0.0)
+
+            if gain <= 0.0:
+                if sid in self._was_active:
+                    # One final zero-torque frame so the backend releases cleanly.
+                    self._was_active.discard(sid)
+                    self._target_rad.pop(sid, None)
+                    cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=0.0, kd=0.0, torque_ff=0.0))
+                # else: already idle last tick — omit so bin-pack evicts this motor
+            else:
+                target = self._target_rad.get(sid, 0.0)
+                cmds.append(ServoCommand(
+                    servo_id=sid,
+                    position=target,
+                    kp=MOTOR_LIMITS.kp_default * gain,
+                    kd=MOTOR_LIMITS.kd_default * gain,
+                ))
+                self._was_active.add(sid)
+
+        return cmds
+
+
 class CurlTowardsMotion(StrokeCurlMotion):
     """Curl toward the touched face. Identical to stroke-curl; provided as a named alias."""
 
@@ -1788,6 +1874,7 @@ ALL_PATTERNS: list[type[Motion]] = [
     CurlMotion,
     StrokeReactMotion,
     StrokeCurlMotion,
+    TouchCurlMotion,
     CurlTowardsMotion,
     CurlTowardsNeighborAssistMotion,
     CurlAwayMotion,

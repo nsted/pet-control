@@ -46,7 +46,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from petctl.config import LOOP_LIMITS
+from petctl.config import LOOP_LIMITS, POWER_BUDGET
 from petctl.perception.contact import ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import Backend, Motion, Visualizer
@@ -395,6 +395,15 @@ class Controller:
         self.log_touch = log_touch
         self.log_loop = log_loop
         self.power_manager = PowerManager()
+        if (
+            type(backend).__name__ == "RobotBackend"
+            and POWER_BUDGET.max_bus_current_a <= 2.0
+        ):
+            logger.warning(
+                "[Controller] Real robot running with dev power budget (%.1fA) — "
+                "set max_bus_current_a in config.py for production",
+                POWER_BUDGET.max_bus_current_a,
+            )
         self._gesture_processor = _GestureProcessor()
         self._last_gesture_sensor_ts: float = -1.0
         self._power_reset_requested: bool = False
@@ -610,6 +619,12 @@ class Controller:
                         await self.backend.disable_motor(_mid)
                     except Exception as e:
                         logger.error("[Controller] disable_motor(%d) error: %s", _mid, e)
+            if pm.drain_voltage_cutoff():
+                try:
+                    await self.backend.disable_torques()
+                    logger.warning("[Controller] Voltage cutoff: all motor torques disabled.")
+                except Exception as e:
+                    logger.error("[Controller] voltage_cutoff disable_torques error: %s", e)
             self._state.power_telemetry = pm.get_telemetry(self._state.battery_voltage_v)
 
             # Handle operator power-reset request
@@ -645,21 +660,35 @@ class Controller:
 
             self._apply_slew_to_commands(commands)
 
-            # 3. Send commands (unless dry run), filtered and scaled by PowerManager
+            # 3. Send commands (unless dry run), gated and scaled by PowerManager
             if not self.dry_run and commands:
-                safe_commands = []
-                for cmd in commands:
-                    if not pm.is_motor_enabled(cmd.servo_id):
-                        continue
+                # 3a. Thermal gating — skip disabled motors
+                enabled = [cmd for cmd in commands if pm.is_motor_enabled(cmd.servo_id)]
+
+                # 3b. Thermal compliance scale (independent of budget; handles WARNING state)
+                for cmd in enabled:
                     scale = pm.get_compliance_scale(cmd.servo_id)
                     if scale != 1.0:
                         cmd.kp *= scale
                         cmd.kd *= scale
                         cmd.torque_ff *= scale
-                    safe_commands.append(cmd)
-                if safe_commands:
+
+                # 3c. Budget bin-pack: active bin fires now; pending motors are idled.
+                active_commands, pending_ids = pm.allocate_budget(enabled, self._state)
+                idle_commands = [
+                    ServoCommand(
+                        servo_id=mid,
+                        position=self._state.servo_positions.get(mid, 0.0),
+                        kp=0.0,
+                        kd=0.0,
+                        torque_ff=0.0,
+                    )
+                    for mid in pending_ids
+                ]
+                to_send = active_commands + idle_commands
+                if to_send:
                     try:
-                        await self.backend.send_commands(safe_commands)
+                        await self.backend.send_commands(to_send)
                     except Exception as e:
                         logger.error("[Controller] Backend send_commands error: %s", e)
 

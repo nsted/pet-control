@@ -13,11 +13,12 @@ import pytest
 from petctl.power_manager import (
     MotorThermalState,
     PowerManager,
+    PowerSource,
     PowerThresholds,
     SystemState,
     VoltageState,
 )
-from petctl.types import RobotState
+from petctl.types import RobotState, ServoCommand
 
 # Motor IDs used in tests
 M1, M2 = 1, 2
@@ -34,7 +35,7 @@ def _state(
     drive_temps: dict[int, int] | None = None,
     winding_temps: dict[int, int] | None = None,
     err_codes: dict[int, int] | None = None,
-    voltage_v: float = 14.5,
+    voltage_v: float = 12.0,
     current_a: float = 0.0,
 ) -> RobotState:
     """Build a minimal RobotState for testing."""
@@ -64,8 +65,12 @@ def _state(
 class _PM:
     """Thin wrapper to make tests more readable."""
 
-    def __init__(self, thresholds: PowerThresholds = _FAST_THRESHOLDS) -> None:
-        self.pm = PowerManager(thresholds)
+    def __init__(
+        self,
+        thresholds: PowerThresholds = _FAST_THRESHOLDS,
+        reactive_ema_alpha: float | None = None,
+    ) -> None:
+        self.pm = PowerManager(thresholds, reactive_ema_alpha=reactive_ema_alpha)
         self._now = 1000.0  # arbitrary start time
 
     def tick(self, state: RobotState, dt: float = 0.02) -> PowerManager:
@@ -360,48 +365,37 @@ class TestVoltageEMA:
 # ---------------------------------------------------------------------------
 
 class TestCurrentLimiting:
+    # Reactive backstop thresholds: budget=2.0A, start=2.0*1.00=2.0A, zero=2.0*1.50=3.0A
+
     def test_below_threshold_scale_is_one(self) -> None:
-        """Current well below limit → compliance unaffected."""
+        """Current well below backstop → reactive scale unaffected."""
         w = _PM()
         for _ in range(100):
             w.tick(_state(motor_ids=[M1], current_a=1.0))
-        assert w.pm._current_drive_scale == pytest.approx(1.0)
+        assert w.pm._reactive_scale == pytest.approx(1.0)
         assert w.pm.get_compliance_scale(M1) == pytest.approx(1.0)
 
     def test_above_limit_scale_is_zero(self) -> None:
-        """Current saturated above limit → compliance zeroed."""
+        """Current saturated above backstop cutoff → reactive scale zeroed."""
         w = _PM()
         for _ in range(100):
             w.tick(_state(motor_ids=[M1], current_a=5.0))
-        assert w.pm._current_drive_scale == pytest.approx(0.0, abs=0.01)
-        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.0, abs=0.01)
+        assert w.pm._reactive_scale == pytest.approx(0.0, abs=0.01)
 
-    def test_midpoint_scale(self) -> None:
-        """At 3.75A (midpoint of 3.5–4.0 range) → scale ≈ 0.5."""
-        w = _PM()
+    def test_thermal_and_reactive_are_independent(self) -> None:
+        """Thermal compliance scale and reactive EMA backstop are independent signals.
+
+        get_compliance_scale() returns thermal scale only; reactive scale accumulates
+        separately via _reactive_scale / allocate_budget().
+        """
+        w = _PM(PowerThresholds(temp_hysteresis_cooldown_s=0.05))
+        # Engage both simultaneously: thermal WARNING (58°C) + sustained overcurrent
         for _ in range(100):
-            w.tick(_state(current_a=3.75))
-        assert w.pm._current_drive_scale == pytest.approx(0.5, abs=0.02)
-
-    def test_ema_softens_brief_current_spike(self) -> None:
-        """A single-tick current spike should not immediately zero compliance."""
-        w = _PM()
-        for _ in range(50):
-            w.tick(_state(current_a=1.0))
-        w.tick(_state(current_a=10.0))
-        # EMA: 0.1*10 + 0.9*~1.0 ≈ 1.9A — still well below 3.5A
-        assert w.pm._current_drive_scale == pytest.approx(1.0)
-
-    def test_current_scale_multiplied_with_thermal(self) -> None:
-        """Compliance = thermal_scale × current_scale."""
-        t = PowerThresholds(
-            temp_hysteresis_cooldown_s=0.05,
-            current_ema_alpha=1.0,   # instant EMA for precise test
-        )
-        w = _PM(t)
-        # Thermal warning (scale=0.5) + current at midpoint (scale=0.5)
-        w.tick(_state(motor_ids=[M1], drive_temps={M1: 58}, current_a=3.75))
-        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.25, abs=0.01)
+            w.tick(_state(motor_ids=[M1], drive_temps={M1: 58}, current_a=5.0))
+        # Thermal: get_compliance_scale returns thermal-only scale (WARNING = 0.5)
+        assert w.pm.get_compliance_scale(M1) == pytest.approx(0.5, abs=0.01)
+        # Reactive: fully engaged independently — verified separately
+        assert w.pm._reactive_scale == pytest.approx(0.0, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +423,10 @@ class TestTelemetry:
         w.tick(_state(current_a=2.0))
         t = w.pm.get_telemetry(14.5)
         assert t.current_amps_raw == pytest.approx(2.0)
-        assert t.current_amps_filtered == pytest.approx(0.2, abs=0.01)  # 0.1 * 2.0
+        # Slow EMA: alpha=0.033; after 1 tick from 0 → 0.033 × 2.0 = 0.066
+        assert t.current_amps_filtered == pytest.approx(0.033 * 2.0, abs=0.005)
+        # Fast EMA: alpha=0.5; after 1 tick from 0 → 0.5 × 2.0 = 1.0
+        assert t.current_amps_filtered_fast == pytest.approx(0.5 * 2.0, abs=0.01)
         assert t.current_drive_scale == pytest.approx(1.0)
 
     def test_telemetry_current_scale_saturated(self) -> None:
@@ -449,3 +446,179 @@ class TestTelemetry:
         w = _PM()
         t = w.pm.get_telemetry(14.5)
         assert t.system_state == "RUNNING"
+
+
+# ---------------------------------------------------------------------------
+# Reactive EMA asymmetric decay
+# ---------------------------------------------------------------------------
+
+class TestCurrentLimitingAsymmetricDecay:
+    def test_ema_decays_faster_on_recovery(self) -> None:
+        """After sustained overcurrent clears, scale recovers because:
+          - Fast EMA (alpha=0.5) drains below the P-start threshold in ~4 ticks, releasing P term.
+          - I term then drains slowly (ki × drain_ratio), so full recovery takes ~220+ more ticks.
+        Slow EMA is telemetry only and not in the control path."""
+        w = _PM()
+        for _ in range(100):
+            w.tick(_state(current_a=5.0))  # fast EMA saturates; scale→0, I term→1
+        assert w.pm._reactive_scale == pytest.approx(0.0, abs=0.01)
+
+        # Fast EMA drains from 5A→below 2A budget threshold in ~4 ticks at 1A input,
+        # P term→0, rate limiter allows scale to tick upward.
+        for _ in range(6):
+            w.tick(_state(current_a=1.0))
+        assert w.pm._reactive_scale > 0.0
+
+        # Full recovery: integral drains at ki × drain_ratio × |error| × dt = 1.5×0.15×1×0.02 = 0.0045/tick.
+        # Starting at ~1.0, needs ~222 more ticks to drain fully → scale reaches 1.0.
+        for _ in range(240):
+            w.tick(_state(current_a=1.0))
+        assert w.pm._reactive_scale == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# allocate_budget — bin-pack seeding, priority ordering, and promotion
+# ---------------------------------------------------------------------------
+
+def _alloc_state(
+    *,
+    voltage_v: float = 12.0,
+    torques: dict[int, float] | None = None,
+    velocities: dict[int, float] | None = None,
+    current_a: float = 0.0,
+) -> RobotState:
+    """Minimal RobotState for allocate_budget() tests."""
+    rs = RobotState(
+        motor_torques=torques or {},
+        motor_velocities=velocities or {},
+        battery_current_raw=0,
+    )
+    rs.__class__ = type(
+        "_AllocRobotState",
+        (RobotState,),
+        {
+            "battery_voltage_v": property(lambda self: voltage_v),
+            "battery_current_amps": property(lambda self: current_a),
+        },
+    )
+    return rs
+
+
+def _commands(motor_ids: list[int]) -> list[ServoCommand]:
+    return [ServoCommand(servo_id=mid, position=None) for mid in motor_ids]
+
+
+class TestBinPackSeed:
+    """Active bin is seeded from the priority-ordered pending queue up to budget."""
+
+    def test_seed_puts_one_motor_at_dev_budget(self) -> None:
+        """At dev budget (2A) with worst-case 2A/motor, only 1 motor seeds the active bin."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3, 4, 5]
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=motor_ids))
+        active, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert len(pm._active_motor_set) == 1
+        assert pm._active_motor_set == {1}   # first in explicit priority
+        assert set(pending) == {2, 3, 4, 5}
+
+    def test_seed_respects_priority_order(self) -> None:
+        """Pending queue is ordered by BinPackPolicy.priority."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3, 4, 5]
+        priority = [5, 3, 1, 4, 2]
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=priority))
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert pending == [3, 1, 4, 2]   # motor 5 seeded, rest in priority order
+
+    def test_seed_detects_wall_power_source(self) -> None:
+        """Wall power source is detected after wall_confirm_ticks; dev wall budget
+        (2.5A at 14.6V) still seeds only 1 motor — floor is ~1.64A/motor so only
+        1 fits. The test verifies detection and that bin-pack continues working."""
+        from petctl.config import POWER_BUDGET as b
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3, 4, 5, 6, 7]
+        state = _alloc_state(voltage_v=14.6)
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=motor_ids))
+        # Trigger wall power source detection (requires wall_confirm_ticks consecutive readings)
+        for _ in range(b.wall_confirm_ticks + 1):
+            pm.update(state, now=0.0)
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert pm._power_source == PowerSource.WALL
+        assert len(pm._active_motor_set) == 1   # dev wall budget (2.5A) < 2 × floor (1.64A)
+        assert 1 in pm._active_motor_set         # priority-first motor seeded
+
+    def test_no_pending_when_all_fit(self) -> None:
+        """When all motors fit within budget, pending queue is empty."""
+        from petctl.power_manager import BinPackPolicy
+
+        # 1 motor at 2A/motor ≤ 2A budget → all fit
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=[1]))
+        active, pending = pm.allocate_budget(_commands([1]), state)
+
+        assert pm._active_motor_set == {1}
+        assert pending == []
+
+
+class TestBinPackPromotion:
+    """Motors are promoted from pending when bus current EMA shows headroom."""
+
+    def test_promotion_when_ema_below_threshold(self) -> None:
+        """Pending motor is promoted when _current_ema < budget × headroom_factor."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3]
+        policy = BinPackPolicy(priority=motor_ids, headroom_factor=0.8)
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=policy)
+
+        # First tick: seed with motor 1, motors 2 and 3 pending
+        pm.allocate_budget(_commands(motor_ids), state)
+        assert pm._active_motor_set == {1}
+
+        # Force EMA well below threshold (budget=2A, threshold=1.6A → EMA=0.5A → headroom)
+        pm._current_ema = 0.5
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert 2 in pm._active_motor_set, "motor 2 should have been promoted"
+        assert 2 not in pending
+
+    def test_no_promotion_when_ema_above_threshold(self) -> None:
+        """No promotion when bus current EMA is at or above budget × headroom_factor."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3]
+        policy = BinPackPolicy(priority=motor_ids, headroom_factor=0.8)
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=policy)
+
+        pm.allocate_budget(_commands(motor_ids), state)
+        pm._current_ema = 1.7   # 1.7A > 2A × 0.8 = 1.6A → no headroom
+        _, pending = pm.allocate_budget(_commands(motor_ids), state)
+
+        assert pm._active_motor_set == {1}
+        assert pending == [2, 3]
+
+    def test_eviction_when_motor_no_longer_commanded(self) -> None:
+        """Motors removed from commands are evicted from active set and pending queue."""
+        from petctl.power_manager import BinPackPolicy
+
+        motor_ids = [1, 2, 3]
+        policy = BinPackPolicy(priority=motor_ids)
+        state = _alloc_state()
+        pm = PowerManager(bin_policy=policy)
+
+        pm.allocate_budget(_commands(motor_ids), state)
+        # Now remove motor 1 (which was seeded into active) from commands
+        pm.allocate_budget(_commands([2, 3]), state)
+
+        assert 1 not in pm._active_motor_set
+        assert 1 not in pm._pending_queue
