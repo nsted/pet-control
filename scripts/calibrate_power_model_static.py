@@ -39,11 +39,9 @@ TICK_HZ  = 30
 DT       = 1.0 / TICK_HZ
 
 # Torque levels to sweep, in Nm.
-# At overcurrent=0.25 the motor can draw up to ~1.5 A total bus current; with
-# a ~0.62 A idle baseline that leaves ~0.88 A of I_load headroom (≈1 Nm).
-# Stay well below that ceiling.  At 0.5 Nm I_load is already ~100 mA (7 bits);
-# at 0.9 Nm it's ~730 mA (49 bits) — clearly resolvable.
-_TORQUE_LEVELS_NM: list[float] = [0.3, 0.5, 0.7, 0.9]
+# Motor saturates at ~0.132 Nm with current overcurrent setting; sweep below
+# that ceiling to get a multi-point fit for torque_coeff.
+_TORQUE_LEVELS_NM: list[float] = [0.02, 0.04, 0.06, 0.08, 0.10, 0.12]
 
 # Each level is held for this long after the ramp completes.
 _HOLD_DURATION_S = 3.0

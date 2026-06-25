@@ -21,14 +21,14 @@ class MotorLimits:
 
     pos_min: float = -12.5
     pos_max: float = 12.5
-    vel_min: float = -30.0
-    vel_max: float = 30.0
-    torque_min: float = -10.0
-    torque_max: float = 10.0
+    vel_min: float = -0.5
+    vel_max: float = 0.5
+    torque_min: float = -1.0
+    torque_max: float = 1.0
     # Softer defaults — high kp tracks each MIT setpoint sharply (feels "poppy").
     kp_max: float = 1.5
     kd_max: float = 0.04
-    kp_default: float = 0.4
+    kp_default: float = 0.8
     kd_default: float = 0.035
 
 
@@ -48,7 +48,7 @@ class ControlLoopLimits:
     # Maximum slew rate for the backend position ramping filter (rad/s).
     # Caps how fast p_des_commanded can move toward p_des_target each cycle.
     # Acts as a final safety net after scheme-level smoothing.
-    max_speed_rad_s: float = 6.0
+    max_speed_rad_s: float = 6.0   #was 6.0
 
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10
@@ -206,13 +206,14 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # torque_coeff: two independent mechanically-clamped runs, motor 7, kp=0 kd_max,
-    # torque_ff swept 0.3→0.9 Nm, other motors relaxed.  Run 1: 0.712 (R²=0.9939);
-    # run 2: 0.714 (R²=0.9946).  V_bus=14.6–14.7 V (adapter).
+    # torque_coeff: clamped-motor calibration 2026-06-25, VMAX=0.5/TMAX=1 (correct
+    # encoding). Motor 7, kp=0 kd_max, τ_ff swept 0.02→0.12 Nm both directions,
+    # other motors relaxed.  R²=0.9939, residual rms=0.023 A, n=1008, V_bus=14.70 V.
+    # Previous value 0.71 was fit to 10× inflated torque readings (TMAX mismatch).
     # mech_coeff: uncalibratable from free-spin (τ² and τ×ω collinear on free rotor).
     # 0.3 is a conservative estimate; the reactive EMA backstop covers residual error.
     per_motor_base_a: float = 0.06
-    per_motor_torque_coeff: float = 0.71
+    per_motor_torque_coeff: float = 72.52
     per_motor_mech_coeff: float = 0.3        # calibration unreliable; reactive backstop covers residual error
     bus_voltage_nominal_v: float = 12.0
     # Worst-case power per motor (watts) used as a floor when feedback is unavailable
