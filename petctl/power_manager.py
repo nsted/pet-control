@@ -176,14 +176,14 @@ class PowerManager:
         self._last_current_t: float = 0.0
         self._last_status_log_t: float = 0.0
 
-        # Peak current tracking: running high-water mark while above budget
+        # Peak current tracking
         self._peak_current_a: float = 0.0    # highest reading seen since last drop below budget
+        self._window_peak_a: float = 0.0     # max current seen in the current 1-s status window
 
         # Budget state (populated by allocate_budget)
         self._budget_scale: float = 1.0
         self._budget_total_est: float = 0.0
         self._budget_per_motor_est: dict[int, float] = {}
-        self._torque_cap_log_t: dict[int, float] = {}  # last log time per motor
         self._last_motor_torques: dict[int, float] = {}  # snapshot for status log
 
         # Bin-pack state: active bin + pending queue
@@ -252,7 +252,7 @@ class PowerManager:
                     old_budget = b.max_bus_current_a
                     new_budget = b.wall_max_bus_current_a
                     self._power_source = PowerSource.WALL
-                    self._wall_confirm_count = b.wall_confirm_ticks  # clamp
+                    self._wall_confirm_count = 0  # reset so wall→battery takes the same window
                     self._log_event(
                         f"power_source: battery→wall "
                         f"(budget {old_budget:.1f}A→{new_budget:.1f}A "
@@ -317,6 +317,7 @@ class PowerManager:
 
         # Peak tracking: log immediately when current exceeds budget and sets a new high.
         budget_now = self._effective_budget()
+        self._window_peak_a = max(self._window_peak_a, current_a)
         if current_a > budget_now and current_a > self._peak_current_a:
             self._peak_current_a = current_a
             logger.warning(
@@ -406,10 +407,13 @@ class PowerManager:
             tau_str = " ".join(
                 f"m{mid}:{tau:.2f}" for mid, tau in sorted(self._last_motor_torques.items())
             )
-            logger.info(
-                "[PowerManager] I=%.2fA budget=%.1fA scale=%.2f EMA=%.2fA integral=%.2f  τ[Nm]:%s",
-                current_a, budget, self._reactive_scale, self._current_ema, self._current_integral,
-                tau_str or "—",
+            window_peak = self._window_peak_a
+            self._window_peak_a = 0.0
+            log_fn = logger.warning if window_peak > budget * 0.9 else logger.info
+            log_fn(
+                "[PowerManager] I=%.2fA peak=%.2fA budget=%.1fA scale=%.2f EMA=%.2fA integral=%.2f  τ[Nm]:%s",
+                current_a, window_peak, budget, self._reactive_scale, self._current_ema,
+                self._current_integral, tau_str or "—",
             )
 
     # ------------------------------------------------------------------
@@ -613,24 +617,16 @@ class PowerManager:
             budget_per_motor = budget / max(1, n_active)
             headroom = max(0.0, budget_per_motor - b.per_motor_base_a)
             tau_max = math.sqrt(headroom / b.per_motor_torque_coeff) if b.per_motor_torque_coeff > 0 else float("inf")
-            for mid in list(cmd_map):
-                cmd = cmd_map[mid]
+            for mid in list(self._active_motor_set):
+                cmd = cmd_map.get(mid)
+                if cmd is None:
+                    continue
                 tau_actual = abs(state.motor_torques.get(mid, 0.0))
                 tau_ff_capped = math.copysign(min(abs(cmd.torque_ff), tau_max), cmd.torque_ff) if cmd.torque_ff != 0.0 else 0.0
                 if tau_actual > tau_max:
                     # Motor is over-torquing (fighting clamp or external force).
                     # Scale kp down so next command applies at most tau_max total torque.
                     kp_scale = tau_max / tau_actual
-                    last_log = self._torque_cap_log_t.get(mid, 0.0)
-                    now_mono = self._last_current_t
-                    if now_mono - last_log >= 1.0:
-                        self._torque_cap_log_t[mid] = now_mono
-                        logger.warning(
-                            "[PowerManager] torque cap m%d: τ=%.2fNm > τ_max=%.2fNm → kp×%.2f "
-                            "(I=%.2fA budget=%.1fA scale=%.2f)",
-                            mid, tau_actual, tau_max, kp_scale,
-                            self._last_current_a, budget, self._reactive_scale,
-                        )
                     cmd_map[mid] = replace(cmd, kp=cmd.kp * kp_scale, torque_ff=tau_ff_capped)
                 elif abs(cmd.torque_ff) > tau_max:
                     cmd_map[mid] = replace(cmd, torque_ff=tau_ff_capped)
@@ -802,7 +798,7 @@ class PowerManager:
             current_amps_raw=self._last_current_a,
             current_amps_filtered=self._current_ema,
             current_amps_filtered_fast=self._current_ema_fast,
-            current_amps_peak=self._peak_current_a,
+            current_amps_peak=self._window_peak_a,
             current_drive_scale=self._reactive_scale,
             system_state=self._system_state.value,
             motor_states={

@@ -30,7 +30,7 @@ class PowerTelemetry:
     current_amps_raw: float = 0.0
     current_amps_filtered: float = 0.0      # slow EMA (~1 s window); drives I term
     current_amps_filtered_fast: float = 0.0  # fast EMA (~90 ms window); drives P term
-    current_amps_peak: float = 0.0          # peak seen in current 10-s rolling window
+    current_amps_peak: float = 0.0          # max raw current seen in the current 1-s status window
     current_drive_scale: float = 1.0        # reactive EMA backstop scale (1.0 = full drive)
     system_state: str = "RUNNING"
     # Per-motor state (keyed by servo_id)
