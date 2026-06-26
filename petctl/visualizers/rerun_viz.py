@@ -217,7 +217,7 @@ _IMU_TARE_FILE: str = "config/imu_tare.json"
 
 # Centre of the PCB on the no-sensor face, in module 7's local frame (cm).
 # Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
-_IMU_CENTER: tuple[float, float, float] = (0.0, -3.15, -3.5)
+_IMU_CENTER: tuple[float, float, float] = (0.0, -3.65, -3.5)
 
 # World-space position where module 7's joint origin must sit so the IMU lands at (0,0,0).
 # At rest R7=I so: target = -_IMU_CENTER.
@@ -228,7 +228,7 @@ _IMU_WORLD_TARGET: tuple[float, float, float] = (
 # Static rotation of the robot body relative to the world origin (HPR degrees: heading/Z, pitch/X, roll/Y).
 # Rotates the entire robot about the anchor point (0,0,0) for visual fine-tuning.
 # Applied before the IMU quaternion, so it works in both IMU and no-IMU modes.
-_BODY_ROTATION_HPR_DEG: tuple[float, float, float] = (0.0, 0.0, 0.0)
+_BODY_ROTATION_HPR_DEG: tuple[float, float, float] = (40.0, 0.0, 0.0)
 
 # 180° rotation around the robot's body axis (head→tail direction ≈ (0,1,1)/√2 in
 # robot-local space) applied before the BNO085 quaternion to correct the upside-down
@@ -923,28 +923,22 @@ class RerunVisualizer(Visualizer):
         self._log_imu_static(rr)
 
     def _log_imu_static(self, rr) -> None:
-        """Log a static PCB slab and axes indicator for the BNO085 on module 7's back face."""
-        if _IMU_MODULE_ID not in self._entity_path_cache:
-            return
-        base = self._entity_path_cache[_IMU_MODULE_ID]
-        imu_path = f"{base}/imu"
+        """Log a static world-frame anchor at the IMU origin (world root, identity transform).
+
+        Logged outside the robot entity hierarchy so it is unaffected by body rotation
+        or IMU quaternion — it always shows the fixed world-frame axes at (0,0,0).
+        """
         al = _IMU_AXIS_LENGTH
 
-        # Child frame: translate to face centre + rotate so local-Z = face normal
-        rr.log(imu_path, rr.Transform3D(
-            translation=list(_IMU_CENTER),
-            quaternion=rr.Quaternion(xyzw=list(_IMU_QUATERNION_XYZW)),
-        ), static=True)
-
-        # Thin PCB slab centred at the IMU child origin (flat in local XY plane)
-        rr.log(f"{imu_path}/pcb", rr.Boxes3D(
+        # Thin PCB slab at world origin, flat in the XY plane
+        rr.log("imu_anchor/pcb", rr.Boxes3D(
             centers=[[0.0, 0.0, 0.0]],
             half_sizes=[list(_IMU_PCB_HALF_SIZES)],
             colors=[list(_IMU_COLOR)],
         ), static=True)
 
-        # Coordinate axes: red=X, green=Y, blue=Z (in IMU local frame)
-        rr.log(f"{imu_path}/axes", rr.Arrows3D(
+        # World-frame coordinate axes: red=X, green=Y, blue=Z
+        rr.log("imu_anchor/axes", rr.Arrows3D(
             origins=[[0.0, 0.0, 0.0]] * 3,
             vectors=[[al, 0.0, 0.0], [0.0, al, 0.0], [0.0, 0.0, al]],
             colors=[[220, 50, 50, 255], [50, 200, 50, 255], [50, 100, 220, 255]],
