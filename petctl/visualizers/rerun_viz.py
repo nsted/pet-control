@@ -224,11 +224,9 @@ _IMU_CENTER: tuple[float, float, float] = (0.0, -3.65, -3.5)
 # Applied inside the IMU correction pipeline (IMU path only); (0,0,0) = no additional correction.
 _IMU_MOUNT_ROTATION_HPR_DEG: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
-# World-space position where module 7's joint origin must sit so the IMU lands at (0,0,0).
-# At rest R7=I so: target = -_IMU_CENTER.
-_IMU_WORLD_TARGET: tuple[float, float, float] = (
-    -_IMU_CENTER[0], -_IMU_CENTER[1], -_IMU_CENTER[2]
-)
+# World-space position of module 7's joint origin — the anchor for all FK and IMU rotation.
+# (0,0,0) places mod7's joint at the world origin; _IMU_CENTER is purely visual (slab display).
+_IMU_WORLD_TARGET: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 # Static rotation of the robot body relative to the world origin (HPR degrees: heading/Z, pitch/X, roll/Y).
 # Rotates the entire robot about the anchor point (0,0,0) for visual fine-tuning.
