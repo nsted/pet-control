@@ -259,10 +259,10 @@ def _load_imu_tare() -> Optional[np.ndarray]:
         with open(_IMU_TARE_FILE) as f:
             data = json.load(f)
         mat = np.array(data["tare_matrix"], dtype=np.float64).reshape(3, 3)
-        logger.info("[RerunViz] Loaded IMU tare from %s", _IMU_TARE_FILE)
+        logger.debug("[RerunVisualizer] Loaded IMU tare from %s", _IMU_TARE_FILE)
         return mat
     except Exception as e:
-        logger.warning("[RerunViz] Could not load %s: %s", _IMU_TARE_FILE, e)
+        logger.warning("[RerunVisualizer] Could not load %s: %s", _IMU_TARE_FILE, e)
         return None
 
 
@@ -271,9 +271,9 @@ def _save_imu_tare(tare: np.ndarray) -> None:
     try:
         with open(_IMU_TARE_FILE, "w") as f:
             json.dump({"tare_matrix": tare.flatten().tolist()}, f, indent=2)
-        logger.info("[RerunViz] Saved IMU tare to %s", _IMU_TARE_FILE)
+        logger.debug("[RerunVisualizer] Saved IMU tare to %s", _IMU_TARE_FILE)
     except Exception as e:
-        logger.warning("[RerunViz] Could not save %s: %s", _IMU_TARE_FILE, e)
+        logger.warning("[RerunVisualizer] Could not save %s: %s", _IMU_TARE_FILE, e)
 
 
 class RerunVisualizer(Visualizer):
@@ -364,6 +364,7 @@ class RerunVisualizer(Visualizer):
         rr = self._rr
         if rr is None:
             return
+        os.environ.setdefault("RUST_LOG", "warn")
         rr.spawn(memory_limit="512MiB")
         rr.log("robot", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self._log_pad_labels_static(rr)
@@ -373,7 +374,7 @@ class RerunVisualizer(Visualizer):
         if self.show_3d:
             self._setup_3d_geometry()
         self._viewer_active = True
-        logger.info("[RerunVisualizer] viewer launched")
+        logger.debug("[RerunVisualizer] viewer launched")
 
     def toggle_viewer(self) -> None:
         """Close the Rerun viewer if open, or relaunch it fresh (bound to Ctrl+Shift+V)."""
@@ -385,7 +386,7 @@ class RerunVisualizer(Visualizer):
             rr.disconnect()
             subprocess.run(["pkill", "-x", "rerun"], check=False)
             self._viewer_active = False
-            logger.info("[RerunVisualizer] viewer closed")
+            logger.debug("[RerunVisualizer] viewer closed")
         else:
             self._spawn_viewer()
 
@@ -450,7 +451,7 @@ class RerunVisualizer(Visualizer):
         self._kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         self._kb_listener.daemon = True
         self._kb_listener.start()
-        logger.info("[RerunVisualizer] Ctrl+V: toggle viewer  |  Ctrl+L: toggle pad labels")
+        logger.debug("[RerunVisualizer] Ctrl+V: toggle viewer  |  Ctrl+L: toggle pad labels")
 
     # ------------------------------------------------------------------
     # Sensor logging
@@ -471,10 +472,16 @@ class RerunVisualizer(Visualizer):
             rrb.TimeSeriesView(origin="telemetry/current_amps", name="Battery current (A)"),
             rrb.TimeSeriesView(origin="imu", name="IMU accel/gyro"),
         ))
-        rr.send_blueprint(rrb.Blueprint(
-            rrb.Horizontal(*views),
-            rrb.SelectionPanel(state="hidden"),
-        ))
+        rr.send_blueprint(
+            rrb.Blueprint(
+                rrb.Horizontal(*views),
+                rrb.SelectionPanel(state="hidden"),
+                rrb.BlueprintPanel(state="hidden"),
+                rrb.TimePanel(state="hidden"),
+            ),
+            make_active=False,
+            make_default=True,
+        )
 
     def _setup_motor_series(self) -> None:
         """Declare SeriesLines for each motor telemetry metric."""
@@ -825,7 +832,7 @@ class RerunVisualizer(Visualizer):
                         fill_mode="solid",
                     ))
             except Exception as exc:
-                logger.error("[RerunViz] overlay failed mod%d: %s", mod_id, exc)
+                logger.error("[RerunVisualizer] overlay failed mod%d: %s", mod_id, exc)
 
     # ------------------------------------------------------------------
     # 3D setup and pose logging
@@ -870,7 +877,7 @@ class RerunVisualizer(Visualizer):
             for mod in self._module_meta
         }
 
-        logger.info("[RerunVisualizer] Loaded assembly with %d modules", len(self._module_meta))
+        logger.debug("[RerunVisualizer] Loaded assembly with %d modules", len(self._module_meta))
 
     def _fk_to_module(self, mod_id: int, state: RobotState) -> tuple[np.ndarray, np.ndarray]:
         """Cumulative FK position and rotation of mod_id in robot-local space."""
@@ -940,17 +947,17 @@ class RerunVisualizer(Visualizer):
         """Zero the IMU world orientation to the current reading.
 
         After taring, the robot's current physical orientation maps to the
-        identity rotation in the visualizer.  Called on demand (Ctrl+T) and
+        identity rotation in the visualizer.  Called on demand (Ctrl+Shift+T) and
         automatically on the first valid IMU frame.
         """
         imu7 = state.imu.get(_IMU_MODULE_ID) if state.imu else None
         if imu7 is None or (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) < 0.5:
-            logger.warning("[RerunViz] tare_imu: no valid IMU data — tare not applied")
+            logger.warning("[RerunVisualizer] tare_imu: no valid IMU data — tare not applied")
             return
         Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
         self._imu_tare = Q_mat.T
         _save_imu_tare(self._imu_tare)
-        logger.info("[RerunViz] IMU tare set (qr=%.3f qi=%.3f qj=%.3f qk=%.3f)",
+        logger.debug("[RerunVisualizer] IMU tare set (qr=%.3f qi=%.3f qj=%.3f qk=%.3f)",
                     imu7.qr, imu7.qi, imu7.qj, imu7.qk)
 
     def _log_3d_pose(self, rr, state: RobotState) -> None:
@@ -991,11 +998,11 @@ class RerunVisualizer(Visualizer):
                 for mid, r in state.imu.items():
                     qmag2 = r.qr**2 + r.qi**2 + r.qj**2 + r.qk**2
                     logger.debug(
-                        "[RerunViz] IMU module %d: qr=%.3f qi=%.3f qj=%.3f qk=%.3f mag²=%.3f",
+                        "[RerunVisualizer] IMU module %d: qr=%.3f qi=%.3f qj=%.3f qk=%.3f mag²=%.3f",
                         mid, r.qr, r.qi, r.qj, r.qk, qmag2,
                     )
             else:
-                logger.debug("[RerunViz] state.imu is empty — no IMU data flowing to visualizer")
+                logger.debug("[RerunVisualizer] state.imu is empty — no IMU data flowing to visualizer")
         if imu7 is not None and (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) > 0.5:
             Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
             Q_rel = Q_mat @ self._imu_tare if self._imu_tare is not None else Q_mat
@@ -1003,13 +1010,13 @@ class RerunVisualizer(Visualizer):
             R_robot = Q_rel @ R_corrected
             t_robot = Q_rel @ (_IMU_BODY_CORRECTION @ t_fk)
             if _imu_diag_tick % 100 == 1:
-                logger.debug("[RerunViz] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
+                logger.debug("[RerunVisualizer] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
         else:
             R_robot = R_fk
             t_robot = t_fk
             if _imu_diag_tick % 100 == 1:
                 reason = f"imu7={imu7}" if imu7 is None else f"mag²={imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2:.3f}<0.5"
-                logger.debug("[RerunViz] IMU rotation NOT applied: %s", reason)
+                logger.debug("[RerunVisualizer] IMU rotation NOT applied: %s", reason)
 
         rr.log("robot", rr.Transform3D(
             translation=t_robot.tolist(),

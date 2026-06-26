@@ -443,6 +443,9 @@ class Controller:
         # Last commanded position (rad) after slew — used to cap per-tick jumps.
         self._slew_last_sent_rad: dict[int, float] = {}
 
+        # Always-on keyboard hotkeys — active regardless of motion scheme.
+        from petctl.schemes.keyboard_hotkeys import KeyboardHotkeys
+        self._hotkeys = KeyboardHotkeys()
 
     # ------------------------------------------------------------------
     # Public API
@@ -508,8 +511,9 @@ class Controller:
         self._event_loop = asyncio.get_running_loop()
         self._stop_event = asyncio.Event()
 
-        # Activate motion source and visualizers
+        # Activate motion source, always-on hotkeys, and visualizers
         self.motion.on_start(self)
+        self._hotkeys.start(self)
         for viz in self.visualizers:
             viz.on_start(self)
 
@@ -693,20 +697,21 @@ class Controller:
                         logger.error("[Controller] Backend send_commands error: %s", e)
 
             # 3b. Save-home: write EEPROM offsets so current position reports as 0
-            take_save_home = getattr(self.motion, "take_save_home", None)
-            if take_save_home is not None and take_save_home():
+            if self._hotkeys.take_save_home():
                 logger.info("[Controller] Saving home offsets...")
                 try:
                     await self.backend.write_home_offsets()
                     # Clear slew state so the filter doesn't hold pre-home positions.
                     self._slew_last_sent_rad.clear()
+                    on_home_saved = getattr(self.motion, "on_home_saved", None)
+                    if on_home_saved is not None:
+                        on_home_saved()
                     logger.info("[Controller] Home saved — positions reset to 0.")
                 except Exception as e:
                     logger.error("[Controller] write_home_offsets error: %s", e)
 
             # 3c. Deactivate: exit MIT mode on all motors
-            take_deactivate = getattr(self.motion, "take_deactivate", None)
-            if take_deactivate is not None and take_deactivate():
+            if self._hotkeys.take_deactivate():
                 logger.info("[Controller] Deactivating all motors...")
                 try:
                     await self.backend.disable_torques()
@@ -715,12 +720,23 @@ class Controller:
                     logger.error("[Controller] disable_torques error: %s", e)
 
             # 3d. IMU tare: zero the visualizer world orientation to current pose.
-            take_tare_imu = getattr(self.motion, "take_tare_imu", None)
-            if take_tare_imu is not None and take_tare_imu():
+            if self._hotkeys.take_tare_imu():
                 logger.info("[Controller] Taring IMU orientation...")
                 for viz in self.visualizers:
                     if hasattr(viz, "tare_imu"):
                         viz.tare_imu(self._state)
+
+            # 3e. Cap sensor recalibration: reset all MPR121 baselines (Ctrl+Shift+C).
+            if self._hotkeys.take_calibrate_touch():
+                logger.info("[Controller] Recalibrating cap sensor baselines...")
+                try:
+                    ok = await self.backend.calibrate_touch()
+                    if ok:
+                        logger.info("[Controller] Cap sensor recalibration complete.")
+                    else:
+                        logger.warning("[Controller] Cap sensor recalibration — no ACK from robot.")
+                except Exception as e:
+                    logger.error("[Controller] calibrate_touch error: %s", e)
 
             # 4. Hand latest state to the viz thread; drop if the previous frame
             # hasn't been consumed yet (Rerun backed up → never stall the loop).
@@ -789,6 +805,7 @@ class Controller:
     async def _shutdown(self) -> None:
         self._running = False
         logger.info("[Controller] Shutting down...")
+        self._hotkeys.stop()
         self.motion.on_stop()
         # Signal the viz worker and wait briefly. If Rerun's channel is backed
         # up the thread may still be blocked in rr.log(); the daemon flag ensures

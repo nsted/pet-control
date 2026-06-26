@@ -206,14 +206,6 @@ class Motion(ABC):
         """
         return False
 
-    def take_save_home(self) -> bool:
-        """Return True (and reset the flag) when a save-home should be triggered.
-
-        Override in motion sources that support user-triggered EEPROM home-saving.
-        The default always returns False.
-        """
-        return False
-
 
 # ---------------------------------------------------------------------------
 # Visualizer

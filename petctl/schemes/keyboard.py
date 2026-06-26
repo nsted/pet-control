@@ -6,11 +6,10 @@ Controls:
   0-8            Select module (when adjustment enabled)
   ↑ / ↓          Adjust selected module angle by step_deg (when adjustment enabled)
   Ctrl+Shift+R   Reset all servos to 0°
-  Ctrl+Shift+H   Save current positions as EEPROM home
-  Ctrl+Shift+D   Deactivate all motors (exit MIT mode)
-  Ctrl+Shift+L   Toggle sensor pad labels in visualizer
-  Ctrl+Shift+V   Close/relaunch Rerun viewer (resets viewer memory)
   Ctrl-C         Quit (SIGINT only — q/Esc do not quit)
+
+Admin shortcuts (save home, deactivate, cap recal, IMU tare) are handled by
+KeyboardHotkeys and are active with any control scheme.
 
 Uses pynput for cross-platform keyboard capture in a background thread,
 so it works from any terminal without requiring a GUI window.
@@ -64,9 +63,6 @@ class KeyboardMotion(Motion):
         # Pending angle deltas to apply on next update()
         self._pending: dict[int, float] = {}
         self._reset_requested: bool = False
-        self._save_home_requested: bool = False
-        self._deactivate_requested: bool = False
-        self._tare_imu_requested: bool = False
         self._adjustment_enabled: bool = False
         self._lock = threading.Lock()
         # Timestamp of last key event that changed a motor target.
@@ -88,7 +84,7 @@ class KeyboardMotion(Motion):
         self._start_listener()
         logger.info(
             "[Keyboard] Ready (adjustment disabled).\n"
-            "  Ctrl+Shift+K: enable/disable adjustment  |  Ctrl+Shift+R: reset  |  Ctrl+Shift+H: save home  |  Ctrl+Shift+D: deactivate motors  |  Ctrl+Shift+L: toggle sensor labels  |  Ctrl+Shift+V: toggle viewer  |  Ctrl-C: quit"
+            "  Ctrl+Shift+K: enable/disable adjustment  |  Ctrl+Shift+R: reset  |  Ctrl-C: quit"
         )
 
     # Seconds to keep re-issuing position commands after the last key press.
@@ -168,62 +164,14 @@ class KeyboardMotion(Motion):
         with self._lock:
             return dict(self._angles)
 
-    def take_save_home(self) -> bool:
-        """Consume and return the save-home request flag (set by Ctrl+Shift+H key).
-
-        Returns True exactly once per key event; subsequent calls return False.
-        Also resets internal angle targets to 0 so the scheme commands the new
-        home position (stay in place) rather than driving back to the old target.
-        """
+    def on_home_saved(self) -> None:
+        """Reset internal angle tracking after a home save (called by Controller)."""
         with self._lock:
-            val = self._save_home_requested
-            self._save_home_requested = False
-            if val:
-                # Reset internal angle tracking to match the new reference frame.
-                # Do NOT set _reset_requested — that would emit position commands
-                # and activate motor torque.
-                self._angles.clear()
-        return val
-
-    def take_deactivate(self) -> bool:
-        """Consume and return the deactivate-motors request flag (set by Ctrl+Shift+D).
-
-        Returns True exactly once per key event; subsequent calls return False.
-        """
-        with self._lock:
-            val = self._deactivate_requested
-            self._deactivate_requested = False
-        return val
-
-    def take_tare_imu(self) -> bool:
-        """Consume and return the IMU tare request flag (set by Ctrl+T).
-
-        Returns True exactly once per key event; subsequent calls return False.
-        """
-        with self._lock:
-            val = self._tare_imu_requested
-            self._tare_imu_requested = False
-        return val
+            self._angles.clear()
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
-
-    def _dispatch_toggle_labels(self) -> None:
-        if self._controller is None:
-            return
-        for viz in self._controller.visualizers:
-            toggle = getattr(viz, "toggle_pad_labels", None)
-            if toggle is not None:
-                toggle()
-
-    def _dispatch_toggle_viewer(self) -> None:
-        if self._controller is None:
-            return
-        for viz in self._controller.visualizers:
-            toggle = getattr(viz, "toggle_viewer", None)
-            if toggle is not None:
-                toggle()
 
     def _start_listener(self) -> None:
         try:
@@ -235,15 +183,13 @@ class KeyboardMotion(Motion):
         ctrl_keys = frozenset({keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r})
 
         def on_press(key):
-            toggle_labels = False
-            toggle_viewer = False
             msg = None
             with self._lock:
                 if key in ctrl_keys:
                     self._ctrl_held = True
                     return
 
-                # Character keys — select module, reset, or toggle
+                # Character keys — select module or toggle adjustment/reset
                 try:
                     char = key.char
                     if char and char.isdigit():
@@ -259,29 +205,11 @@ class KeyboardMotion(Motion):
                         self._reset_requested = True
                         msg = "reset requested"
                         return
-                    if char in ("H", "h", "\x08") and self._ctrl_held:
-                        self._save_home_requested = True
-                        msg = "save home requested"
-                        return
-                    if char in ("D", "d", "\x04") and self._ctrl_held:
-                        self._deactivate_requested = True
-                        msg = "deactivate motors requested"
-                        return
-                    if char in ("T", "t", "\x14") and self._ctrl_held:
-                        self._tare_imu_requested = True
-                        msg = "IMU tare requested"
-                        return
-                    if char in ("L", "l", "\x0c") and self._ctrl_held:
-                        toggle_labels = True
-                        msg = "toggle sensor labels"
-                    if char in ("V", "v", "\x16") and self._ctrl_held:
-                        toggle_viewer = True
-                        msg = "toggle viewer"
                 except AttributeError:
                     pass
 
                 # Arrow keys — only active when adjustment is enabled
-                if not self._adjustment_enabled and not toggle_labels and not toggle_viewer:
+                if not self._adjustment_enabled:
                     return
                 if key == keyboard.Key.up:
                     self._pending[self._selected] = (
@@ -296,13 +224,8 @@ class KeyboardMotion(Motion):
                     self._last_key_time = time.monotonic()
                     msg = "↓ module %d (-%.1f°)" % (self._selected, self.step_deg)
 
-            # Dispatch actions outside the lock
             if msg:
                 logger.info("[Keyboard] %s", msg)
-            if toggle_labels:
-                self._dispatch_toggle_labels()
-            if toggle_viewer:
-                self._dispatch_toggle_viewer()
 
         def on_release(key):
             if key in ctrl_keys:

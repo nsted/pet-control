@@ -118,7 +118,7 @@
       }
     ],
     "camera": {
-      "initial_position": [60, -80, 30],
+      "initial_position": [20, -20, 30],
       "look_at": [0, 0, 0],
       "fov": 45
     }

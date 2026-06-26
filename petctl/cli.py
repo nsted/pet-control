@@ -157,10 +157,10 @@ def run(
         "--log-robot",
         help="Enable RobotBackend connection and discovery logs",
     ),
-    log_imu: bool = typer.Option(
+    log_viz: bool = typer.Option(
         False,
-        "--log-imu",
-        help="Print IMU quaternion diagnostics every ~5s",
+        "--log-viz",
+        help="Enable visualizer debug logs (assembly load, viewer launch, IMU diagnostics)",
     ),
     log_power: bool = typer.Option(
         False,
@@ -182,7 +182,7 @@ def run(
 
     if log_robot:
         logging.getLogger("petctl.backends.robot").setLevel(logging.DEBUG)
-    if log_imu:
+    if log_viz:
         logging.getLogger("petctl.visualizers.rerun_viz").setLevel(logging.DEBUG)
     if log_power:
         logging.getLogger("petctl.power_manager").setLevel(logging.DEBUG)
