@@ -187,8 +187,15 @@ def run(
         "--ui-port",
         help="Port for the dev UI HTTP server",
     ),
+    vel: float = typer.Option(
+        1.0,
+        "--vel",
+        help="Default motion speed scale (0.05–1.0). For ollama: used until LLM responds. For patterns: scales hz/speed at launch.",
+    ),
 ) -> None:
     """Run the petctl controller."""
+
+    vel = max(0.05, min(1.0, vel))
 
     if log_robot:
         logging.getLogger("petctl.backends.robot").setLevel(logging.DEBUG)
@@ -233,11 +240,16 @@ def run(
         _scheme = CommandMotion()
     elif control == "ollama":
         from petctl.schemes.ollama_scheme import OllamaMotion
-        _scheme = OllamaMotion(log_input=log_ollama_input, llm_enabled=not dev_ui, monitor_only=ollama_monitor)
+        _scheme = OllamaMotion(log_input=log_ollama_input, llm_enabled=not dev_ui, monitor_only=ollama_monitor, default_speed=vel)
     else:
         from petctl.schemes.patterns import ALL_PATTERNS, PATTERN_NAMES
         try:
             _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
+            if vel != 1.0:
+                if hasattr(_scheme, "hz"):
+                    _scheme.hz *= vel
+                elif hasattr(_scheme, "_speed_rad_s"):
+                    _scheme._speed_rad_s *= vel
         except StopIteration:
             typer.echo(
                 f"Unknown control scheme '{control}'. "

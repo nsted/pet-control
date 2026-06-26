@@ -203,10 +203,12 @@ class OllamaMotion(Motion):
         llm_enabled: bool = True,
         monitor_only: bool = False,
         history_turns: int = 4,
+        default_speed: float = 1.0,
     ) -> None:
         self._llm_enabled = llm_enabled
         self._monitor_only = monitor_only
         self._history_turns = history_turns
+        self._default_speed = max(0.05, min(1.0, default_speed))
         self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout, log_input=log_input)
 
         # Injected in on_start() — the controller's shared gesture event queue.
@@ -241,7 +243,7 @@ class OllamaMotion(Motion):
         self._controller = controller
         self._system_prompt = _load_system_prompt()
         self._touch_queue = controller.touch_events
-        self._switch_pattern(_DEFAULT_MOTION, 0.0)
+        self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
 
         if not self._llm_enabled:
             logger.info("[Ollama] LLM disabled (dev-ui mode).")
@@ -272,13 +274,13 @@ class OllamaMotion(Motion):
             self._touch_ended_t = None
             with self._lock:
                 self._revert_gen += 1
-            self._switch_pattern(_DEFAULT_MOTION, 0.0)
+            self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
         elif not self._was_connected and state.connected:
             logger.info("[System] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
             self._batch = []
             with self._lock:
                 self._revert_gen += 1
-            self._switch_pattern(_DEFAULT_MOTION, 0.0)
+            self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
         self._was_connected = state.connected
 
         if self._touch_queue is not None:
@@ -295,7 +297,7 @@ class OllamaMotion(Motion):
             self._batch = []
             with self._lock:
                 self._revert_gen += 1
-            self._switch_pattern(_DEFAULT_MOTION, 0.0)
+            self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
 
         with self._lock:
             pattern = self._active_pattern
