@@ -988,7 +988,7 @@ class RerunVisualizer(Visualizer):
 
         # FK correction: inverse of module 7's cumulative FK so the IMU sits at origin.
         p7, R7 = self._fk_to_module(_IMU_MODULE_ID, state)
-        t_fk = np.array(_IMU_WORLD_TARGET, dtype=np.float64) + np.array(_WORLD_ORIGIN_OFFSET, dtype=np.float64) - R7.T @ p7
+        t_fk = np.array(_IMU_WORLD_TARGET, dtype=np.float64) - R7.T @ p7
         R_fk = R7.T
 
         # Apply BNO085 absolute orientation as a world-space rotation about the origin.
@@ -1021,6 +1021,10 @@ class RerunVisualizer(Visualizer):
             if _imu_diag_tick % 100 == 1:
                 reason = f"imu7={imu7}" if imu7 is None else f"mag²={imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2:.3f}<0.5"
                 logger.debug("[RerunVisualizer] IMU rotation NOT applied: %s", reason)
+
+        # World-space fine-tuning offset: applied after all rotations so it aligns with
+        # the Rerun viewer axes (X=red, Y=green, Z=blue) regardless of robot orientation.
+        t_robot = t_robot + np.array(_WORLD_ORIGIN_OFFSET, dtype=np.float64)
 
         rr.log("robot", rr.Transform3D(
             translation=t_robot.tolist(),
