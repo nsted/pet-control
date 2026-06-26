@@ -213,6 +213,7 @@ _PAD_LABELS: list[str] = (
 # Rerun automatically carries with the tail as it articulates.
 # ------------------------------------------------------------------
 _IMU_MODULE_ID: int = 7
+_IMU_TARE_FILE: str = "imu_tare.json"
 
 # Centre of the PCB on the no-sensor face, in module 7's local frame (cm).
 # Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
@@ -226,12 +227,12 @@ _IMU_WORLD_TARGET: tuple[float, float, float] = (
 
 # 180° rotation around the robot's body axis (head→tail direction ≈ (0,1,1)/√2 in
 # robot-local space) applied before the BNO085 quaternion to correct the upside-down
-# mounting of the chip on module 7's -Y face.
-# Derived: Rodrigues' formula for 180° around (0, 1/√2, 1/√2) = 2·n·nᵀ − I.
+# mounting of the chip on module 7's -Y face, plus an observed -45° pitch correction
+# (robot appeared 45° nose-down after tare; Rx(-45°) @ prior_180deg_correction).
 _IMU_BODY_CORRECTION: np.ndarray = np.array([
-    [-1., 0., 0.],
-    [ 0., 0., 1.],
-    [ 0., 1., 0.],
+    [-1.      ,  0.      ,  0.      ],
+    [ 0.      ,  0.707107,  0.707107],
+    [ 0.      ,  0.707107, -0.707107],
 ], dtype=np.float64)
 
 # Quaternion (xyzw) that orients the IMU slab flat on the -Y face.
@@ -248,6 +249,31 @@ _IMU_PCB_HALF_SIZES: tuple[float, float, float] = (1.5, 1.0, 0.15)
 _IMU_AXIS_LENGTH: float = 1.5
 
 _IMU_COLOR: tuple[int, int, int, int] = (180, 220, 255, 200)   # light blue, semi-opaque
+
+
+def _load_imu_tare() -> Optional[np.ndarray]:
+    """Load IMU tare matrix from imu_tare.json in the current directory."""
+    if not os.path.exists(_IMU_TARE_FILE):
+        return None
+    try:
+        with open(_IMU_TARE_FILE) as f:
+            data = json.load(f)
+        mat = np.array(data["tare_matrix"], dtype=np.float64).reshape(3, 3)
+        logger.info("[RerunViz] Loaded IMU tare from %s", _IMU_TARE_FILE)
+        return mat
+    except Exception as e:
+        logger.warning("[RerunViz] Could not load %s: %s", _IMU_TARE_FILE, e)
+        return None
+
+
+def _save_imu_tare(tare: np.ndarray) -> None:
+    """Save IMU tare matrix to imu_tare.json in the current directory."""
+    try:
+        with open(_IMU_TARE_FILE, "w") as f:
+            json.dump({"tare_matrix": tare.flatten().tolist()}, f, indent=2)
+        logger.info("[RerunViz] Saved IMU tare to %s", _IMU_TARE_FILE)
+    except Exception as e:
+        logger.warning("[RerunViz] Could not save %s: %s", _IMU_TARE_FILE, e)
 
 
 class RerunVisualizer(Visualizer):
@@ -298,6 +324,9 @@ class RerunVisualizer(Visualizer):
         self._pad_quats: list = []
         self._rr = None
         self._viewer_active: bool = False
+        # IMU tare: transpose of the rotation matrix at tare time.
+        # Multiplying Q_mat @ _imu_tare makes the tare pose appear as identity.
+        self._imu_tare: Optional[np.ndarray] = None
         self._show_pad_labels: bool = False
         self._contact_type: str = "none"      # touch | stroke | hold | squeeze | restrict | wrench | none
         self._last_viz_time: float = -1.0
@@ -324,6 +353,7 @@ class RerunVisualizer(Visualizer):
             return
 
         controller.register_touch_callback(self._on_touch_summary)
+        self._imu_tare = _load_imu_tare()
         rr.init(self.app_name)
         self._load_assembly()
         self._setup_overlay_geometry(rr)
@@ -906,6 +936,23 @@ class RerunVisualizer(Visualizer):
             radii=[0.08] * 3,
         ), static=True)
 
+    def tare_imu(self, state: RobotState) -> None:
+        """Zero the IMU world orientation to the current reading.
+
+        After taring, the robot's current physical orientation maps to the
+        identity rotation in the visualizer.  Called on demand (Ctrl+T) and
+        automatically on the first valid IMU frame.
+        """
+        imu7 = state.imu.get(_IMU_MODULE_ID) if state.imu else None
+        if imu7 is None or (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) < 0.5:
+            logger.warning("[RerunViz] tare_imu: no valid IMU data — tare not applied")
+            return
+        Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
+        self._imu_tare = Q_mat.T
+        _save_imu_tare(self._imu_tare)
+        logger.info("[RerunViz] IMU tare set (qr=%.3f qi=%.3f qj=%.3f qk=%.3f)",
+                    imu7.qr, imu7.qi, imu7.qj, imu7.qk)
+
     def _log_3d_pose(self, rr, state: RobotState) -> None:
         """
         Log each module's joint transform each tick.
@@ -951,9 +998,10 @@ class RerunVisualizer(Visualizer):
                 logger.debug("[RerunViz] state.imu is empty — no IMU data flowing to visualizer")
         if imu7 is not None and (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) > 0.5:
             Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
+            Q_rel = Q_mat @ self._imu_tare if self._imu_tare is not None else Q_mat
             R_corrected = _IMU_BODY_CORRECTION @ R_fk
-            R_robot = Q_mat @ R_corrected
-            t_robot = Q_mat @ (_IMU_BODY_CORRECTION @ t_fk)
+            R_robot = Q_rel @ R_corrected
+            t_robot = Q_rel @ (_IMU_BODY_CORRECTION @ t_fk)
             if _imu_diag_tick % 100 == 1:
                 logger.debug("[RerunViz] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
         else:

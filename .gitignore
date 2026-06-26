@@ -27,3 +27,7 @@ env/
 
 # Screen logs
 screenlog.*
+
+# Runtime-generated calibration files
+fsr_offsets.json
+imu_tare.json

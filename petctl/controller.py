@@ -714,6 +714,14 @@ class Controller:
                 except Exception as e:
                     logger.error("[Controller] disable_torques error: %s", e)
 
+            # 3d. IMU tare: zero the visualizer world orientation to current pose.
+            take_tare_imu = getattr(self.motion, "take_tare_imu", None)
+            if take_tare_imu is not None and take_tare_imu():
+                logger.info("[Controller] Taring IMU orientation...")
+                for viz in self.visualizers:
+                    if hasattr(viz, "tare_imu"):
+                        viz.tare_imu(self._state)
+
             # 4. Hand latest state to the viz thread; drop if the previous frame
             # hasn't been consumed yet (Rerun backed up → never stall the loop).
             if self.visualizers:

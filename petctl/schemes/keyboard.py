@@ -66,6 +66,7 @@ class KeyboardMotion(Motion):
         self._reset_requested: bool = False
         self._save_home_requested: bool = False
         self._deactivate_requested: bool = False
+        self._tare_imu_requested: bool = False
         self._adjustment_enabled: bool = False
         self._lock = threading.Lock()
         # Timestamp of last key event that changed a motor target.
@@ -194,6 +195,16 @@ class KeyboardMotion(Motion):
             self._deactivate_requested = False
         return val
 
+    def take_tare_imu(self) -> bool:
+        """Consume and return the IMU tare request flag (set by Ctrl+T).
+
+        Returns True exactly once per key event; subsequent calls return False.
+        """
+        with self._lock:
+            val = self._tare_imu_requested
+            self._tare_imu_requested = False
+        return val
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -255,6 +266,10 @@ class KeyboardMotion(Motion):
                     if char in ("D", "d", "\x04") and self._ctrl_held:
                         self._deactivate_requested = True
                         msg = "deactivate motors requested"
+                        return
+                    if char in ("T", "t", "\x14") and self._ctrl_held:
+                        self._tare_imu_requested = True
+                        msg = "IMU tare requested"
                         return
                     if char in ("L", "l", "\x0c") and self._ctrl_held:
                         toggle_labels = True
