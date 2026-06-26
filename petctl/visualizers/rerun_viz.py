@@ -885,7 +885,7 @@ class RerunVisualizer(Visualizer):
         R = np.eye(3, dtype=np.float64)
         for mid in self._ancestor_chain(mod_id):
             pos = pos + R @ np.array(self._module_offsets[mid], dtype=np.float64)
-            angle_rad = -self._servo_angle_rad(mid, state)
+            angle_rad = self._servo_angle_rad(mid, state)
             R = R @ (self._hpr_mats[mid].astype(np.float64)
                      @ _axis_angle_to_mat3(self._joint_axes[mid], angle_rad).astype(np.float64))
         return pos, R
@@ -1028,9 +1028,7 @@ class RerunVisualizer(Visualizer):
             joint_path = self._entity_path_cache[mod_id]
             offset = self._module_offsets[mod_id]
 
-            # Negate: hardware joint positive sense vs mesh joint axis in assembly
-            # right-hand-rule Z rotation, so the viz was a mirror of the real robot.
-            angle_rad = -self._servo_angle_rad(mod_id, state)
+            angle_rad = self._servo_angle_rad(mod_id, state)
 
             R = self._hpr_mats[mod_id] @ _axis_angle_to_mat3(self._joint_axes[mod_id], angle_rad)
 
