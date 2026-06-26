@@ -219,6 +219,11 @@ _IMU_TARE_FILE: str = "config/imu_tare.json"
 # Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
 _IMU_CENTER: tuple[float, float, float] = (0.0, -3.65, -3.5)
 
+# Fine-tuning rotation of the IMU chip's mounting orientation in module 7's body frame (HPR degrees).
+# Analogous to _IMU_CENTER for position — adjust when the slab visual or IMU reading is off-axis.
+# Applied inside the IMU correction pipeline (IMU path only); (0,0,0) = no additional correction.
+_IMU_MOUNT_ROTATION_HPR_DEG: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
 # World-space position where module 7's joint origin must sit so the IMU lands at (0,0,0).
 # At rest R7=I so: target = -_IMU_CENTER.
 _IMU_WORLD_TARGET: tuple[float, float, float] = (
@@ -228,7 +233,7 @@ _IMU_WORLD_TARGET: tuple[float, float, float] = (
 # Static rotation of the robot body relative to the world origin (HPR degrees: heading/Z, pitch/X, roll/Y).
 # Rotates the entire robot about the anchor point (0,0,0) for visual fine-tuning.
 # Applied before the IMU quaternion, so it works in both IMU and no-IMU modes.
-_BODY_ROTATION_HPR_DEG: tuple[float, float, float] = (40.0, 0.0, 0.0)
+_BODY_ROTATION_HPR_DEG: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 # 180° rotation around the robot's body axis (head→tail direction ≈ (0,1,1)/√2 in
 # robot-local space) applied before the BNO085 quaternion to correct the upside-down
@@ -884,6 +889,7 @@ class RerunVisualizer(Visualizer):
         }
 
         self._body_rotation: np.ndarray = _hpr_to_mat3(*_BODY_ROTATION_HPR_DEG)
+        self._imu_mount_rotation: np.ndarray = _hpr_to_mat3(*_IMU_MOUNT_ROTATION_HPR_DEG)
 
         logger.debug("[RerunVisualizer] Loaded assembly with %d modules", len(self._module_meta))
 
@@ -923,22 +929,36 @@ class RerunVisualizer(Visualizer):
         self._log_imu_static(rr)
 
     def _log_imu_static(self, rr) -> None:
-        """Log a static world-frame anchor at the IMU origin (world root, identity transform).
+        """Log the IMU PCB slab and coordinate axes attached to module 7's body.
 
-        Logged outside the robot entity hierarchy so it is unaffected by body rotation
-        or IMU quaternion — it always shows the fixed world-frame axes at (0,0,0).
+        Placed in the robot entity hierarchy so it moves with the physical robot.
+        The Transform3D positions and orients the slab at _IMU_CENTER in mod7's local
+        frame, with the additional mount rotation from _IMU_MOUNT_ROTATION_HPR_DEG.
         """
         al = _IMU_AXIS_LENGTH
+        base = self._entity_path_cache.get(_IMU_MODULE_ID, f"robot/module_{_IMU_MODULE_ID}")
+        imu_path = f"{base}/imu"
 
-        # Thin PCB slab at world origin, flat in the XY plane
-        rr.log("imu_anchor/pcb", rr.Boxes3D(
+        # Combine base chip-face orientation with the tunable mount rotation.
+        # _IMU_QUATERNION_XYZW orients slab flat on the -Y face; mount rotation fine-tunes it.
+        qx, qy, qz, qw = _IMU_QUATERNION_XYZW
+        R_base = _quat_wxyz_to_mat3(qw, qx, qy, qz)
+        R_combined = R_base @ self._imu_mount_rotation
+
+        rr.log(imu_path, rr.Transform3D(
+            translation=list(_IMU_CENTER),
+            mat3x3=R_combined,
+        ), static=True)
+
+        # Thin PCB slab in the imu's local frame (flat in its XY plane after Transform3D)
+        rr.log(f"{imu_path}/pcb", rr.Boxes3D(
             centers=[[0.0, 0.0, 0.0]],
             half_sizes=[list(_IMU_PCB_HALF_SIZES)],
             colors=[list(_IMU_COLOR)],
         ), static=True)
 
-        # World-frame coordinate axes: red=X, green=Y, blue=Z
-        rr.log("imu_anchor/axes", rr.Arrows3D(
+        # Coordinate axes at the imu origin: red=X, green=Y, blue=Z
+        rr.log(f"{imu_path}/axes", rr.Arrows3D(
             origins=[[0.0, 0.0, 0.0]] * 3,
             vectors=[[al, 0.0, 0.0], [0.0, al, 0.0], [0.0, 0.0, al]],
             colors=[[220, 50, 50, 255], [50, 200, 50, 255], [50, 100, 220, 255]],
@@ -1008,9 +1028,10 @@ class RerunVisualizer(Visualizer):
         if imu7 is not None and (imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2) > 0.5:
             Q_mat = _quat_wxyz_to_mat3(imu7.qr, imu7.qi, imu7.qj, imu7.qk)
             Q_rel = Q_mat @ self._imu_tare if self._imu_tare is not None else Q_mat
-            R_corrected = _IMU_BODY_CORRECTION @ R_fk
+            effective_correction = _IMU_BODY_CORRECTION @ self._imu_mount_rotation
+            R_corrected = effective_correction @ R_fk
             R_robot = Q_rel @ R_corrected
-            t_robot = Q_rel @ (_IMU_BODY_CORRECTION @ t_fk)
+            t_robot = Q_rel @ (effective_correction @ t_fk)
             if _imu_diag_tick % 100 == 1:
                 logger.debug("[RerunVisualizer] IMU rotation applied (mag²=%.3f)", imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2)
         else:
