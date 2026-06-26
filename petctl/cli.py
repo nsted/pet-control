@@ -116,6 +116,11 @@ def run(
         "--calibrate",
         help="Re-zero software offsets to current pose on connect (robot backend)",
     ),
+    cap_recal: bool = typer.Option(
+        False,
+        "--cap-recal",
+        help="Recalibrate MPR121 cap sensor baselines at launch (robot backend)",
+    ),
     motors: Optional[str] = typer.Option(
         None,
         "--motors",
@@ -146,6 +151,11 @@ def run(
         False,
         "--log-ollama-input",
         help="Print the full JSON payload sent to Ollama on each LLM call",
+    ),
+    ollama_monitor: bool = typer.Option(
+        False,
+        "--ollama-monitor",
+        help="Run Ollama and log its responses but do not apply them to robot motion",
     ),
     log_loop: bool = typer.Option(
         False,
@@ -223,7 +233,7 @@ def run(
         _scheme = CommandMotion()
     elif control == "ollama":
         from petctl.schemes.ollama_scheme import OllamaMotion
-        _scheme = OllamaMotion(log_input=log_ollama_input, llm_enabled=not dev_ui)
+        _scheme = OllamaMotion(log_input=log_ollama_input, llm_enabled=not dev_ui, monitor_only=ollama_monitor)
     else:
         from petctl.schemes.patterns import ALL_PATTERNS, PATTERN_NAMES
         try:
@@ -255,6 +265,7 @@ def run(
             log_mit=log_mit,
             log_touch=log_touch,
             log_loop=log_loop,
+            cap_recal=cap_recal,
         )
         _ui = None
         if dev_ui:

@@ -14,7 +14,7 @@ Gesture types:
 - `budge` — brief passive joint rotation
 - `twist` — sustained passive joint rotation
 
-Explain your emotions in 80 characters or less. Then select a movement from the list below and its speed based on your feeling.
+Explanation: In < 120 chars, characterize the touches you received, explain your emotional reaction, then select a movement from the list below and its speed based on your feeling.
 
 Movements:
 

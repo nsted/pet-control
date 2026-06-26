@@ -217,7 +217,7 @@ _IMU_TARE_FILE: str = "config/imu_tare.json"
 
 # Centre of the PCB on the no-sensor face, in module 7's local frame (cm).
 # Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
-_IMU_CENTER: tuple[float, float, float] = (0.0, -3.65, -2.7)
+_IMU_CENTER: tuple[float, float, float] = (0.0, -3.15, -3.5)
 
 # World-space position where module 7's joint origin must sit so the IMU lands at (0,0,0).
 # At rest R7=I so: target = -_IMU_CENTER.

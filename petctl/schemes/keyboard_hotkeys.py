@@ -6,7 +6,7 @@ Active regardless of the active control scheme.
 Shortcuts:
   Ctrl+Shift+H   Save current positions as EEPROM home
   Ctrl+Shift+D   Deactivate all motors (exit MIT mode)
-  Ctrl+Shift+C   Recalibrate MPR121 cap sensor baselines (fix stuck pads)
+  Ctrl+Shift+M   Recalibrate MPR121 cap sensor baselines (fix stuck pads)
   Ctrl+Shift+T   Tare IMU orientation in the visualizer
 """
 
@@ -45,7 +45,7 @@ class KeyboardHotkeys:
         self._start_listener()
         logger.info(
             "[Hotkeys] Ctrl+Shift+H: save home  |  Ctrl+Shift+D: deactivate motors  |  "
-            "Ctrl+Shift+C: recal cap sensors  |  Ctrl+Shift+T: tare IMU"
+            "Ctrl+Shift+M: recal cap sensors  |  Ctrl+Shift+T: tare IMU"
         )
 
     def stop(self) -> None:
@@ -117,7 +117,7 @@ class KeyboardHotkeys:
                     elif char in ("D", "d", "\x04") and self._ctrl_held:
                         self._deactivate_requested = True
                         msg = "deactivate motors requested"
-                    elif char in ("C", "c") and self._ctrl_held:
+                    elif char in ("M", "m") and self._ctrl_held:
                         self._calibrate_touch_requested = True
                         msg = "cap sensor recalibration requested"
                     elif char == "T" and self._ctrl_held:

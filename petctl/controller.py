@@ -187,13 +187,8 @@ class _TouchLogger:
             return
         offset = summary.timestamp - self._epoch_fn()
         name = summary.touch_type.capitalize()
-        if summary.status == "started":
-            logger.info("[GESTURE] %s - ongoing", name)
-        elif summary.status == "complete":
-            logger.info("[GESTURE] %s - end - %.1fs", name, summary.duration)
-        elif summary.status == "promoted":
-            prev = summary.promoted_from.capitalize() if summary.promoted_from else "?"
-            logger.info("[GESTURE] %s → %s - %.1fs", prev, name, summary.duration)
+        if summary.status == "complete":
+            logger.info("[GESTURE] %s for %.1fs", name, summary.duration)
         logger.debug("[GESTURE] %s: +%.1fs %s", name, offset, summary.describe())
 
 
@@ -385,6 +380,7 @@ class Controller:
         log_mit: bool = False,
         log_touch: bool = False,
         log_loop: bool = False,
+        cap_recal: bool = False,
     ) -> None:
         self.backend = backend
         self.motion = motion
@@ -394,6 +390,7 @@ class Controller:
         self.log_mit = log_mit
         self.log_touch = log_touch
         self.log_loop = log_loop
+        self.cap_recal = cap_recal
         self.power_manager = PowerManager()
         if (
             type(backend).__name__ == "RobotBackend"
@@ -506,6 +503,17 @@ class Controller:
         if self.limp:
             logger.info("[Controller] Limp mode: disabling torques — move joints freely by hand.")
             await self.backend.disable_torques()
+
+        if self.cap_recal:
+            logger.info("[Controller] --cap-recal: recalibrating cap sensor baselines...")
+            try:
+                ok = await self.backend.calibrate_touch()
+                if ok:
+                    logger.info("[Controller] Cap sensor recalibration done.")
+                else:
+                    logger.warning("[Controller] Cap sensor recalibration: no ack from robot.")
+            except Exception as e:
+                logger.error("[Controller] Cap sensor recalibration error: %s", e)
 
         self._running = True
         self._event_loop = asyncio.get_running_loop()

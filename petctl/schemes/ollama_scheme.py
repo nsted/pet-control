@@ -201,9 +201,11 @@ class OllamaMotion(Motion):
         timeout: float = 12.0,
         log_input: bool = False,
         llm_enabled: bool = True,
+        monitor_only: bool = False,
         history_turns: int = 4,
     ) -> None:
         self._llm_enabled = llm_enabled
+        self._monitor_only = monitor_only
         self._history_turns = history_turns
         self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout, log_input=log_input)
 
@@ -251,10 +253,16 @@ class OllamaMotion(Motion):
             )
         else:
             self._client.start(self._system_prompt)
-            logger.info(
-                "[Ollama] connected, model=%s.",
-                self._client.model,
-            )
+            if self._monitor_only:
+                logger.info(
+                    "[Ollama] connected, model=%s — monitor mode (responses logged, not applied).",
+                    self._client.model,
+                )
+            else:
+                logger.info(
+                    "[Ollama] connected, model=%s.",
+                    self._client.model,
+                )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         if self._was_connected and not state.connected:
@@ -325,21 +333,11 @@ class OllamaMotion(Motion):
                 self._touch_ended_t = ts
                 continue
 
-            if summary.status == "promoted":
-                # Update the type of the matching started event in the current batch so
-                # the LLM sees a single escalating contact rather than two separate events.
-                found = False
-                for i in range(len(self._batch) - 1, -1, -1):
-                    if self._batch[i].status == "started" and self._batch[i].touch_type == summary.promoted_from:
-                        self._batch[i].touch_type = summary.touch_type
-                        found = True
-                        break
-                if not found:
-                    self._batch.append(summary)
-                continue
-
             # Clear any pending idle-revert on new touch.
             self._touch_ended_t = None
+
+            if summary.status != "complete":
+                continue
 
             if not self._batch:
                 self._batch_start_t = ts
@@ -420,6 +418,11 @@ class OllamaMotion(Motion):
         ld = self._client.last_load_ms
         pf = self._client.last_prefill_ms
         gn = self._client.last_gen_ms
+        if self._monitor_only:
+            logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [monitor]\n", rtt, motion, speed, feel)
+            logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
+            return
+
         with self._lock:
             same_motion = self._active_motion == motion
             if same_motion:
