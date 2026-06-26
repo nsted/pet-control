@@ -225,6 +225,9 @@ _IMU_WORLD_TARGET: tuple[float, float, float] = (
     -_IMU_CENTER[0], -_IMU_CENTER[1], -_IMU_CENTER[2]
 )
 
+# Fine-tuning shift of the world anchor point (cm), in Rerun world space (X=red, Y=green, Z=blue).
+_WORLD_ORIGIN_OFFSET: tuple[float, float, float] = (0.0, -1.0, -0.5)
+
 # 180° rotation around the robot's body axis (head→tail direction ≈ (0,1,1)/√2 in
 # robot-local space) applied before the BNO085 quaternion to correct the upside-down
 # mounting of the chip on module 7's -Y face, plus an observed -45° pitch correction
@@ -985,7 +988,7 @@ class RerunVisualizer(Visualizer):
 
         # FK correction: inverse of module 7's cumulative FK so the IMU sits at origin.
         p7, R7 = self._fk_to_module(_IMU_MODULE_ID, state)
-        t_fk = np.array(_IMU_WORLD_TARGET, dtype=np.float64) - R7.T @ p7
+        t_fk = np.array(_IMU_WORLD_TARGET, dtype=np.float64) + np.array(_WORLD_ORIGIN_OFFSET, dtype=np.float64) - R7.T @ p7
         R_fk = R7.T
 
         # Apply BNO085 absolute orientation as a world-space rotation about the origin.
