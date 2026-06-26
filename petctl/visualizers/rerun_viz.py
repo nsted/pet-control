@@ -219,14 +219,19 @@ _IMU_TARE_FILE: str = "config/imu_tare.json"
 # Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
 _IMU_CENTER: tuple[float, float, float] = (0.0, -3.65, -2.7)
 
-# World-space position where module 7's joint origin must sit so the IMU lands at (0,0,0).
-# At rest, module 7's accumulated world rotation = I, so target = -I @ _IMU_CENTER = -_IMU_CENTER.
-_IMU_WORLD_TARGET: tuple[float, float, float] = (
-    -_IMU_CENTER[0], -_IMU_CENTER[1], -_IMU_CENTER[2]
-)
+# Fine-tuning shift of the world origin anchor in mod7's local body frame (cm).
+# Moves which physical point on mod7 sits at world (0,0,0). At rest the robot's
+# accumulated rotation is identity, so local Y = Rerun green, local Z = Rerun blue.
+_ORIGIN_BODY_OFFSET: tuple[float, float, float] = (0.0, -1.0, -0.5)
 
-# Fine-tuning shift of the world anchor point (cm), in Rerun world space (X=red, Y=green, Z=blue).
-_WORLD_ORIGIN_OFFSET: tuple[float, float, float] = (0.0, -1.0, -0.5)
+# World-space position where module 7's joint origin must sit so the anchor
+# (_IMU_CENTER + _ORIGIN_BODY_OFFSET) lands at (0,0,0).
+# At rest R7=I so: target = -(_IMU_CENTER + _ORIGIN_BODY_OFFSET).
+_IMU_WORLD_TARGET: tuple[float, float, float] = (
+    -_IMU_CENTER[0] - _ORIGIN_BODY_OFFSET[0],
+    -_IMU_CENTER[1] - _ORIGIN_BODY_OFFSET[1],
+    -_IMU_CENTER[2] - _ORIGIN_BODY_OFFSET[2],
+)
 
 # 180° rotation around the robot's body axis (head→tail direction ≈ (0,1,1)/√2 in
 # robot-local space) applied before the BNO085 quaternion to correct the upside-down
@@ -1021,10 +1026,6 @@ class RerunVisualizer(Visualizer):
             if _imu_diag_tick % 100 == 1:
                 reason = f"imu7={imu7}" if imu7 is None else f"mag²={imu7.qr**2 + imu7.qi**2 + imu7.qj**2 + imu7.qk**2:.3f}<0.5"
                 logger.debug("[RerunVisualizer] IMU rotation NOT applied: %s", reason)
-
-        # World-space fine-tuning offset: applied after all rotations so it aligns with
-        # the Rerun viewer axes (X=red, Y=green, Z=blue) regardless of robot orientation.
-        t_robot = t_robot + np.array(_WORLD_ORIGIN_OFFSET, dtype=np.float64)
 
         rr.log("robot", rr.Transform3D(
             translation=t_robot.tolist(),
