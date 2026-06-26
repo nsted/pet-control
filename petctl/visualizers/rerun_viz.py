@@ -225,6 +225,11 @@ _IMU_WORLD_TARGET: tuple[float, float, float] = (
     -_IMU_CENTER[0], -_IMU_CENTER[1], -_IMU_CENTER[2]
 )
 
+# Static rotation of the robot body relative to the world origin (HPR degrees: heading/Z, pitch/X, roll/Y).
+# Rotates the entire robot about the anchor point (0,0,0) for visual fine-tuning.
+# Applied before the IMU quaternion, so it works in both IMU and no-IMU modes.
+_BODY_ROTATION_HPR_DEG: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
 # 180° rotation around the robot's body axis (head→tail direction ≈ (0,1,1)/√2 in
 # robot-local space) applied before the BNO085 quaternion to correct the upside-down
 # mounting of the chip on module 7's -Y face, plus an observed -45° pitch correction
@@ -878,6 +883,8 @@ class RerunVisualizer(Visualizer):
             for mod in self._module_meta
         }
 
+        self._body_rotation: np.ndarray = _hpr_to_mat3(*_BODY_ROTATION_HPR_DEG)
+
         logger.debug("[RerunVisualizer] Loaded assembly with %d modules", len(self._module_meta))
 
     def _fk_to_module(self, mod_id: int, state: RobotState) -> tuple[np.ndarray, np.ndarray]:
@@ -985,8 +992,8 @@ class RerunVisualizer(Visualizer):
 
         # FK correction: inverse of module 7's cumulative FK so the IMU sits at origin.
         p7, R7 = self._fk_to_module(_IMU_MODULE_ID, state)
-        t_fk = np.array(_IMU_WORLD_TARGET, dtype=np.float64) - R7.T @ p7
-        R_fk = R7.T
+        t_fk = self._body_rotation @ (np.array(_IMU_WORLD_TARGET, dtype=np.float64) - R7.T @ p7)
+        R_fk = self._body_rotation @ R7.T
 
         # Apply BNO085 absolute orientation as a world-space rotation about the origin.
         # Q_imu rotates robot-local (gravity-corrected) space into Rerun world space.
