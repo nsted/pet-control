@@ -213,7 +213,7 @@ _PAD_LABELS: list[str] = (
 # Rerun automatically carries with the tail as it articulates.
 # ------------------------------------------------------------------
 _IMU_MODULE_ID: int = 7
-_IMU_TARE_FILE: str = "imu_tare.json"
+_IMU_TARE_FILE: str = "config/imu_tare.json"
 
 # Centre of the PCB on the no-sensor face, in module 7's local frame (cm).
 # Face centroid (0, -3.5, -2.7) offset 0.15 cm outward along the -Y normal.
@@ -267,8 +267,9 @@ def _load_imu_tare() -> Optional[np.ndarray]:
 
 
 def _save_imu_tare(tare: np.ndarray) -> None:
-    """Save IMU tare matrix to imu_tare.json in the current directory."""
+    """Save IMU tare matrix to config/imu_tare.json."""
     try:
+        os.makedirs("config", exist_ok=True)
         with open(_IMU_TARE_FILE, "w") as f:
             json.dump({"tare_matrix": tare.flatten().tolist()}, f, indent=2)
         logger.debug("[RerunVisualizer] Saved IMU tare to %s", _IMU_TARE_FILE)

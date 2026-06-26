@@ -22,6 +22,7 @@ import asyncio
 import dataclasses
 import datetime
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -479,8 +480,9 @@ async def main(
     dry_run_mode: str,
 ) -> None:
     ts_str       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    jsonl_path   = f"sensor_survey_{ts_str}.jsonl"
-    summary_path = f"sensor_survey_{ts_str}_summary.json"
+    os.makedirs("data", exist_ok=True)
+    jsonl_path   = f"data/sensor_survey_{ts_str}.jsonl"
+    summary_path = f"data/sensor_survey_{ts_str}_summary.json"
 
     if dry_run:
         from petctl.backends.mock import MockBackend

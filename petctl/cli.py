@@ -39,7 +39,7 @@ def _parse_motor_ids(s: Optional[str]) -> Optional[tuple[int, ...]]:
     return tuple(parts) if parts else None
 
 
-_FSR_OFFSETS_FILE = "fsr_offsets.json"
+_FSR_OFFSETS_FILE = "config/fsr_offsets.json"
 
 
 def _load_fsr_offsets() -> Optional[dict[int, dict[str, float]]]:

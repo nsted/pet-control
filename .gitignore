@@ -29,5 +29,8 @@ env/
 screenlog.*
 
 # Runtime-generated calibration files
-fsr_offsets.json
-imu_tare.json
+config/fsr_offsets.json
+config/imu_tare.json
+
+# Script output data (logs, calibration runs, sweeps)
+data/

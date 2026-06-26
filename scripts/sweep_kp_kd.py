@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import statistics
 import time
 from dataclasses import asdict, dataclass, field
@@ -278,7 +279,8 @@ async def main(
 
     # ── Save raw results ──────────────────────────────────────────────────────
     ts = time.strftime("%Y%m%d_%H%M%S")
-    out_path = f"sweep_kp_kd_{ts}.json"
+    os.makedirs("data", exist_ok=True)
+    out_path = f"data/sweep_kp_kd_{ts}.json"
     with open(out_path, "w") as f:
         json.dump(
             {

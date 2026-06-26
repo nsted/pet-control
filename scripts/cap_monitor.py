@@ -21,6 +21,7 @@ import asyncio
 import collections
 import datetime
 import json
+import os
 import sys
 import time
 from typing import TYPE_CHECKING
@@ -314,7 +315,8 @@ if __name__ == "__main__":
     log_path = None
     if args.log:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_path = f"cap_monitor_{ts}.jsonl"
+        os.makedirs("data", exist_ok=True)
+        log_path = f"data/cap_monitor_{ts}.jsonl"
 
     asyncio.run(main(
         host=args.host,

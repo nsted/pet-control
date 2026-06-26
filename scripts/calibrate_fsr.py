@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import datetime
 import json
+import os
 import sys
 import time
 
@@ -25,7 +26,7 @@ from petctl.backends.robot import ROBOT_DEFAULT_HOST, ROBOT_DEFAULT_PORT, RobotB
 
 FACES = ("left", "right", "middle")
 DEFAULT_SAMPLES = 60
-DEFAULT_OUTPUT = "fsr_offsets.json"
+DEFAULT_OUTPUT = "config/fsr_offsets.json"
 SAMPLE_HZ = 20
 
 
@@ -132,6 +133,7 @@ async def main(host: str, port: int, n_samples: int, output: str) -> None:
         "samples": n_samples,
         "offsets": {str(mid): v for mid, v in offsets.items()},
     }
+    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
     with open(output, "w") as f:
         json.dump(data, f, indent=2)
     print(f"  Saved to: {output}")

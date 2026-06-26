@@ -25,6 +25,7 @@ import asyncio
 import datetime
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 
@@ -312,7 +313,8 @@ async def run(host: str, port: int) -> None:
         )
 
         ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log = f"power_calib_static_{ts}.jsonl"
+        os.makedirs("data", exist_ok=True)
+        log = f"data/power_calib_static_{ts}.jsonl"
         _save_jsonl(hold_samples, log)
 
     except RuntimeError as exc:

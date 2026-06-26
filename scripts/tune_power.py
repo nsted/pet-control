@@ -33,6 +33,7 @@ import datetime
 import glob
 import json
 import math
+import os
 import sys
 import time
 from typing import NamedTuple
@@ -149,7 +150,7 @@ class TrialResult(NamedTuple):
 def _load_history(budget: float, ki_drain_ratio: float, hold_s: float) -> list[TrialResult]:
     """Load schema-v4 JSONL files; filter by budget, ki_drain_ratio, and hold_s."""
     results: list[TrialResult] = []
-    for path in sorted(glob.glob("power_tune_*.jsonl")):
+    for path in sorted(glob.glob("data/power_tune_*.jsonl")):
         try:
             with open(path) as f:
                 for line in f:
@@ -551,7 +552,8 @@ async def run(host: str, port: int, target_delta: float, budget: float, n_trials
         await asyncio.sleep(max(0.0, DT - (time.monotonic() - t0)))
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = f"power_tune_{ts}.jsonl"
+    os.makedirs("data", exist_ok=True)
+    log_path = f"data/power_tune_{ts}.jsonl"
     with open(log_path, "w") as f:
         for r in new_results:
             f.write(json.dumps({
