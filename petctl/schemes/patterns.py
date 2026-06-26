@@ -49,14 +49,20 @@ class SnuggleMotion(Motion):
         self.amplitude_deg = amplitude_deg
         self.hz = hz
         self._start: float = 0.0
+        self._phase_t: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start = time.monotonic()
+        self._phase_t = 0.0
         logger.info("[BEHAVIOR] Snuggle")
         logger.debug("[BEHAVIOR] Snuggle: ±%.0f° at %.1f Hz, 2× spatial frequency.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        t = time.monotonic() - self._start
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        self._phase_t += max(state.dt, 1e-4) * speed_gain
+        t = self._phase_t
         ids = sorted(state.active_servo_ids)
         n = len(ids)
         if n == 0:
@@ -90,14 +96,20 @@ class PulseMotion(Motion):
         self.amplitude_deg = amplitude_deg
         self.hz = hz
         self._start: float = 0.0
+        self._phase_t: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start = time.monotonic()
+        self._phase_t = 0.0
         logger.info("[BEHAVIOR] Pulse")
         logger.debug("[BEHAVIOR] Pulse: ±%.0f° at %.1f Hz, all joints in phase.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        t = time.monotonic() - self._start
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        self._phase_t += max(state.dt, 1e-4) * speed_gain
+        t = self._phase_t
         angle = self.amplitude_deg * math.sin(2 * math.pi * self.hz * t)
         return [
             ServoCommand.from_angle(servo_id=sid, angle_deg=angle)
@@ -123,9 +135,13 @@ class CascadeMotion(Motion):
         self.hz = hz
         self.head_fraction = head_fraction
         self._start: float = 0.0
+        self._phase_t: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start = time.monotonic()
+        self._phase_t = 0.0
         logger.info("[BEHAVIOR] Cascade")
         logger.debug(
             "[BEHAVIOR] Cascade: head ±%.0f° → tail ±%.0f° at %.1f Hz.",
@@ -133,7 +149,9 @@ class CascadeMotion(Motion):
         )
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        t = time.monotonic() - self._start
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        self._phase_t += max(state.dt, 1e-4) * speed_gain
+        t = self._phase_t
         ids = sorted(state.active_servo_ids)
         n = len(ids)
         if n == 0:
@@ -160,14 +178,20 @@ class SlalomMotion(Motion):
         self.amplitude_deg = amplitude_deg
         self.hz = hz
         self._start: float = 0.0
+        self._phase_t: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start = time.monotonic()
+        self._phase_t = 0.0
         logger.info("[BEHAVIOR] Slalom")
         logger.debug("[BEHAVIOR] Slalom: ±%.0f° S-shape rocking at %.1f Hz.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        t = time.monotonic() - self._start
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        self._phase_t += max(state.dt, 1e-4) * speed_gain
+        t = self._phase_t
         ids = sorted(state.active_servo_ids)
         return [
             ServoCommand.from_angle(
@@ -194,14 +218,17 @@ class TwitchMotion(Motion):
         self.smoothing = smoothing
         self._current: dict[int, float] = {}
         self._target: dict[int, float] = {}
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._current = {}
         self._target = {}
         logger.info("[BEHAVIOR] Twitch")
         logger.debug("[BEHAVIOR] Twitch: ±%.0f° random noise per joint.", self.amplitude_deg)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         ids = sorted(state.active_servo_ids)
         cmds = []
         for sid in ids:
@@ -212,7 +239,7 @@ class TwitchMotion(Motion):
                 -self.amplitude_deg,
                 min(self.amplitude_deg, self._target[sid] + random.gauss(0.0, 0.3) * self.amplitude_deg),
             )
-            self._current[sid] += self.smoothing * (self._target[sid] - self._current[sid])
+            self._current[sid] += self.smoothing * speed_gain * (self._target[sid] - self._current[sid])
             cmds.append(ServoCommand.from_angle(servo_id=sid, angle_deg=self._current[sid]))
         return cmds
 
@@ -261,14 +288,20 @@ class CoilMotion(Motion):
         self.amplitude_deg = amplitude_deg
         self.hz = hz
         self._start: float = 0.0
+        self._phase_t: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start = time.monotonic()
+        self._phase_t = 0.0
         logger.info("[BEHAVIOR] Coil")
         logger.debug("[BEHAVIOR] Coil: ±%.0f° coiling motion at %.1f Hz.", self.amplitude_deg, self.hz)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
-        t = time.monotonic() - self._start
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        self._phase_t += max(state.dt, 1e-4) * speed_gain
+        t = self._phase_t
         ids = sorted(state.active_servo_ids)
         n = len(ids)
         if n == 0:
@@ -304,8 +337,10 @@ class StrokeReactMotion(Motion):
         self._angle_deg: dict[int, float] = {}
         self._rand_dir: dict[int, float] = {}
         self._was_touching: dict[int, bool] = {}
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._angle_deg = {}
         self._rand_dir = {}
         self._was_touching = {}
@@ -314,6 +349,7 @@ class StrokeReactMotion(Motion):
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         dt = max(state.dt, 1e-4)
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         cmds: list[ServoCommand] = []
 
         for module_id, sensors in state.sensors.items():
@@ -351,7 +387,7 @@ class StrokeReactMotion(Motion):
 
             self._angle_deg[servo_id] = max(
                 -self.POS_LIMIT_DEG,
-                min(self.POS_LIMIT_DEG, self._angle_deg[servo_id] + direction * self.MAX_SPEED_DEG_PER_S * dt),
+                min(self.POS_LIMIT_DEG, self._angle_deg[servo_id] + direction * self.MAX_SPEED_DEG_PER_S * speed_gain * dt),
             )
             self._was_touching[servo_id] = True
             cmds.append(ServoCommand.from_angle(
@@ -391,6 +427,7 @@ class _WanderBase(Motion):
         self._stall_peak_torque: dict[int, float] = {}
         self._reversed_at: dict[int, float] = {}
         self._pending_slew_resets: dict[int, float] = {}
+        self._controller: Controller | None = None
 
     def _init_stall_state(self) -> None:
         self._pos_cmd = {}
@@ -476,11 +513,13 @@ class ExploreMotion(_WanderBase):
         self._speed_rad_s = math.radians(speed_deg_per_s)
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._init_stall_state()
         logger.info("[BEHAVIOR] Explore")
         logger.debug("[BEHAVIOR] Explore: each joint turns at %.0f°/s, reversing on stall.", math.degrees(self._speed_rad_s))
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         now = time.monotonic()
         dt = max(state.dt, 1e-4)
         cmds: list[ServoCommand] = []
@@ -490,7 +529,7 @@ class ExploreMotion(_WanderBase):
             if self._check_stall(sid, state, now):
                 clamped, peak_t = self._do_reversal(sid, state, now)
                 logger.debug("[Explore] Motor %d → reversing at %.1f° (peak torque %.2f Nm)", sid, math.degrees(clamped), peak_t)
-            self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+            self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * speed_gain * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
             cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
         return cmds
@@ -516,11 +555,13 @@ class SeekTouchMotion(_WanderBase):
         self._holding: set[int] = set()
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._init_stall_state()
         self._holding = set()
         logger.info("[BEHAVIOR] SeekTouch")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         now = time.monotonic()
         dt = max(state.dt, 1e-4)
         cmds: list[ServoCommand] = []
@@ -539,7 +580,7 @@ class SeekTouchMotion(_WanderBase):
                 if self._check_stall(sid, state, now):
                     clamped, peak_t = self._do_reversal(sid, state, now)
                     logger.debug("[SeekTouch] s%d reversed at %.1f°", sid, math.degrees(clamped))
-                self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+                self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * speed_gain * dt
                 self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
                 cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
         return cmds
@@ -567,6 +608,7 @@ class AvoidTouchMotion(_WanderBase):
         self._fleeing: set[int] = set()
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._init_stall_state()
         self._fleeing = set()
         logger.info("[BEHAVIOR] AvoidTouch")
@@ -589,6 +631,7 @@ class AvoidTouchMotion(_WanderBase):
         return self._direction.get(sid, 1.0)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         now = time.monotonic()
         dt = max(state.dt, 1e-4)
         cmds: list[ServoCommand] = []
@@ -610,7 +653,7 @@ class AvoidTouchMotion(_WanderBase):
                 if self._check_stall(sid, state, now):
                     clamped, peak_t = self._do_reversal(sid, state, now)
                     logger.debug("[AvoidTouch] s%d reversed at %.1f°", sid, math.degrees(clamped))
-                self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+                self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * speed_gain * dt
                 self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
                 cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
             else:
@@ -639,6 +682,7 @@ class DriftMotion(_WanderBase):
         self._start_time: float = 0.0
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start_time = time.monotonic()
         self._init_stall_state()
         logger.info("[BEHAVIOR] Drift")
@@ -660,6 +704,8 @@ class DriftMotion(_WanderBase):
         now = time.monotonic()
         dt = max(state.dt, 1e-4)
         speed_rad_s = self._current_speed_rad_s(now)
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        speed_rad_s *= speed_gain
         cmds: list[ServoCommand] = []
         for sid in sorted(state.active_servo_ids):
             if sid not in self._pos_cmd:
@@ -698,8 +744,10 @@ class StruggleMotion(Motion):
         self._stall_since: dict[int, float] = {}
         self._reversed_at: dict[int, float] = {}
         self._pending_slew_resets: dict[int, float] = {}
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._pos_cmd = {}
         self._direction = {}
         self._stall_since = {}
@@ -715,6 +763,7 @@ class StruggleMotion(Motion):
         return resets
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         now = time.monotonic()
         dt = max(state.dt, 1e-4)
         cmds: list[ServoCommand] = []
@@ -754,7 +803,7 @@ class StruggleMotion(Motion):
                 self._stall_since[sid] = 0.0
                 logger.debug("[Struggle] Motor %d → reversing (vel=%.3f rad/s)", sid, vel)
 
-            self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * dt
+            self._pos_cmd[sid] += self._direction[sid] * self._speed_rad_s * speed_gain * dt
             self._pos_cmd[sid] = max(-self.MAX_POS_RAD, min(self.MAX_POS_RAD, self._pos_cmd[sid]))
 
             cmds.append(ServoCommand(servo_id=sid, position=self._pos_cmd[sid]))
@@ -788,15 +837,18 @@ class CurlMotion(Motion):
         self.target_deg = target_deg
         self.ramp_s = ramp_s
         self._start: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start = time.monotonic()
         logger.info("[BEHAVIOR] Curl")
         logger.debug("[BEHAVIOR] Curl: ±%.0f° over %.0fs, then hold.", self.target_deg, self.ramp_s)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         t = time.monotonic() - self._start
-        alpha = min(1.0, t / self.ramp_s)
+        alpha = min(1.0, t * speed_gain / self.ramp_s)
         angle = alpha * self.target_deg
         ids = sorted(state.active_servo_ids)
         return [
@@ -856,18 +908,22 @@ class StrokeCurlMotion(Motion):
         self._release_time: dict[int, float] = {}  # sid → monotonic time of last release
         self._curl_dir: float = 0.0
         self._progress_snap: dict[int, tuple[float, float]] = {}  # sid → (abs_pos, time)
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._curl_target = {}
         self._release_time = {}
         self._curl_dir = 0.0
         self._progress_snap = {}
-        logger.info("[BEHAVIOR] StrokeCurl")
+        sg = getattr(controller, 'speed_gain', 1.0)
+        logger.info("[BEHAVIOR] StrokeCurl: speed_gain=%.2f, decay=%.1f°/s", sg, self.DECAY_DEG_PER_S * sg)
         logger.debug("[BEHAVIOR] StrokeCurl: right → curl right, left → curl left; holds on release.")
 
     def update(self, state: RobotState) -> list[ServoCommand]:
         now = state.timestamp
         dt = max(state.dt, 1e-4)
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
 
         new_dir = self._sense_dir(state)
         if new_dir != 0.0:
@@ -907,7 +963,8 @@ class StrokeCurlMotion(Motion):
                             self._progress_snap[sid] = (abs_pos, now)
                         else:
                             snap_pos, snap_t = self._progress_snap[sid]
-                            if snap_pos - abs_pos >= self.PROGRESS_THRESHOLD_RAD:
+                            progress_threshold = self.PROGRESS_THRESHOLD_RAD * max(0.05, speed_gain)
+                            if snap_pos - abs_pos >= progress_threshold:
                                 self._progress_snap[sid] = (abs_pos, now)
                             elif now - snap_t >= self.PROGRESS_WINDOW_S:
                                 self._curl_target[sid] = 0.0
@@ -916,7 +973,7 @@ class StrokeCurlMotion(Motion):
                                 cur = 0.0
 
                         if cur != 0.0:
-                            decay = self.DECAY_DEG_PER_S * dt
+                            decay = self.DECAY_DEG_PER_S * dt * speed_gain
                             if abs(cur) <= decay:
                                 self._curl_target[sid] = 0.0
                                 self._release_time.pop(sid, None)
@@ -1028,6 +1085,7 @@ class CurlTowardsMotion(StrokeCurlMotion):
     name = "curl-towards"
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._curl_target = {}
         self._release_time = {}
         self._curl_dir = 0.0
@@ -1042,6 +1100,7 @@ class CurlAwayMotion(StrokeCurlMotion):
     DIRECTION_SIGN: float = -1.0
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._curl_target = {}
         self._release_time = {}
         self._curl_dir = 0.0
@@ -1220,8 +1279,10 @@ class StrokeSnuggleMotion(Motion):
         self._stroke_start: float | None = None
         self._last_touch: float | None = None
         self._snuggle_start: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._curl_target = {}
         self._release_time = {}
         self._curl_dir = 0.0
@@ -1247,6 +1308,7 @@ class StrokeSnuggleMotion(Motion):
     def _do_curl(self, state: RobotState) -> list[ServoCommand]:
         now = state.timestamp
         dt = max(state.dt, 1e-4)
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
 
         new_dir = self._sense_dir(state)
         if new_dir != 0.0:
@@ -1272,7 +1334,7 @@ class StrokeSnuggleMotion(Motion):
                     if sid not in self._release_time:
                         self._release_time[sid] = now
                     elif now - self._release_time[sid] > self.HOLD_S:
-                        decay = self.DECAY_DEG_PER_S * dt
+                        decay = self.DECAY_DEG_PER_S * dt * speed_gain
                         if abs(cur) <= decay:
                             self._curl_target[sid] = 0.0
                             self._release_time.pop(sid, None)
@@ -1527,6 +1589,7 @@ class NeighborAssistDriftMotion(Motion):
         self._assist_dir: dict[int, int] = {}         # +1 = wiggle toward 0°, -1 = away
         self._cooldown_until: dict[int, float] = {}
         self._pending_slew_resets: dict[int, float] = {}
+        self._controller: Controller | None = None
 
     def is_active(self) -> bool:
         return True
@@ -1537,6 +1600,7 @@ class NeighborAssistDriftMotion(Motion):
         return resets
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start_time = time.monotonic()
         self._pos_cmd.clear()
         self._direction.clear()
@@ -1629,6 +1693,8 @@ class NeighborAssistDriftMotion(Motion):
         now = time.monotonic()
         dt = max(state.dt, 1e-4)
         speed_rad_s = self._current_speed_rad_s(now)
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        speed_rad_s *= speed_gain
         active = state.active_servo_ids
 
         # Pass 1: advance state machine, build neighbor override map
@@ -1826,8 +1892,10 @@ class PurrRippleMotion(Motion):
     def __init__(self, speed: float = 1.0) -> None:
         self.speed = max(speed, 0.01)
         self._start: float = 0.0
+        self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
+        self._controller = controller
         self._start = time.monotonic()
         hz = self.BASE_HZ * self.speed
         logger.info("[BEHAVIOR] PurrRipple: speed=%.1f (%.2f Hz)", self.speed, hz)
@@ -1843,7 +1911,8 @@ class PurrRippleMotion(Motion):
         if n == 0:
             return []
 
-        hz = self.BASE_HZ * self.speed
+        speed_gain = getattr(self._controller, 'speed_gain', 1.0)
+        hz = self.BASE_HZ * self.speed * speed_gain
         cmds = []
         for i, sid in enumerate(ids):
             # One wavelength across the body — each motor gets a unique phase offset

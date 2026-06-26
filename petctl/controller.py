@@ -440,6 +440,10 @@ class Controller:
         # Last commanded position (rad) after slew — used to cap per-tick jumps.
         self._slew_last_sent_rad: dict[int, float] = {}
 
+        # Multiplicative gain on max_speed_rad_s. 1.0 = full speed.
+        # Set via --vel at launch or updated by a motion scheme (e.g. ollama speed field).
+        self.speed_gain: float = 1.0
+
         # Always-on keyboard hotkeys — active regardless of motion scheme.
         from petctl.schemes.keyboard_hotkeys import KeyboardHotkeys
         self._hotkeys = KeyboardHotkeys()
@@ -525,7 +529,8 @@ class Controller:
         for viz in self.visualizers:
             viz.on_start(self)
 
-        logger.info("[Controller] Running. Press Ctrl-C to stop.")
+        logger.info("[Controller] Running. speed_gain=%.2f → max_speed=%.1f°/s. Press Ctrl-C to stop.",
+                    self.speed_gain, math.degrees(LOOP_LIMITS.max_speed_rad_s * self.speed_gain))
 
         # Install signal handlers so Ctrl-C triggers graceful shutdown
         loop = asyncio.get_running_loop()
@@ -561,11 +566,11 @@ class Controller:
         """
         if not commands:
             return
-        max_step = math.radians(LOOP_LIMITS.max_angle_step_per_tick_deg)
         tau = LOOP_LIMITS.command_smoothing_tau_s
         alpha_cap = LOOP_LIMITS.command_smoothing_max_alpha
         dt_floor = 1e-3
         dt = max(self._state.dt, dt_floor)
+        max_step = LOOP_LIMITS.max_speed_rad_s * dt * max(0.01, self.speed_gain)
 
         for cmd in commands:
             if cmd.position is None:

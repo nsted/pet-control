@@ -37,18 +37,16 @@ class ControlLoopLimits:
     """Timing and rate limits for the control loop."""
 
     # First-order smoothing of commanded position toward the scheme (see Controller).
-    # Larger tau = softer motion; 0 disables (only max_angle_step_per_tick_deg applies).
+    # Larger tau = softer motion; 0 disables.
     command_smoothing_tau_s: float = 0.10
     # Cap on fraction of remaining error closed per tick (avoids one big snap after a slow loop).
     command_smoothing_max_alpha: float = 0.28
 
-    # Hard cap on single-tick commanded delta (degrees) after smoothing (safety).
-    max_angle_step_per_tick_deg: float = 4.0
-
-    # Maximum slew rate for the backend position ramping filter (rad/s).
-    # Caps how fast p_des_commanded can move toward p_des_target each cycle.
-    # Acts as a final safety net after scheme-level smoothing.
-    max_speed_rad_s: float = 6.0   #was 6.0
+    # Maximum joint velocity (rad/s). Applied as a per-tick delta cap in both the
+    # controller slew filter and the robot backend ramp filter (both use max_speed_rad_s * dt).
+    # Scaled by Controller.speed_gain at the controller level; backend uses it as a hard safety net.
+    # 2.0 rad/s ≈ 115°/s — lets snuggle (±40° at 0.4 Hz, peak ~100°/s) track at full amplitude.
+    max_speed_rad_s: float = 6.0
 
     # Maximum commands per tick (prevents flooding the bus)
     max_commands_per_tick: int = 10

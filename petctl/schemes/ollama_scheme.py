@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import threading
 import time
 from pathlib import Path
@@ -62,56 +61,36 @@ _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 # Accumulate touch events for this many seconds before sending a batch to the LLM.
 _BATCH_WINDOW_S = 5.0
 
-# Max amplitude per movement (degrees). Always used at full value — no intensity scaling.
-# Patterns with no amplitude param use 0.0.
-_AMP_MAX: dict[str, float] = {
-    "idle":         0.0,
-    "snuggle":     55.0,
-    "walk":        55.0,
-    "nuzzle":       0.0,
-    "wiggle":      60.0,
-    "purr":         0.0,
-    "explore":      0.0,
-    "contort":      0.0,
-    "twitch":      40.0,
-    "struggle":     0.0,
-    "writhe":       0.0,
-    "engage":       0.0,
-    "withdraw":     0.0,
-    "seek-touch":   0.0,
-    "avoid-touch":  0.0,
-    "yield":        0.0,
-    "curl":         0.0,
+_VALID_MOVEMENTS: set[str] = {
+    "idle", "snuggle", "walk", "nuzzle", "wiggle", "purr",
+    "explore", "contort", "twitch", "struggle", "writhe",
+    "engage", "withdraw", "seek-touch", "avoid-touch", "yield", "curl",
 }
-
-_VALID_MOVEMENTS = set(_AMP_MAX)
 
 # Movement to use on startup and after idle revert (no touch for _TOUCH_IDLE_S).
 _DEFAULT_MOTION = "engage"
 
 
-def _make_pattern(motion: str, speed: float) -> Motion:
-    """Instantiate a Motion for the given motion name, scaled by speed."""
-    amp = _AMP_MAX.get(motion, 0.0)
-
+def _make_pattern(motion: str) -> Motion:
+    """Instantiate a Motion for the given motion name using class defaults."""
     if motion == "idle":
         return IdleMotion()
     if motion in ("snuggle", "walk"):
-        return SnuggleMotion(amplitude_deg=amp, hz=0.2 + speed * 0.4)
+        return SnuggleMotion()
     if motion == "nuzzle":
         return StrokeSnuggleMotion()
     if motion == "wiggle":
-        return SlalomMotion(amplitude_deg=amp, hz=0.1 + speed * 0.3)
+        return SlalomMotion()
     if motion == "purr":
         return PurrRippleMotion()
     if motion == "explore":
-        return ExploreMotion(speed_deg_per_s=20.0 + speed * 60.0)
+        return ExploreMotion()
     if motion == "contort":
         return DriftMotion()
     if motion == "twitch":
-        return TwitchMotion(amplitude_deg=amp, smoothing=0.03 + speed * 0.08)
+        return TwitchMotion()
     if motion == "struggle":
-        return StruggleMotion(speed_deg_per_s=50.0 + speed * 50.0)
+        return StruggleMotion()
     if motion == "writhe":
         return NeighborAssistDriftMotion()
     if motion == "engage":
@@ -127,26 +106,6 @@ def _make_pattern(motion: str, speed: float) -> Motion:
     if motion == "curl":
         return CurlMotion()
     return FreezeMotion()
-
-
-def _update_pattern_params(pattern: Motion, motion: str, speed: float) -> None:
-    """Update a running pattern's amplitude/speed without resetting its phase."""
-    amp = _AMP_MAX.get(motion, 0.0)
-
-    if motion in ("snuggle", "walk"):
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.hz = 0.2 + speed * 0.4  # type: ignore[attr-defined]
-    elif motion == "wiggle":
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.hz = 0.1 + speed * 0.3  # type: ignore[attr-defined]
-    elif motion == "twitch":
-        pattern.amplitude_deg = amp  # type: ignore[attr-defined]
-        pattern.smoothing = 0.03 + speed * 0.08  # type: ignore[attr-defined]
-    elif motion == "explore":
-        pattern._speed_rad_s = math.radians(20.0 + speed * 60.0)  # type: ignore[attr-defined]
-    elif motion == "struggle":
-        pattern._speed_rad_s = math.radians(50.0 + speed * 50.0)  # type: ignore[attr-defined]
-    # all other motions have no tunable params — nothing to update
 
 
 def _format_batch(batch: list[GestureEvent]) -> str:
@@ -241,9 +200,10 @@ class OllamaMotion(Motion):
 
     def on_start(self, controller: Controller) -> None:
         self._controller = controller
+        self._controller.speed_gain = self._default_speed
         self._system_prompt = _load_system_prompt()
         self._touch_queue = controller.touch_events
-        self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
+        self._switch_pattern(_DEFAULT_MOTION)
 
         if not self._llm_enabled:
             logger.info("[Ollama] LLM disabled (dev-ui mode).")
@@ -274,13 +234,15 @@ class OllamaMotion(Motion):
             self._touch_ended_t = None
             with self._lock:
                 self._revert_gen += 1
-            self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
+            self._controller.speed_gain = self._default_speed
+            self._switch_pattern(_DEFAULT_MOTION)
         elif not self._was_connected and state.connected:
             logger.info("[System] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
             self._batch = []
             with self._lock:
                 self._revert_gen += 1
-            self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
+            self._controller.speed_gain = self._default_speed
+            self._switch_pattern(_DEFAULT_MOTION)
         self._was_connected = state.connected
 
         if self._touch_queue is not None:
@@ -297,7 +259,8 @@ class OllamaMotion(Motion):
             self._batch = []
             with self._lock:
                 self._revert_gen += 1
-            self._switch_pattern(_DEFAULT_MOTION, self._default_speed)
+            self._controller.speed_gain = self._default_speed
+            self._switch_pattern(_DEFAULT_MOTION)
 
         with self._lock:
             pattern = self._active_pattern
@@ -367,9 +330,9 @@ class OllamaMotion(Motion):
     # Pattern switching
     # ------------------------------------------------------------------
 
-    def _switch_pattern(self, motion: str, speed: float) -> None:
+    def _switch_pattern(self, motion: str) -> None:
         """Instantiate and activate a new pattern. Safe to call from any thread."""
-        pattern = _make_pattern(motion, speed)
+        pattern = _make_pattern(motion)
         controller = self._controller
         if controller is not None:
             pattern.on_start(controller)
@@ -427,14 +390,15 @@ class OllamaMotion(Motion):
 
         with self._lock:
             same_motion = self._active_motion == motion
-            if same_motion:
-                logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [params updated]\n", rtt, motion, speed, feel)
-                logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
-                _update_pattern_params(self._active_pattern, motion, speed)
-        if not same_motion:
+        if self._controller is not None:
+            self._controller.speed_gain = speed
+        if same_motion:
+            logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [speed updated]\n", rtt, motion, speed, feel)
+            logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
+        else:
             logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s\n", rtt, motion, speed, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
-            self._switch_pattern(motion, speed)
+            self._switch_pattern(motion)
 
 
 # ------------------------------------------------------------------

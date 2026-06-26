@@ -95,8 +95,8 @@ class CommandMotion(Motion):
         Args:
             servo_id:  MIT motor ID (1–7).
             angle_deg: Target angle in degrees (0 = home).
-            speed:     Movement speed, 0–1 fraction of max_speed_rad_s (8 rad/s).
-                       1.0 → 8 rad/s, 0.1 → 0.8 rad/s.
+            speed:     Movement speed, 0–1 fraction of max_speed_rad_s.
+                       1.0 → max_speed_rad_s, 0.1 → 0.1 × max_speed_rad_s.
             kp:        Position stiffness gain. None → kp_default (0.4).
             kd:        Velocity damping gain. None → kd_default (0.035).
             torque_ff: Feed-forward torque (Nm).

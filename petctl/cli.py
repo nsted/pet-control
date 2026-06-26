@@ -245,11 +245,6 @@ def run(
         from petctl.schemes.patterns import ALL_PATTERNS, PATTERN_NAMES
         try:
             _scheme = next(cls() for cls in ALL_PATTERNS if cls.name == control)
-            if vel != 1.0:
-                if hasattr(_scheme, "hz"):
-                    _scheme.hz *= vel
-                elif hasattr(_scheme, "_speed_rad_s"):
-                    _scheme._speed_rad_s *= vel
         except StopIteration:
             typer.echo(
                 f"Unknown control scheme '{control}'. "
@@ -279,6 +274,7 @@ def run(
             log_loop=log_loop,
             cap_recal=cap_recal,
         )
+        ctrl.speed_gain = vel
         _ui = None
         if dev_ui:
             from petctl.dev_ui import DevUI
