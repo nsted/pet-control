@@ -130,7 +130,14 @@ class StrokeDetector:
 
     def update(self, state: RobotState) -> StrokeReading | None:
         """Process one tick of RobotState. Returns StrokeReading or None."""
-        centroid, intensity = _pad_centroid(state)
+        # Only accumulate centroid frames when qualifying wide contact exists (≥2
+        # contiguous modules each with ≥2 adjacent pads).  Single-pad activations
+        # can produce a centroid but must not contribute to stroke detection.
+        has_qualifying = any(
+            b.width >= 2
+            for b in _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
+        )
+        centroid, intensity = _pad_centroid(state) if has_qualifying else (None, 0.0)
 
         if centroid is None:
             if (self._last_touch_t is None or
