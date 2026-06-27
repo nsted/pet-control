@@ -742,6 +742,7 @@ class RobotBackend(_BackendBase):
                 "right": ms.touch_right_pads,
                 "middle": ms.touch_middle_pads,
             }
+            cap_debug = os.environ.get("PETCTL_CAP_DEBUG")
             for face in faces:
                 for i, (dq, v) in enumerate(zip(f[face], raw_by_face[face])):
                     dq.append(v)
@@ -756,12 +757,28 @@ class RobotBackend(_BackendBase):
                             if n_ones:
                                 break
                             n_zeros += 1
-                    if a[face][i]:
+                    was_active = a[face][i]
+                    if was_active:
                         if n_zeros >= clear_n:
                             a[face][i] = False
+                            logger.debug(
+                                "[cap] m%d %s[%d] deactivated (dq=%s)",
+                                mod_id, face, i, list(dq),
+                            )
+                        elif cap_debug and v == 0.0:
+                            # Active pad receiving hardware 0: shows if filter is holding
+                            # state when hardware is clear, vs hardware still sending 1s.
+                            logger.debug(
+                                "[cap] m%d %s[%d] active but hw=0 (dq=%s trailing_zeros=%d)",
+                                mod_id, face, i, list(dq), n_zeros,
+                            )
                     else:
                         if n_ones >= activate_n:
                             a[face][i] = True
+                            logger.debug(
+                                "[cap] m%d %s[%d] activated (dq=%s)",
+                                mod_id, face, i, list(dq),
+                            )
 
             def _filtered(dq: collections.deque, active: bool) -> float:
                 if not active:

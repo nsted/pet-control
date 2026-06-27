@@ -130,12 +130,12 @@ class SensorLimits:
     # 3 frames at 50 Hz = 60 ms — invisible latency for real touches, effective noise gate.
     cap_activate_frames: int = 3
 
-    # Consecutive hardware-zero frames required to force a pad to 0.0, overriding
-    # the sliding-window average.  The symmetric average can stay elevated indefinitely
-    # if sporadic post-release noise (or MPR121 baseline drift) interleaves 1s with 0s.
-    # 3 frames at 50 Hz = 60 ms — fast enough for responsive release, long enough to
-    # survive legitimate brief inter-pad gaps during a stroke.
-    cap_clear_frames: int = 3
+    # Consecutive hardware-zero frames required to deactivate a pad.
+    # 1 = deactivate immediately on the first hardware 0 — fast release, no hysteresis
+    # on the way out.  Asymmetric by design: activation requires cap_activate_frames
+    # consecutive 1s (noise gate), deactivation is intentionally hair-trigger so a
+    # real release is never delayed.
+    cap_clear_frames: int = 1
 
     # ── Auto-recalibration: stuck-pad detection ───────────────────────────────
     # A module is "stuck" when any face average exceeds cap_stuck_min_face AND
