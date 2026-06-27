@@ -114,16 +114,38 @@ def _make_pattern(motion: str) -> Motion:
 
 
 def _format_batch(batch: list[GestureEvent], vitals: str | None = None) -> str:
+    """Format a batch of gesture events as a natural-language narrative.
+
+    "none" events (contact ended) are treated as bout separators: the gap from
+    the "none" to the next contact event is formatted as "Resting (Xs)".
+    Within a continuous bout, events are separated by "Xs later — ...".
+    Vitals appear at the end.
+    """
     lines = []
+    prev_contact: GestureEvent | None = None  # last non-"none" event emitted
+    pending_none: GestureEvent | None = None  # last "none" seen since prev_contact
+
+    for event in batch:
+        if event.touch_type == "none":
+            pending_none = event
+            continue
+
+        phrase = event.describe()
+        if prev_contact is None:
+            lines.append(phrase)
+        elif pending_none is not None:
+            rest_s = event.timestamp - pending_none.timestamp
+            lines.append(f"Resting ({rest_s:.1f}s)")
+            lines.append(phrase)
+            pending_none = None
+        else:
+            delta = event.timestamp - prev_contact.timestamp
+            lines.append(f"{delta:.1f}s later — {phrase}")
+
+        prev_contact = event
+
     if vitals:
         lines.append(vitals)
-    for i, event in enumerate(batch):
-        phrase = event.describe()
-        if i == 0:
-            lines.append(phrase)
-        else:
-            delta = event.timestamp - batch[i - 1].timestamp
-            lines.append(f"{delta:.1f} seconds later — {phrase}")
     return "\n".join(lines)
 
 
@@ -294,6 +316,8 @@ class OllamaMotion(Motion):
             if summary.touch_type == "none":
                 # Record idle onset for the 5 s revert in update().
                 self._touch_ended_t = ts
+                # Keep as a bout separator so _format_batch can emit "Resting (Xs)".
+                self._batch.append(summary)
                 continue
 
             # Any active contact extends the current bout.
@@ -305,7 +329,8 @@ class OllamaMotion(Motion):
 
             self._batch.append(summary)
 
-        if not self._batch or not self._llm_enabled:
+        has_contact = any(e.touch_type != "none" for e in self._batch)
+        if not has_contact or not self._llm_enabled:
             return
 
         thread_free = self._pending is None or not self._pending.is_alive()
