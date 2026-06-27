@@ -399,8 +399,9 @@ class OllamaMotion(Motion):
         ld = self._client.last_load_ms
         pf = self._client.last_prefill_ms
         gn = self._client.last_gen_ms
+        _mv = f"*** {motion} (intensity={intensity:.2f}) ***"
         if self._monitor_only:
-            logger.info("\n[Ollama] rtt=%.2fs → %s (intensity=%.2f) — %s [monitor]\n", rtt, motion, intensity, feel)
+            logger.info("\n[Ollama] rtt=%.2fs → %s — %s [monitor]\n", rtt, _mv, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             return
 
@@ -409,10 +410,10 @@ class OllamaMotion(Motion):
         if self._controller is not None:
             self._controller.speed_gain = intensity
         if same_motion:
-            logger.info("\n[Ollama] rtt=%.2fs → %s (intensity=%.2f) — %s [speed updated]\n", rtt, motion, intensity, feel)
+            logger.info("\n[Ollama] rtt=%.2fs → %s — %s [speed updated]\n", rtt, _mv, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
         else:
-            logger.info("\n[Ollama] rtt=%.2fs → %s (intensity=%.2f) — %s\n", rtt, motion, intensity, feel)
+            logger.info("\n[Ollama] rtt=%.2fs → %s — %s\n", rtt, _mv, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             self._switch_pattern(motion)
 
