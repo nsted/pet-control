@@ -861,17 +861,22 @@ class CurlMotion(Motion):
 
 
 def _sense_face_direction(state: RobotState, pad_threshold: float, direction_threshold: float) -> float:
-    """Return +1.0 (right), -1.0 (left), or 0.0 (ambiguous) from face pad balance."""
-    total_right = total_left = 0.0
+    """Return +1.0 (right), -1.0 (left), or 0.0 (ambiguous) from face pad balance.
+
+    Direction is determined by whichever side has more activated cap pads (count,
+    not value), so a hand covering more pads on one face reliably wins regardless
+    of individual pad intensity.
+    """
+    total_right = total_left = 0
     for sens in state.sensors.values():
         for v in sens.touch_right_pads:
             if v >= pad_threshold:
-                total_right += v
+                total_right += 1
         for v in sens.touch_left_pads:
             if v >= pad_threshold:
-                total_left += v
+                total_left += 1
     total = total_right + total_left
-    if total < 1e-6:
+    if total == 0:
         return 0.0
     balance = (total_right - total_left) / total
     if balance > direction_threshold:
