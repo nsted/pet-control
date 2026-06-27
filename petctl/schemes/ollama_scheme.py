@@ -49,7 +49,7 @@ from petctl.schemes.patterns import (
     TwitchMotion,
     YieldStiffMotion,
 )
-from petctl.types import GestureEvent, RobotState, ServoCommand
+from petctl.types import GestureEvent, RobotState, ServoCommand, vitals_phrase
 
 if TYPE_CHECKING:
     from petctl.controller import Controller
@@ -106,36 +106,6 @@ def _make_pattern(motion: str) -> Motion:
     if motion == "curl":
         return CurlMotion()
     return FreezeMotion()
-
-
-def _vitals_phrase(state: RobotState) -> str | None:
-    """Natural-language description of thermal and power state, or None if no data."""
-    temps = list(state.motor_temperatures.values()) + list(state.motor_winding_temperatures.values())
-    if not temps:
-        return None
-
-    peak_temp = max(temps)
-    if peak_temp >= 65:
-        temp_adj = "very hot"
-    elif peak_temp >= 55:
-        temp_adj = "hot"
-    elif peak_temp >= 40:
-        temp_adj = "warm"
-    else:
-        temp_adj = "cool"
-
-    if state.battery_voltage_raw == 0:
-        return f"Running {temp_adj}"
-
-    voltage = state.battery_voltage_v
-    if voltage >= 12.0:
-        energy_adj = "full of energy"
-    elif voltage >= 11.0:
-        energy_adj = "getting tired"
-    else:
-        energy_adj = "low on energy"
-
-    return f"Running {temp_adj} and {energy_adj}"
 
 
 def _format_batch(batch: list[GestureEvent], vitals: str | None = None) -> str:
@@ -337,7 +307,7 @@ class OllamaMotion(Motion):
         batch, self._batch = self._batch, []
         with self._lock:
             gen = self._revert_gen
-        vitals = _vitals_phrase(state)
+        vitals = vitals_phrase(state)
         t = threading.Thread(target=self._llm_call, args=(_format_batch(batch, vitals), gen), daemon=True)
         self._pending = t
         t.start()

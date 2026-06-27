@@ -50,7 +50,7 @@ from petctl.config import LOOP_LIMITS, POWER_BUDGET
 from petctl.perception.contact import ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import Backend, Motion, Visualizer
-from petctl.types import GestureEvent, GestureFrame, RobotState, ServoCommand
+from petctl.types import GestureEvent, GestureFrame, RobotState, ServoCommand, vitals_phrase
 
 logger = logging.getLogger(__name__)
 
@@ -178,13 +178,18 @@ class _TouchLogger:
 
     def __init__(self, epoch_fn: Callable[[], float]) -> None:
         self._epoch_fn = epoch_fn
+        self._state: RobotState | None = None
 
-    def tick(self, now: float) -> None:  # noqa: ARG002
-        pass
+    def tick(self, state: RobotState) -> None:
+        self._state = state
 
     def on_summary(self, summary: GestureEvent) -> None:
         if summary.touch_type == "none" or summary.status != "complete":
             return
+        if self._state is not None:
+            vitals = vitals_phrase(self._state)
+            if vitals:
+                logger.info("[GESTURE] %s", vitals)
         logger.info("[GESTURE] %s", summary.describe())
 
 
@@ -615,7 +620,7 @@ class Controller:
             # Emitter runs every tick for accurate timing (end-hold, min-gesture timers).
             self._gesture_emitter.update(self._state)
             if self._touch_logger is not None:
-                self._touch_logger.tick(self._state.timestamp)
+                self._touch_logger.tick(self._state)
 
             # 1b. Power management — evaluate protection conditions
             pm = self.power_manager
