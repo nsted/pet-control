@@ -151,11 +151,13 @@ class OllamaMotion(Motion):
         llm_enabled: bool = True,
         monitor_only: bool = False,
         history_turns: int = 4,
+        recent_full_turns: int = 1,
         default_speed: float = 1.0,
     ) -> None:
         self._llm_enabled = llm_enabled
         self._monitor_only = monitor_only
         self._history_turns = history_turns
+        self._recent_full_turns = recent_full_turns
         self._default_speed = max(0.05, min(1.0, default_speed))
         self._client = OllamaClient(model=model, base_url=base_url, timeout=timeout, log_input=log_input)
 
@@ -328,6 +330,8 @@ class OllamaMotion(Motion):
         with self._lock:
             gen = self._revert_gen
         vitals = vitals_phrase(state)
+        if vitals:
+            logger.info("[GESTURE] %s", vitals)
         t = threading.Thread(target=self._llm_call, args=(_format_batch(batch, vitals), gen), daemon=True)
         self._pending = t
         t.start()
@@ -362,7 +366,7 @@ class OllamaMotion(Motion):
         except Exception as exc:
             logger.warning("[Ollama] could not apply response: %s — raw: %s", exc, result)
         finally:
-            self._client.trim_history(self._history_turns)
+            self._client.trim_history_compressed(self._history_turns, self._recent_full_turns)
 
     def _apply_llm_response(self, response: dict, rtt: float = 0.0, gen: int = 0) -> None:
         with self._lock:

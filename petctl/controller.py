@@ -179,6 +179,7 @@ class _TouchLogger:
     def __init__(self, epoch_fn: Callable[[], float]) -> None:
         self._epoch_fn = epoch_fn
         self._state: RobotState | None = None
+        self._last_gesture_t: float | None = None
 
     def tick(self, state: RobotState) -> None:
         self._state = state
@@ -186,11 +187,12 @@ class _TouchLogger:
     def on_summary(self, summary: GestureEvent) -> None:
         if summary.touch_type == "none" or summary.status != "complete":
             return
-        if self._state is not None:
-            vitals = vitals_phrase(self._state)
-            if vitals:
-                logger.info("[GESTURE] %s", vitals)
-        logger.info("[GESTURE] %s", summary.describe())
+        if self._last_gesture_t is not None:
+            delta = summary.timestamp - self._last_gesture_t
+            logger.info("[GESTURE] %s (%.1fs later)", summary.describe(), delta)
+        else:
+            logger.info("[GESTURE] %s", summary.describe())
+        self._last_gesture_t = summary.timestamp
 
 
 class _GestureEmitter:

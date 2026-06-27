@@ -137,6 +137,25 @@ class OllamaClient:
         keep = max_turns * 2
         self._messages = [system] + exchanges[-keep:]
 
+    def trim_history_compressed(self, max_turns: int, recent_full: int = 1) -> None:
+        """Keep the last `max_turns` pairs; compress older user messages to a placeholder.
+
+        The `recent_full` most recent pairs retain their full user content (gesture
+        description). Older retained pairs have their user content replaced with
+        '[prior touch]' — the assistant replies are kept intact to provide the
+        non-repetition signal with minimal token cost.
+        """
+        if not self._messages:
+            return
+        system = self._messages[0]
+        exchanges = self._messages[1:]
+        keep = max_turns * 2
+        retained = list(exchanges[-keep:] if len(exchanges) > keep else exchanges)
+        compress_before = len(retained) - recent_full * 2
+        for i in range(0, max(0, compress_before), 2):
+            retained[i] = {"role": "user", "content": "[prior touch]"}
+        self._messages = [system] + retained
+
     def is_available(self) -> bool:
         """Return True if the Ollama server responds to a health check."""
         try:
