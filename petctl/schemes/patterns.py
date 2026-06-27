@@ -1140,7 +1140,11 @@ class CurlTowardsNeighborAssistMotion(StrokeCurlMotion):
         self._assist_cooldown_until: dict[int, float] = {}
 
     def on_start(self, controller: "Controller") -> None:
-        super().on_start(controller)
+        self._controller = controller
+        self._curl_target = {}
+        self._release_time = {}
+        self._curl_dir = 0.0
+        self._progress_snap = {}
         self._stall_pos_snap.clear()
         self._stall_peak_torque.clear()
         self._assist_phase.clear()
