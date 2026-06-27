@@ -11,7 +11,7 @@ Patterns:
     sway             — travelling wave with amplitude tapering head→tail
     cascade          — travelling wave with amplitude growing head→tail
     slalom           — alternating odd/even sign → S-shape rocking
-    twitch           — smoothed per-joint Brownian noise (jittery, organic)
+    twitch           — stillness punctuated by spazzy bursts, then quick release to home
     freeze           — hold all joints at home (0°)
     coil             — quadratic spatial phase → tighter curl toward the tail
     curl             — ramp with slalom signs to 70°, looping head-to-tail, then hold
@@ -205,43 +205,100 @@ class SlalomMotion(Motion):
 
 
 class TwitchMotion(Motion):
-    """Each joint wanders independently via smoothed Brownian noise."""
+    """Stillness punctuated by quick spazzy bursts, each followed by rapid release back to home."""
 
     name = "twitch"
 
-    def is_active(self) -> bool:
-        return True
+    _STILL = "still"
+    _SPAZ = "spaz"
+    _RELEASE = "release"
 
-    def __init__(self, amplitude_deg: float = 30.0, smoothing: float = 0.06) -> None:
+    def __init__(
+        self,
+        amplitude_deg: float = 80.0,
+        still_range: tuple[float, float] = (0.5, 2.5),
+        spaz_range: tuple[float, float] = (0.15, 0.45),
+        release_duration: float = 0.3,
+        spaz_alpha: float = 0.95,
+        release_alpha: float = 0.7,
+        target_refresh_range: tuple[float, float] = (0.07, 0.18),
+    ) -> None:
         self.amplitude_deg = amplitude_deg
-        # EMA alpha: lower = smoother/slower drift, higher = jerkier
-        self.smoothing = smoothing
+        self.still_range = still_range
+        self.spaz_range = spaz_range
+        self.release_duration = release_duration
+        self.spaz_alpha = spaz_alpha
+        self.release_alpha = release_alpha
+        self.target_refresh_range = target_refresh_range
+
         self._current: dict[int, float] = {}
         self._target: dict[int, float] = {}
+        self._refresh_timers: dict[int, float] = {}
+        self._state = self._STILL
+        self._phase_timer = 0.0
         self._controller: Controller | None = None
 
     def on_start(self, controller: "Controller") -> None:
         self._controller = controller
         self._current = {}
         self._target = {}
+        self._refresh_timers = {}
+        self._state = self._STILL
+        self._phase_timer = random.uniform(*self.still_range)
         logger.info("[BEHAVIOR] Twitch")
-        logger.debug("[BEHAVIOR] Twitch: ±%.0f° random noise per joint.", self.amplitude_deg)
 
     def update(self, state: RobotState) -> list[ServoCommand]:
+        dt = 1.0 / 30.0
         speed_gain = getattr(self._controller, 'speed_gain', 1.0)
         ids = sorted(state.active_servo_ids)
-        cmds = []
+
         for sid in ids:
             if sid not in self._current:
                 self._current[sid] = 0.0
                 self._target[sid] = 0.0
-            self._target[sid] = max(
-                -self.amplitude_deg,
-                min(self.amplitude_deg, self._target[sid] + random.gauss(0.0, 0.3) * self.amplitude_deg),
-            )
-            self._current[sid] += self.smoothing * speed_gain * (self._target[sid] - self._current[sid])
-            cmds.append(ServoCommand.from_angle(servo_id=sid, angle_deg=self._current[sid]))
-        return cmds
+                self._refresh_timers[sid] = 0.0
+
+        self._phase_timer -= dt
+
+        if self._state == self._STILL:
+            for sid in ids:
+                self._current[sid] = 0.0
+            if self._phase_timer <= 0:
+                self._state = self._SPAZ
+                self._phase_timer = random.uniform(*self.spaz_range)
+                for sid in ids:
+                    self._refresh_timers[sid] = 0.0
+                logger.debug("[BEHAVIOR] Twitch: spaz (%.2fs)", self._phase_timer + dt)
+
+        elif self._state == self._SPAZ:
+            alpha = min(1.0, self.spaz_alpha * speed_gain)
+            for sid in ids:
+                self._refresh_timers[sid] -= dt
+                if self._refresh_timers[sid] <= 0:
+                    sign = random.choice((-1.0, 1.0))
+                    self._target[sid] = sign * random.uniform(0.75, 1.0) * self.amplitude_deg
+                    self._refresh_timers[sid] = random.uniform(*self.target_refresh_range)
+                self._current[sid] += alpha * (self._target[sid] - self._current[sid])
+            if self._phase_timer <= 0:
+                self._state = self._RELEASE
+                self._phase_timer = self.release_duration
+                for sid in ids:
+                    self._target[sid] = 0.0
+                logger.debug("[BEHAVIOR] Twitch: release")
+
+        elif self._state == self._RELEASE:
+            alpha = min(1.0, self.release_alpha * speed_gain)
+            for sid in ids:
+                self._current[sid] += alpha * (self._target[sid] - self._current[sid])
+            if self._phase_timer <= 0:
+                self._state = self._STILL
+                self._phase_timer = random.uniform(*self.still_range)
+                logger.debug("[BEHAVIOR] Twitch: still (%.2fs)", self._phase_timer + dt)
+
+        return [
+            ServoCommand.from_angle(servo_id=sid, angle_deg=self._current[sid])
+            for sid in ids
+        ]
 
 
 class FreezeMotion(Motion):
