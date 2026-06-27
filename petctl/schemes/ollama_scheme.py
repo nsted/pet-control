@@ -352,6 +352,8 @@ class OllamaMotion(Motion):
 
         batch, self._batch = self._batch, []
         self._last_send_t = now
+        if self._controller is not None:
+            self._controller.reset_gesture_log()
         with self._lock:
             gen = self._revert_gen
         vitals = vitals_phrase(state)

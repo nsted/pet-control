@@ -184,6 +184,9 @@ class _TouchLogger:
     def tick(self, state: RobotState) -> None:
         self._state = state
 
+    def reset_timer(self) -> None:
+        self._last_gesture_t = None
+
     def on_summary(self, summary: GestureEvent) -> None:
         if summary.touch_type == "none" or summary.status != "complete":
             return
@@ -458,6 +461,11 @@ class Controller:
     def register_touch_callback(self, callback: Callable[[GestureEvent], None]) -> None:
         """Register a callback to receive GestureEvent events from the emitter."""
         self._gesture_emitter.add_callback(callback)
+
+    def reset_gesture_log(self) -> None:
+        """Reset the gesture log timer so the next gesture logs without a delta."""
+        if self._touch_logger is not None:
+            self._touch_logger.reset_timer()
 
     @property
     def state(self) -> RobotState:
