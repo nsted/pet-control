@@ -108,8 +108,40 @@ def _make_pattern(motion: str) -> Motion:
     return FreezeMotion()
 
 
-def _format_batch(batch: list[GestureEvent]) -> str:
+def _vitals_phrase(state: RobotState) -> str | None:
+    """Natural-language description of thermal and power state, or None if no data."""
+    temps = list(state.motor_temperatures.values()) + list(state.motor_winding_temperatures.values())
+    if not temps:
+        return None
+
+    peak_temp = max(temps)
+    if peak_temp >= 65:
+        temp_adj = "very hot"
+    elif peak_temp >= 55:
+        temp_adj = "hot"
+    elif peak_temp >= 40:
+        temp_adj = "warm"
+    else:
+        temp_adj = "cool"
+
+    if state.battery_voltage_raw == 0:
+        return f"Running {temp_adj}"
+
+    voltage = state.battery_voltage_v
+    if voltage >= 12.0:
+        energy_adj = "full of energy"
+    elif voltage >= 11.0:
+        energy_adj = "getting tired"
+    else:
+        energy_adj = "low on energy"
+
+    return f"Running {temp_adj} and {energy_adj}"
+
+
+def _format_batch(batch: list[GestureEvent], vitals: str | None = None) -> str:
     lines = []
+    if vitals:
+        lines.append(vitals)
     for i, event in enumerate(batch):
         phrase = event.describe()
         if i == 0:
@@ -228,7 +260,7 @@ class OllamaMotion(Motion):
         self._was_connected = state.connected
 
         if self._touch_queue is not None:
-            self._drain_touch_queue(state.timestamp)
+            self._drain_touch_queue(state)
 
         ended_t = self._touch_ended_t
         if (
@@ -264,8 +296,9 @@ class OllamaMotion(Motion):
     # Touch queue draining
     # ------------------------------------------------------------------
 
-    def _drain_touch_queue(self, now: float) -> None:
+    def _drain_touch_queue(self, state: RobotState) -> None:
         assert self._touch_queue is not None
+        now = state.timestamp
         while True:
             try:
                 summary: GestureEvent = self._touch_queue.get_nowait()
@@ -304,7 +337,8 @@ class OllamaMotion(Motion):
         batch, self._batch = self._batch, []
         with self._lock:
             gen = self._revert_gen
-        t = threading.Thread(target=self._llm_call, args=(_format_batch(batch), gen), daemon=True)
+        vitals = _vitals_phrase(state)
+        t = threading.Thread(target=self._llm_call, args=(_format_batch(batch, vitals), gen), daemon=True)
         self._pending = t
         t.start()
 
