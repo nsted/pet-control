@@ -58,8 +58,13 @@ logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-# Accumulate touch events for this many seconds before sending a batch to the LLM.
-_BATCH_WINDOW_S = 5.0
+# Bout-based send triggers.
+# IDLE_GAP: seconds without any contact event before declaring a bout boundary.
+# Must exceed typical intra-bout gesture spacing (~1–1.5 s) to avoid mid-stroke fires.
+_IDLE_GAP_S: float = 1.75
+# MAX_WINDOW: maximum seconds between sends while contact is ongoing.
+# Keeps mood fresh during sustained unbroken touch without waiting for a bout boundary.
+_MAX_WINDOW_S: float = 5.0
 
 _VALID_MOVEMENTS: set[str] = {
     "idle", "snuggle", "walk", "nuzzle", "wiggle", "purr",
@@ -166,7 +171,8 @@ class OllamaMotion(Motion):
         self._controller: Controller | None = None
 
         self._batch: list[GestureEvent] = []
-        self._batch_start_t: float = 0.0
+        self._last_gesture_t: float | None = None  # time of last non-"none" contact event (any status)
+        self._last_send_t: float | None = None      # time of last dispatch to LLM
         self._pending: threading.Thread | None = None
         self._system_prompt: str = ""
         self._active_motion: str = ""
@@ -216,6 +222,8 @@ class OllamaMotion(Motion):
             self._client.start(self._system_prompt)
             self._batch = []
             self._touch_ended_t = None
+            self._last_gesture_t = None
+            self._last_send_t = None
             with self._lock:
                 self._revert_gen += 1
             self._controller.speed_gain = self._default_speed
@@ -223,6 +231,8 @@ class OllamaMotion(Motion):
         elif not self._was_connected and state.connected:
             logger.info("[System] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
             self._batch = []
+            self._last_gesture_t = None
+            self._last_send_t = None
             with self._lock:
                 self._revert_gen += 1
             self._controller.speed_gain = self._default_speed
@@ -241,6 +251,8 @@ class OllamaMotion(Motion):
             logger.info("[System] no touch for 5s — reverting to %s.", _DEFAULT_MOTION)
             self._touch_ended_t = None
             self._batch = []
+            self._last_gesture_t = None
+            self._last_send_t = None
             with self._lock:
                 self._revert_gen += 1
             self._controller.speed_gain = self._default_speed
@@ -277,34 +289,42 @@ class OllamaMotion(Motion):
 
             ts = summary.timestamp
 
-            # "none" events (touch ended) — record the time so update() can
-            # revert to idle after 5 s of inactivity.
             if summary.touch_type == "none":
+                # Record idle onset for the 5 s revert in update().
                 self._touch_ended_t = ts
                 continue
 
-            # Clear any pending idle-revert on new touch.
+            # Any active contact extends the current bout.
             self._touch_ended_t = None
+            self._last_gesture_t = ts
 
             if summary.status != "complete":
                 continue
 
-            if not self._batch:
-                self._batch_start_t = ts
             self._batch.append(summary)
 
-        if not self._batch:
+        if not self._batch or not self._llm_enabled:
             return
 
-        if not self._llm_enabled:
-            return
-
-        elapsed = now - self._batch_start_t
         thread_free = self._pending is None or not self._pending.is_alive()
-        if elapsed < _BATCH_WINDOW_S or not thread_free:
+        if not thread_free:
+            return  # accumulate; evaluate again next tick when the call lands
+
+        if self._last_gesture_t is None:
+            return
+
+        # Bout boundary: no contact event for IDLE_GAP — bout has ended.
+        bout_ended = now - self._last_gesture_t >= _IDLE_GAP_S
+
+        # Max-window: too long since last send while contact is still ongoing.
+        ref_t = self._last_send_t if self._last_send_t is not None else self._batch[0].timestamp
+        window_expired = not bout_ended and (now - ref_t) >= _MAX_WINDOW_S
+
+        if not bout_ended and not window_expired:
             return
 
         batch, self._batch = self._batch, []
+        self._last_send_t = now
         with self._lock:
             gen = self._revert_gen
         vitals = vitals_phrase(state)
