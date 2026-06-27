@@ -399,7 +399,7 @@ class OllamaMotion(Motion):
         ld = self._client.last_load_ms
         pf = self._client.last_prefill_ms
         gn = self._client.last_gen_ms
-        _mv = f"*** {motion} (intensity={intensity:.2f}) ***"
+        _mv = f"*** {motion.upper()} (intensity={intensity:.2f}) ***"
         if self._monitor_only:
             logger.info("\n[Ollama] rtt=%.2fs → %s — %s [monitor]\n", rtt, _mv, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
