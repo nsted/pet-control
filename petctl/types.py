@@ -224,32 +224,89 @@ class GestureEvent:
                 result[f.name] = val
         return result
 
-    def describe(self, status_override: str | None = None) -> str:
-        """Human-readable one-line description for LLM prompt injection."""
+    def describe(self) -> str:
+        """Natural-language phrase describing this gesture for LLM prompt injection."""
         if self.touch_type == "none":
             return "contact ended"
-        _TAG = {"started": "[start]", "running": "[ongoing]", "complete": "[end]", "promoted": "[→]"}
-        status = status_override if status_override is not None else self.status
-        parts: list[str] = [f"gesture={self.touch_type}"]
-        parts.insert(0, _TAG.get(status, f"[{status}]"))
-        if self.direction and self.velocity is not None:
-            arrow = "→" if self.direction == "head_to_tail" else "←"
-            parts.append(f"{arrow} {abs(self.velocity):.1f} mod/s")
-        if self.centroid is not None:
-            parts.append(f"centroid={self.centroid:.1f}")
-        if self.side:
-            parts.append(f"{self.side} face")
-        if self.modules:
-            lo, hi = min(self.modules), max(self.modules)
-            parts.append(f"mod {lo}–{hi}" if lo != hi else f"mod {lo}")
-        parts.append(f"{self.duration:.1f}s")
-        if self.pressure_peak:
-            parts.append(f"pressure={self.pressure_peak:.2f}")
-        if self.torque_peak:
-            parts.append(f"torque={self.torque_peak:.2f}Nm")
-        if self.affected_servos:
-            parts.append(f"servos={self.affected_servos}")
-        return ", ".join(parts)
+
+        centroid = self.centroid if self.centroid is not None else 3.5
+        region = _region(centroid)
+        face = _face_phrase(self.side)
+        span = _span_phrase(self.modules, self.direction)
+        weight = "firm" if self.intensity >= 0.4 else "gentle"
+
+        if self.touch_type == "stroke":
+            spd = abs(self.velocity) if self.velocity is not None else 0.0
+            speed = "quick" if spd > 2.5 else ("steady" if spd > 1.5 else "slow")
+            return f"A {speed}, {weight} stroke {face} {span}"
+
+        if self.touch_type == "hold":
+            dur = "sustained" if self.duration >= 2.0 else "brief"
+            return f"A {dur}, {weight} hold {face} my {region}"
+
+        if self.touch_type == "squeeze":
+            p = self.pressure_peak or 0.0
+            hardness = "hard" if p > 0.6 else ("firm" if p > 0.3 else "gentle")
+            return f"A {hardness} squeeze {face} my {region}"
+
+        if self.touch_type == "cradle":
+            dur_adj = "sustained" if self.duration >= 3.0 else "gentle"
+            return f"A {dur_adj} cradle {face} {span}"
+
+        if self.touch_type == "restrict":
+            return f"A firm grip resisting movement {face} my {region}"
+
+        if self.touch_type == "wrench":
+            return f"A two-handed wrench {face} my {region}"
+
+        if self.touch_type == "twist":
+            return f"A passive twist {face} my {region}"
+
+        if self.touch_type == "budge":
+            return f"A brief joint nudge {face} my {region}"
+
+        if self.touch_type == "touch":
+            return f"A {weight} touch {face} my {region}"
+
+        return f"An unknown touch on my {region}"
+
+
+def _region(centroid: float) -> str:
+    """Map body-axis centroid (0=head, 7=tail) to a 3-zone label."""
+    if centroid < 2.5:
+        return "head"
+    if centroid < 5.5:
+        return "body"
+    return "tail"
+
+
+def _span_phrase(modules: list[int], direction: str | None) -> str:
+    """Natural-language location phrase based on which modules are active."""
+    if not modules:
+        return "my body"
+    if len(modules) >= 5:
+        return "my full body"
+    lo, hi = min(modules), max(modules)
+    r_lo = _region(float(lo))
+    r_hi = _region(float(hi))
+    if r_lo == r_hi:
+        return f"my {r_lo}"
+    if direction == "tail_to_head":
+        return f"my {r_hi} to my {r_lo}"
+    return f"my {r_lo} to my {r_hi}"
+
+
+def _face_phrase(side: str) -> str:
+    """Preposition phrase for which face(s) are touched."""
+    if side == "top":
+        return "along the top of"
+    if side in ("left", "right"):
+        return "on the side of"
+    if side == "left-right":
+        return "on both sides of"
+    if side in ("top-left", "top-right"):
+        return "on the top and side of"
+    return "on"
 
 
 @dataclass

@@ -109,33 +109,15 @@ def _make_pattern(motion: str) -> Motion:
 
 
 def _format_batch(batch: list[GestureEvent]) -> str:
-    t0 = batch[0].timestamp
-    pairs = ",".join(
-        f"+{s.timestamp - t0:.1f}s:{_categorize_gesture(s)}"
-        for s in batch
-    )
-    return "{" + pairs + "}"
-
-
-def _intensity_label(intensity: float) -> str:
-    return "firm" if intensity >= 0.4 else "light"
-
-
-def _categorize_gesture(s: GestureEvent) -> str:
-    label = _intensity_label(s.intensity)
-    if s.touch_type == "stroke":
-        speed = "fast" if s.velocity is not None and abs(s.velocity) >= 2.0 else "slow"
-        return f"stroke-{speed}-{label}"
-    if s.touch_type == "squeeze":
-        hardness = "hard" if (s.pressure_peak or 0.0) >= 0.5 else "soft"
-        return f"squeeze-{hardness}-{label}"
-    if s.touch_type == "hold":
-        dur = "long" if s.duration >= 3.0 else "brief"
-        return f"hold-{dur}-{label}"
-    if s.touch_type == "cradle":
-        dur = "-long" if s.duration >= 5.0 else ""
-        return f"cradle{dur}-{label}"
-    return f"{s.touch_type}-{label}"
+    lines = []
+    for i, event in enumerate(batch):
+        phrase = event.describe()
+        if i == 0:
+            lines.append(phrase)
+        else:
+            delta = event.timestamp - batch[i - 1].timestamp
+            lines.append(f"{delta:.1f} seconds later — {phrase}")
+    return "\n".join(lines)
 
 
 class OllamaMotion(Motion):

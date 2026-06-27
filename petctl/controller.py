@@ -183,13 +183,9 @@ class _TouchLogger:
         pass
 
     def on_summary(self, summary: GestureEvent) -> None:
-        if summary.touch_type == "none":
+        if summary.touch_type == "none" or summary.status != "complete":
             return
-        offset = summary.timestamp - self._epoch_fn()
-        name = summary.touch_type.capitalize()
-        if summary.status == "complete":
-            logger.info("[GESTURE] %s for %.1fs", name, summary.duration)
-        logger.debug("[GESTURE] %s: +%.1fs %s", name, offset, summary.describe())
+        logger.info("[GESTURE] %s", summary.describe())
 
 
 class _GestureEmitter:
