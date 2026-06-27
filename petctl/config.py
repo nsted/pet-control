@@ -128,7 +128,7 @@ class SensorLimits:
     # its filtered output leaves 0.0.  Prevents electrical noise or brief MPR121 hiccups
     # (which often produce 1–2 frame spikes) from triggering gestures.
     # 3 frames at 50 Hz = 60 ms — invisible latency for real touches, effective noise gate.
-    cap_activate_frames: int = 3
+    cap_activate_frames: int = 4
 
     # Consecutive hardware-zero frames required to deactivate a pad.
     # 1 = deactivate immediately on the first hardware 0 — fast release, no hysteresis

@@ -1908,7 +1908,7 @@ class PurrRippleMotion(Motion):
 
     name = "purr"
 
-    KD_TARGET: float = 0.04  # peak kd — causes vibration
+    KD_TARGET: float = 0.08  # peak kd — causes vibration
     BASE_HZ: float = 0.3    # ripple frequency at speed=1.0 (~3.3s per pass)
     CREST_POWER: float = 0.5    # exponent on sin envelope; fractional values narrow the crest
 
