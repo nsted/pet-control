@@ -448,7 +448,7 @@ class Controller:
 
         # Multiplicative gain on max_speed_rad_s. 1.0 = full speed.
         # Set via --vel at launch or updated by a motion scheme (e.g. ollama speed field).
-        self.speed_gain: float = 1.0
+        self.speed_gain: float = 0.1
 
         # Always-on keyboard hotkeys — active regardless of motion scheme.
         from petctl.schemes.keyboard_hotkeys import KeyboardHotkeys
