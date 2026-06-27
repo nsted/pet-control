@@ -202,9 +202,8 @@ class HoldDetector:
     Detects static contact on the robot body.
 
     Fires when the global touch centroid is not moving (velocity < VELOCITY_THRESHOLD)
-    AND there is at least one qualifying blob.  A qualifying blob is a contiguous run
-    of modules where each module has ≥2 adjacent active cap pads — this filters single
-    isolated pad taps.
+    AND there is at least one qualifying blob spanning ≥2 contiguous modules, where each
+    module has ≥2 adjacent active cap pads.  Single-module contacts are rejected.
 
     The ContactClassifier downstream determines the sub-type (touch / squeeze / hold /
     twist / restrict / wrench) based on blob count and motor state.
@@ -240,7 +239,7 @@ class HoldDetector:
             self._hold_start = None
             return None
 
-        q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
+        q_blobs = [b for b in _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD) if b.width >= 2]
         if not q_blobs:
             self._hold_start = None
             return None
@@ -481,11 +480,12 @@ def any_contact(state: RobotState) -> tuple[float | None, float, str]:
 def qualifying_contact(state: RobotState) -> tuple[float | None, str]:
     """Return (centroid, side) for contact qualifying as real touch.
 
-    Requires at least one module with ≥2 physically adjacent pads above
-    PAD_THRESHOLD.  Filters single floating/noisy pads that would otherwise
-    pass any_contact.  Returns (None, "none") when no qualifying contact.
+    Requires at least one blob spanning ≥2 contiguous modules, where each module
+    has ≥2 physically adjacent pads above PAD_THRESHOLD.  Rejects single-module
+    contacts (even with valid intra-pad adjacency) as too ambiguous to gesture.
+    Returns (None, "none") when no qualifying contact.
     """
-    q_blobs = _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD)
+    q_blobs = [b for b in _find_qualifying_blobs(state, PAD_THRESHOLD, TOUCH_THRESHOLD) if b.width >= 2]
     if not q_blobs:
         return None, "none"
     total_w = sum(b.intensity * b.width for b in q_blobs)
