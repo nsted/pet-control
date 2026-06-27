@@ -31,5 +31,5 @@ Movements:
 Respond with only this JSON, no other text:
 
 ```json
-{"movement": "<name>", "speed": <0.0–1.0>, "explanation": "<explanation>"}
+{"movement": "<name>", "intensity": <0.0–1.0>, "explanation": "<explanation>"}
 ```

@@ -354,10 +354,10 @@ class OllamaMotion(Motion):
             return
 
         try:
-            speed = max(0.05, min(1.0, float(response.get("speed", 1.0))))
+            intensity = max(0.05, min(1.0, float(response.get("intensity", 1.0))))
         except (TypeError, ValueError):
-            logger.warning("[Ollama] invalid speed field %r — using default 1.0", response.get("speed"))
-            speed = 1.0
+            logger.warning("[Ollama] invalid intensity field %r — using default 1.0", response.get("intensity"))
+            intensity = 1.0
         feel = str(response.get("explanation", response.get("feel", ""))).strip()
 
         pt = self._client.last_prompt_tokens
@@ -366,19 +366,19 @@ class OllamaMotion(Motion):
         pf = self._client.last_prefill_ms
         gn = self._client.last_gen_ms
         if self._monitor_only:
-            logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [monitor]\n", rtt, motion, speed, feel)
+            logger.info("\n[Ollama] rtt=%.2fs → %s (intensity=%.2f) — %s [monitor]\n", rtt, motion, intensity, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             return
 
         with self._lock:
             same_motion = self._active_motion == motion
         if self._controller is not None:
-            self._controller.speed_gain = speed
+            self._controller.speed_gain = intensity
         if same_motion:
-            logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s [speed updated]\n", rtt, motion, speed, feel)
+            logger.info("\n[Ollama] rtt=%.2fs → %s (intensity=%.2f) — %s [speed updated]\n", rtt, motion, intensity, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
         else:
-            logger.info("\n[Ollama] rtt=%.2fs → %s (speed=%.2f) — %s\n", rtt, motion, speed, feel)
+            logger.info("\n[Ollama] rtt=%.2fs → %s (intensity=%.2f) — %s\n", rtt, motion, intensity, feel)
             logger.debug("[Ollama] p=%d e=%d  ld=%d pf=%d gn=%dms", pt, et, ld, pf, gn)
             self._switch_pattern(motion)
 
