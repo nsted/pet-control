@@ -123,6 +123,13 @@ class SensorLimits:
     # spikes while keeping gesture detection responsive to brief touches.
     cap_filter_window: int = 5
 
+    # Consecutive hardware-one frames required to activate a pad (enter active state).
+    # Symmetric to cap_clear_frames: a pad must sustain N consecutive hardware 1s before
+    # its filtered output leaves 0.0.  Prevents electrical noise or brief MPR121 hiccups
+    # (which often produce 1–2 frame spikes) from triggering gestures.
+    # 3 frames at 50 Hz = 60 ms — invisible latency for real touches, effective noise gate.
+    cap_activate_frames: int = 3
+
     # Consecutive hardware-zero frames required to force a pad to 0.0, overriding
     # the sliding-window average.  The symmetric average can stay elevated indefinitely
     # if sporadic post-release noise (or MPR121 baseline drift) interleaves 1s with 0s.

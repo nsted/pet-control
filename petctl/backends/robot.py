@@ -120,6 +120,7 @@ class RobotBackend(_BackendBase):
         # Per-module, per-face sliding windows for cap moving average.
         # Keyed by module_id → {"left": [deque,...], "right": [...], "middle": [...]}.
         self._cap_filter: dict[int, dict[str, list[collections.deque]]] = {}
+        self._cap_active: dict[int, dict[str, list[bool]]] = {}
         self._latest_battery_current_raw: int = 0
         self._latest_battery_voltage_raw: int = 0
         self._disabled_motor_ids: set[int] = set()
@@ -704,45 +705,80 @@ class RobotBackend(_BackendBase):
                 await asyncio.sleep(0.01)
 
     def _apply_cap_filter(self, sensors: dict[int, ModuleSensors]) -> dict[int, ModuleSensors]:
-        """Apply per-pad asymmetric cap filter.
+        """Apply per-pad hysteresis cap filter.
 
-        Activation: sliding-window average over cap_filter_window frames (smooth, noise-tolerant).
-        Release: forced to 0.0 once cap_clear_frames consecutive hardware zeros arrive, overriding
-        any historical 1s still in the window.  Prevents post-release noise or MPR121 baseline drift
-        from keeping pads elevated indefinitely.
+        Each pad tracks an explicit active/inactive state:
+        - Inactive → Active: requires cap_activate_frames consecutive hardware 1s.
+        - Active → Inactive: requires cap_clear_frames consecutive hardware 0s.
+
+        Output is the sliding-window average when active, or 0.0 when inactive.
+        This prevents 1–2 frame noise spikes from reaching gesture detection while
+        keeping real-touch latency to ~60 ms (3 frames at 50 Hz).
         """
         window = SENSOR_LIMITS.cap_filter_window
+        activate_n = SENSOR_LIMITS.cap_activate_frames
         clear_n = SENSOR_LIMITS.cap_clear_frames
         result: dict[int, ModuleSensors] = {}
+        faces = ("left", "right", "middle")
+        pad_counts = {
+            "left": lambda ms: ms.touch_left_pads,
+            "right": lambda ms: ms.touch_right_pads,
+            "middle": lambda ms: ms.touch_middle_pads,
+        }
         for mod_id, ms in sensors.items():
             if mod_id not in self._cap_filter:
                 self._cap_filter[mod_id] = {
-                    "left":   [collections.deque(maxlen=window) for _ in ms.touch_left_pads],
-                    "right":  [collections.deque(maxlen=window) for _ in ms.touch_right_pads],
-                    "middle": [collections.deque(maxlen=window) for _ in ms.touch_middle_pads],
+                    face: [collections.deque(maxlen=window) for _ in pad_counts[face](ms)]
+                    for face in faces
+                }
+                self._cap_active[mod_id] = {
+                    face: [False] * len(pad_counts[face](ms))
+                    for face in faces
                 }
             f = self._cap_filter[mod_id]
-            for dq, v in zip(f["left"],   ms.touch_left_pads):   dq.append(v)
-            for dq, v in zip(f["right"],  ms.touch_right_pads):  dq.append(v)
-            for dq, v in zip(f["middle"], ms.touch_middle_pads): dq.append(v)
-
-            def _filtered(dq: collections.deque) -> float:
-                # Count consecutive zeros at the tail.
-                n_zeros = 0
-                for val in reversed(dq):
-                    if val == 0.0:
-                        n_zeros += 1
+            a = self._cap_active[mod_id]
+            raw_by_face = {
+                "left": ms.touch_left_pads,
+                "right": ms.touch_right_pads,
+                "middle": ms.touch_middle_pads,
+            }
+            for face in faces:
+                for i, (dq, v) in enumerate(zip(f[face], raw_by_face[face])):
+                    dq.append(v)
+                    # Count trailing consecutive 1s and 0s.
+                    n_ones = n_zeros = 0
+                    for val in reversed(dq):
+                        if val == 1.0:
+                            if n_zeros:
+                                break
+                            n_ones += 1
+                        else:
+                            if n_ones:
+                                break
+                            n_zeros += 1
+                    if a[face][i]:
+                        if n_zeros >= clear_n:
+                            a[face][i] = False
                     else:
-                        break
-                if n_zeros >= clear_n:
+                        if n_ones >= activate_n:
+                            a[face][i] = True
+
+            def _filtered(dq: collections.deque, active: bool) -> float:
+                if not active:
                     return 0.0
                 return sum(dq) / len(dq)
 
             result[mod_id] = ModuleSensors(
                 module_id=mod_id,
-                touch_left_pads=tuple(_filtered(dq) for dq in f["left"]),
-                touch_right_pads=tuple(_filtered(dq) for dq in f["right"]),
-                touch_middle_pads=tuple(_filtered(dq) for dq in f["middle"]),
+                touch_left_pads=tuple(
+                    _filtered(dq, a["left"][i]) for i, dq in enumerate(f["left"])
+                ),
+                touch_right_pads=tuple(
+                    _filtered(dq, a["right"][i]) for i, dq in enumerate(f["right"])
+                ),
+                touch_middle_pads=tuple(
+                    _filtered(dq, a["middle"][i]) for i, dq in enumerate(f["middle"])
+                ),
                 pressure_left=ms.pressure_left,
                 pressure_right=ms.pressure_right,
                 pressure_middle=ms.pressure_middle,
