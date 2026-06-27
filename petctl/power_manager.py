@@ -402,13 +402,13 @@ class PowerManager:
                 f"(I_ema={self._current_ema:.2f}A I_ema_fast={self._current_ema_fast:.2f}A budget={budget:.1f}A)"
             )
             if self._reactive_scale == 1.0 and new_scale < 1.0:
-                logger.warning(
+                logger.debug(
                     "[PowerManager] Current limit reached — reactive backstop engaged "
                     "(I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA scale→%.2f)",
                     current_a, self._current_ema, self._current_ema_fast, budget, new_scale,
                 )
             elif self._reactive_scale < 1.0 and new_scale == 1.0:
-                logger.info(
+                logger.debug(
                     "[PowerManager] Reactive backstop cleared (I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA)",
                     current_a, self._current_ema, self._current_ema_fast, budget,
                 )
@@ -416,13 +416,13 @@ class PowerManager:
                 # Log each time scale crosses a significant threshold so depth is visible.
                 for threshold in (0.9, 0.75, 0.5, 0.25):
                     if self._reactive_scale > threshold >= new_scale:
-                        logger.warning(
+                        logger.debug(
                             "[PowerManager] Backstop deepening: scale→%.2f "
                             "(I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA)",
                             new_scale, current_a, self._current_ema, self._current_ema_fast, budget,
                         )
                     elif self._reactive_scale < threshold <= new_scale:
-                        logger.info(
+                        logger.debug(
                             "[PowerManager] Backstop recovering: scale→%.2f "
                             "(I=%.2fA EMA=%.2fA EMA_fast=%.2fA budget=%.1fA)",
                             new_scale, current_a, self._current_ema, self._current_ema_fast, budget,
@@ -436,7 +436,7 @@ class PowerManager:
             )
             window_peak = self._window_peak_a
             self._window_peak_a = 0.0
-            log_fn = logger.warning if window_peak > budget * 0.9 else logger.debug
+            log_fn = logger.debug
             log_fn(
                 "[PowerManager] I=%.2fA peak=%.2fA budget=%.1fA scale=%.2f EMA=%.2fA integral=%.2f  τ[Nm]:%s",
                 current_a, window_peak, budget, self._reactive_scale, self._current_ema,
