@@ -1184,8 +1184,8 @@ class CurlTowardsNeighborAssistMotion(StrokeCurlMotion):
     name = "engage"
     DIRECTION_SIGN: float = 1.0
 
-    HOLD_S: float = 3600.0           # never decay position; only gains decay
-    GAIN_DECAY_S: float = 5.0        # kp+kd → 0 over this many seconds after release
+    HOLD_S: float = 3600.0           # parent position decay disabled; engage handles return-to-neutral
+    GAIN_DECAY_S: float = 5.0        # kp+kd → 0, position → neutral over this many seconds after release
 
     STALL_THRESHOLD_RAD: float = 0.10
     STALL_WINDOW_S: float = 0.8
@@ -1300,15 +1300,22 @@ class CurlTowardsNeighborAssistMotion(StrokeCurlMotion):
 
         cmds_by_sid.update(neighbor_overrides)
 
-        # Decay kp+kd toward 0 over GAIN_DECAY_S after release; touched modules keep full gains.
+        # Return to neutral and fade gains to 0 over GAIN_DECAY_S after release.
+        completed: list[int] = []
         for sid, cmd in cmds_by_sid.items():
             release_t = self._release_time.get(sid)
             if release_t is not None:
                 t = min((now - release_t) / self.GAIN_DECAY_S, 1.0)
                 scale = 1.0 - t
+                cmd.position = 0.0
                 cmd.kp = MOTOR_LIMITS.kp_default * scale
                 cmd.kd = MOTOR_LIMITS.kd_default * scale
-                logger.debug("[Engage] s%d kp=%.3f kd=%.4f (t=%.2f)", sid, cmd.kp, cmd.kd, t)
+                logger.debug("[Engage] s%d pos→0 kp=%.3f kd=%.4f (t=%.2f)", sid, cmd.kp, cmd.kd, t)
+                if t >= 1.0:
+                    completed.append(sid)
+        for sid in completed:
+            self._release_time.pop(sid, None)
+            self._curl_target[sid] = 0.0
 
         return list(cmds_by_sid.values())
 

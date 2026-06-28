@@ -135,7 +135,7 @@ class OllamaClient:
         exchanges = self._messages[1:]  # alternating user/assistant pairs
         # Each turn is 2 messages; keep only the last max_turns pairs.
         keep = max_turns * 2
-        self._messages = [system] + exchanges[-keep:]
+        self._messages = [system] + (exchanges[-keep:] if keep > 0 else [])
 
     def trim_history_compressed(self, max_turns: int, recent_full: int = 1) -> None:
         """Keep the last `max_turns` pairs; compress older user messages to a placeholder.

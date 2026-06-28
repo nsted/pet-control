@@ -74,6 +74,7 @@ _VALID_MOVEMENTS: set[str] = {
 
 # Movement to use on startup and after idle revert (no touch for _TOUCH_IDLE_S).
 _DEFAULT_MOTION = "engage"
+_DEFAULT_MOTION_SPEED: float = 0.1  # engage runs at low intensity so it doesn't startle
 
 
 def _make_pattern(motion: str) -> Motion:
@@ -172,7 +173,7 @@ class OllamaMotion(Motion):
         log_input: bool = False,
         llm_enabled: bool = True,
         monitor_only: bool = False,
-        history_turns: int = 4,
+        history_turns: int = 0,
         recent_full_turns: int = 1,
         default_speed: float = 1.0,
     ) -> None:
@@ -214,7 +215,7 @@ class OllamaMotion(Motion):
 
     def on_start(self, controller: Controller) -> None:
         self._controller = controller
-        self._controller.speed_gain = self._default_speed
+        self._controller.speed_gain = _DEFAULT_MOTION_SPEED
         self._system_prompt = _load_system_prompt()
         self._touch_queue = controller.touch_events
         self._switch_pattern(_DEFAULT_MOTION)
@@ -250,7 +251,7 @@ class OllamaMotion(Motion):
             self._last_send_t = None
             with self._lock:
                 self._revert_gen += 1
-            self._controller.speed_gain = self._default_speed
+            self._controller.speed_gain = _DEFAULT_MOTION_SPEED
             self._switch_pattern(_DEFAULT_MOTION)
         elif not self._was_connected and state.connected:
             logger.info("[System] WebSocket reconnected — reverting to %s.", _DEFAULT_MOTION)
@@ -259,7 +260,7 @@ class OllamaMotion(Motion):
             self._last_send_t = None
             with self._lock:
                 self._revert_gen += 1
-            self._controller.speed_gain = self._default_speed
+            self._controller.speed_gain = _DEFAULT_MOTION_SPEED
             self._switch_pattern(_DEFAULT_MOTION)
         self._was_connected = state.connected
 
@@ -279,7 +280,7 @@ class OllamaMotion(Motion):
             self._last_send_t = None
             with self._lock:
                 self._revert_gen += 1
-            self._controller.speed_gain = self._default_speed
+            self._controller.speed_gain = _DEFAULT_MOTION_SPEED
             self._switch_pattern(_DEFAULT_MOTION)
 
         with self._lock:
@@ -393,7 +394,7 @@ class OllamaMotion(Motion):
         except Exception as exc:
             logger.warning("[Ollama] could not apply response: %s — raw: %s", exc, result)
         finally:
-            self._client.trim_history_compressed(self._history_turns, self._recent_full_turns)
+            self._client.trim_history(self._history_turns)
 
     def _apply_llm_response(self, response: dict, rtt: float = 0.0, gen: int = 0) -> None:
         with self._lock:
