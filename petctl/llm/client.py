@@ -105,6 +105,9 @@ class OllamaClient:
             envelope = json.loads(body)
             content = envelope["message"]["content"]
             result = json.loads(content)
+            # Re-check gen: start() may have run between the check above and here.
+            if self._gen != gen:
+                return None
             self._messages.append({"role": "assistant", "content": content})
             self.last_prompt_tokens = envelope.get("prompt_eval_count", 0) or 0
             self.last_eval_tokens = envelope.get("eval_count", 0) or 0
@@ -150,10 +153,11 @@ class OllamaClient:
         system = self._messages[0]
         exchanges = self._messages[1:]
         keep = max_turns * 2
-        retained = list(exchanges[-keep:] if len(exchanges) > keep else exchanges)
+        retained = list(exchanges[-keep:] if keep > 0 else [])
         compress_before = len(retained) - recent_full * 2
         for i in range(0, max(0, compress_before), 2):
-            retained[i] = {"role": "user", "content": "[prior touch]"}
+            if retained[i].get("role") == "user":
+                retained[i] = {"role": "user", "content": "[prior touch]"}
         self._messages = [system] + retained
 
     def is_available(self) -> bool:

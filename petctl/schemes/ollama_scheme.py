@@ -173,8 +173,8 @@ class OllamaMotion(Motion):
         log_input: bool = False,
         llm_enabled: bool = True,
         monitor_only: bool = False,
-        history_turns: int = 0,
-        recent_full_turns: int = 1,
+        history_turns: int = 2,
+        recent_full_turns: int = 0,
         default_speed: float = 1.0,
     ) -> None:
         self._llm_enabled = llm_enabled
@@ -394,7 +394,7 @@ class OllamaMotion(Motion):
         except Exception as exc:
             logger.warning("[Ollama] could not apply response: %s — raw: %s", exc, result)
         finally:
-            self._client.trim_history(self._history_turns)
+            self._client.trim_history_compressed(self._history_turns, self._recent_full_turns)
 
     def _apply_llm_response(self, response: dict, rtt: float = 0.0, gen: int = 0) -> None:
         with self._lock:
