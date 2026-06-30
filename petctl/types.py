@@ -325,6 +325,13 @@ def vitals_phrase(state: "RobotState") -> str | None:
     else:
         temp_adj = "cool"
 
+    on_wall = (
+        state.power_telemetry is not None
+        and state.power_telemetry.power_source == "wall"
+    )
+    if on_wall:
+        return f"Running {temp_adj} and full of energy"
+
     if state.battery_voltage_raw == 0:
         return f"Running {temp_adj}"
 
@@ -332,9 +339,9 @@ def vitals_phrase(state: "RobotState") -> str | None:
     if voltage >= 12.0:
         energy_adj = "full of energy"
     elif voltage >= 11.0:
-        energy_adj = "getting tired"
+        energy_adj = "working hard"
     else:
-        energy_adj = "low on energy"
+        energy_adj = "tired"
 
     return f"Running {temp_adj} and {energy_adj}"
 
