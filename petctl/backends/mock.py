@@ -47,8 +47,10 @@ import math
 import os
 import random
 import time
+from dataclasses import dataclass
 from typing import Literal, Optional
 
+from petctl.config import LOOP_LIMITS, MOCK_DYNAMICS, MOTOR_LIMITS
 from petctl.protocols import Backend
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
@@ -57,9 +59,25 @@ logger = logging.getLogger(__name__)
 _PRESSURE_FIELDS = ("pressure_middle", "pressure_left", "pressure_right")
 
 
+@dataclass
+class _ServoSetpoint:
+    """Latest MIT-mode setpoint recorded from `send_commands()` for one servo."""
+
+    position: float
+    velocity: float = 0.0
+    kp: float = 0.0
+    kd: float = 0.0
+    torque_ff: float = 0.0
+
+
 class MockBackend(Backend):
     """
     A backend that simulates the robot locally.
+
+    Servo positions integrate a second-order MIT-law joint model (`MOCK_DYNAMICS`
+    in `config.py`) rather than teleporting to commanded targets, so velocity- and
+    torque-consuming code (filters, PowerManager, contact classifiers) can be
+    exercised offline. A servo with no command yet runs at zero torque (passive).
 
     Args:
         mode:        "interactive" | "file" | "mock-sensor-sine" | "noise"
@@ -89,6 +107,15 @@ class MockBackend(Backend):
         self._servo_positions: dict[int, float] = {
             i + 1: 0.0 for i in range(num_modules - 1)
         }
+        self._servo_velocities: dict[int, float] = {
+            i + 1: 0.0 for i in range(num_modules - 1)
+        }
+        self._servo_torques: dict[int, float] = {
+            i + 1: 0.0 for i in range(num_modules - 1)
+        }
+        # Latest commanded setpoint per servo. Missing entry = no command received
+        # yet = zero torque (passive/coasting), matching a motor with no MIT frame sent.
+        self._servo_setpoints: dict[int, _ServoSetpoint] = {}
 
         # File cache
         self._file_mtime: float = 0.0
@@ -116,7 +143,6 @@ class MockBackend(Backend):
         self._connected = False
 
     async def get_state(self) -> RobotState:
-        from petctl.config import LOOP_LIMITS
         now = time.monotonic()
         dt = now - self._last_timestamp
         self._last_timestamp = now
@@ -130,7 +156,11 @@ class MockBackend(Backend):
         if now - self._last_sensor_ts >= sensor_period:
             self._last_sensor_ts = now
 
+        self._step_dynamics(dt)
+
         sensors = self._build_sensors(elapsed)
+        # In "file" mode this overrides the just-integrated positions with the
+        # file's values, same as before dynamics existed.
         servo_positions = self._build_servo_positions()
 
         return RobotState(
@@ -140,18 +170,58 @@ class MockBackend(Backend):
             servo_positions=servo_positions,
             active_modules=list(sensors.keys()),
             active_servo_ids=set(self._servo_positions.keys()),
-            motor_velocities={},
-            motor_torques={},
+            motor_velocities=dict(self._servo_velocities),
+            motor_torques=dict(self._servo_torques),
             connected=self._connected,
             dt=dt,
         )
 
     async def send_commands(self, commands: list[ServoCommand]) -> None:
-        """Update internal servo state. In 'file' mode servos are still
-        tracked so the scheme can read back its own commands."""
+        """Record the latest MIT setpoint per servo; get_state() integrates it.
+
+        Does not move anything directly — dynamics are advanced once per tick
+        in `_step_dynamics()`. In 'file' mode the recorded setpoint is still
+        used for integration, but `_build_servo_positions()` overrides the
+        result with the file's values every tick, so the file wins as before.
+        """
         for cmd in commands:
-            if cmd.position is not None:
-                self._servo_positions[cmd.servo_id] = cmd.position
+            if cmd.position is None:
+                continue
+            self._servo_setpoints[cmd.servo_id] = _ServoSetpoint(
+                position=cmd.position,
+                velocity=cmd.velocity if cmd.velocity is not None else 0.0,
+                kp=cmd.kp,
+                kd=cmd.kd,
+                torque_ff=cmd.torque_ff,
+            )
+
+    def _step_dynamics(self, dt: float) -> None:
+        """Integrate one MIT-law step per servo: tau -> accel -> velocity -> position.
+
+        A servo with no recorded setpoint runs at zero torque (kp=kd=torque_ff=0),
+        i.e. passive/coasting — matching a motor with no MIT command sent yet.
+        """
+        if dt <= 0.0:
+            return
+        cfg = MOCK_DYNAMICS
+        for sid in self._servo_positions:
+            sp = self._servo_setpoints.get(sid)
+            p = self._servo_positions[sid]
+            v = self._servo_velocities.get(sid, 0.0)
+
+            if sp is not None:
+                tau = sp.kp * (sp.position - p) + sp.kd * (sp.velocity - v) + sp.torque_ff
+            else:
+                tau = 0.0
+            tau = max(MOTOR_LIMITS.torque_min, min(MOTOR_LIMITS.torque_max, tau))
+
+            accel = (tau - cfg.viscous_friction_nm_s_per_rad * v) / cfg.inertia_kg_m2
+            v = max(MOTOR_LIMITS.vel_min, min(MOTOR_LIMITS.vel_max, v + accel * dt))
+            p = p + v * dt
+
+            self._servo_positions[sid] = p
+            self._servo_velocities[sid] = v
+            self._servo_torques[sid] = tau
 
     async def write_home_offsets(self) -> None:
         """Mark the current commanded positions as home (all report as 0)."""

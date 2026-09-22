@@ -50,6 +50,7 @@ from petctl.config import LOOP_LIMITS, POWER_BUDGET
 from petctl.perception.contact import ContactType
 from petctl.power_manager import PowerManager
 from petctl.protocols import Backend, Motion, Visualizer
+from petctl.recorder import StateRecorder
 from petctl.types import GestureEvent, GestureFrame, RobotState, ServoCommand, vitals_phrase
 
 logger = logging.getLogger(__name__)
@@ -371,6 +372,8 @@ class Controller:
         limp:         If True, disable motor torque after connecting so joints
                       can be moved freely by hand.  Implies dry_run=True so
                       commands never re-enable torque during the session.
+        record_file:  If set, write one JSON line per tick to this path via
+                      StateRecorder (see recorder.py).
     """
 
     # How often to print loop timing stats (seconds)
@@ -387,6 +390,7 @@ class Controller:
         log_touch: bool = False,
         log_loop: bool = False,
         cap_recal: bool = False,
+        record_file: Optional[str] = None,
     ) -> None:
         self.backend = backend
         self.motion = motion
@@ -397,6 +401,7 @@ class Controller:
         self.log_touch = log_touch
         self.log_loop = log_loop
         self.cap_recal = cap_recal
+        self._recorder = StateRecorder(record_file) if record_file else None
         self.power_manager = PowerManager()
         if (
             type(backend).__name__ == "RobotBackend"
@@ -689,6 +694,7 @@ class Controller:
             self._apply_slew_to_commands(commands)
 
             # 3. Send commands (unless dry run), gated and scaled by PowerManager
+            commands_sent: list[ServoCommand] = []
             if not self.dry_run and commands:
                 # 3a. Thermal gating — skip disabled motors
                 enabled = [cmd for cmd in commands if pm.is_motor_enabled(cmd.servo_id)]
@@ -717,8 +723,12 @@ class Controller:
                 if to_send:
                     try:
                         await self.backend.send_commands(to_send)
+                        commands_sent = to_send
                     except Exception as e:
                         logger.error("[Controller] Backend send_commands error: %s", e)
+
+            if self._recorder is not None:
+                self._recorder.record(self._state, commands_sent)
 
             # 3b. Save-home: write EEPROM offsets so current position reports as 0
             if self._hotkeys.take_save_home():
@@ -838,6 +848,8 @@ class Controller:
         self._viz_thread.join(timeout=2.0)
         for viz in self.visualizers:
             viz.on_stop()
+        if self._recorder is not None:
+            self._recorder.close()
         await self.backend.disable_torques()
         await self.backend.disconnect()
         logger.info("[Controller] Done.")

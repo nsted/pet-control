@@ -10,6 +10,7 @@ Usage:
     petctl run --no-viz                         # headless (sensors only, no Rerun)
     petctl run --dry-run                        # never send servo commands
     petctl run --host 192.168.1.42              # connect to robot by IP
+    petctl run --record session.jsonl           # log one JSON line per tick
     petctl info                                 # connect and print robot status
 """
 
@@ -192,6 +193,11 @@ def run(
         "--vel",
         help="Default motion speed scale (0.05–1.0). For ollama: used until LLM responds. For patterns: scales hz/speed at launch.",
     ),
+    record: Optional[str] = typer.Option(
+        None,
+        "--record",
+        help="Write one JSON line per control-loop tick to this .jsonl file",
+    ),
 ) -> None:
     """Run the petctl controller."""
 
@@ -273,6 +279,7 @@ def run(
             log_touch=log_touch,
             log_loop=log_loop,
             cap_recal=cap_recal,
+            record_file=record,
         )
         ctrl.speed_gain = vel
         _ui = None

@@ -1,7 +1,9 @@
 # Shape Layer — Implementation Plan
 
-Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified**. Supersedes the sequencing in `BEHAVIOR_SYSTEM.md`
-(0/17 complete since March); that document's Stage 1 is absorbed into Stage 2 here.
+Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified. Stage 1.2 and 1.3
+complete (2026-09-22)**; 1.1, 1.4, 1.5 still open. Supersedes the sequencing in
+`BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1 is absorbed
+into Stage 2 here.
 
 ## Why
 
@@ -148,14 +150,32 @@ Everything from here lands on that branch.
       into `config.py`. This is the CLAUDE.md rule ("never hardcode servo limits")
       made enforceable.
 
-- [ ] **1.2 State recorder.** `petctl run --record <file>.jsonl` writing one line per
+- [x] **1.2 State recorder.** `petctl run --record <file>.jsonl` writing one line per
       tick: timestamp, sensors, servo positions/velocities/torques/temps, gesture frame,
       commands sent, power telemetry. Non-blocking (bounded queue + daemon thread,
       mirror the `_viz_worker` pattern — drop frames, never stall the loop).
       This is `BEHAVIOR_SYSTEM.md` 5.2, and it is a prerequisite for the post-ICRA
       touch-classifier training as well as for measuring whether Stage 2–3 helps.
+      **Done 2026-09-22.** Built `petctl/recorder.py` — `StateRecorder(path, maxsize=64)`
+      opens the output file line-buffered, `record(state, commands)` builds a
+      JSON-serializable frame and does `queue.put_nowait`, dropping (and counting)
+      on `queue.Full` rather than blocking; `close()` sends a sentinel, joins the
+      writer thread (2 s timeout), and logs the drop count if any frames were lost.
+      `ContactType` (a `(str, Enum)`) round-trips through `json.dumps` with no
+      special-casing, as expected. Wired into `Controller`: new `record_file`
+      constructor arg, `commands_sent` is exactly the `to_send` list actually handed
+      to `backend.send_commands()` this tick (empty on dry-run or a send error), and
+      `record()` is called once per tick right after the send block, before the
+      hotkey-driven side effects (save-home, deactivate, etc.). `close()` runs in
+      `_shutdown()`. CLI: `--record <path>.jsonl` on `petctl run`, passed through as
+      `record_file`. Tests in `tests/test_recorder.py` (4): frame keys/values
+      round-trip through JSON, `ContactType`/`GestureFrame` serialize as plain
+      values, missing gesture/power_telemetry serialize as `null`, and a full queue
+      (writer thread replaced with a no-op stub via `monkeypatch` so it never
+      drains) drops frames and counts them without raising or blocking. No
+      deviations from the plan.
 
-- [ ] **1.3 Mock dynamics.** `MockBackend.send_commands` currently does
+- [x] **1.3 Mock dynamics.** `MockBackend.send_commands` currently does
       `self._servo_positions[sid] = cmd.position` — it teleports. Replace with a
       second-order joint model driven by the MIT law: integrate
       `tau = kp*(p_des-p) + kd*(v_des-v) + tau_ff` against a per-joint inertia and
@@ -163,6 +183,30 @@ Everything from here lands on that branch.
       same direction* as hardware so filter and blending work can be developed and
       tested offline. Expose inertia/friction as config so they can be fitted later
       from Stage 1.2 recordings.
+      **Done 2026-09-22.** `send_commands()` now only records the latest setpoint
+      per servo (`_ServoSetpoint`: position, velocity, kp, kd, torque_ff) — it moves
+      nothing. `get_state()` calls `_step_dynamics(dt)` before building the returned
+      positions, integrating `tau = clamp(kp*(p_des-p) + kd*(v_des-v) + tau_ff,
+      MOTOR_LIMITS.torque_{min,max})`, `accel = (tau - friction*v) / inertia`,
+      `v = clamp(v + accel*dt, MOTOR_LIMITS.vel_{min,max})`, `p += v*dt`, per servo.
+      A servo with no setpoint yet runs at `kp=kd=torque_ff=0` (passive/coasting),
+      matching a motor with no MIT frame sent. Added `MockDynamicsConfig`
+      (`inertia_kg_m2=0.015`, `viscous_friction_nm_s_per_rad=0.03`) and singleton
+      `MOCK_DYNAMICS` in `config.py`, commented as initial guesses to be fit from
+      Stage 1.2 recordings, not measured values. `RobotState.motor_velocities` /
+      `motor_torques` are now populated from the integrator instead of hardcoded
+      `{}`. "file" mode is unaffected: `_build_servo_positions()` still overrides
+      `self._servo_positions` from the JSON file every tick, after dynamics run, so
+      the file wins exactly as before. Tests in `tests/test_mock_dynamics.py` (10):
+      passive default, `send_commands` doesn't teleport, `position=None` commands
+      are ignored, single-tick and converged (500-tick) MIT tracking, velocity/torque
+      populated, both clamped to `MOTOR_LIMITS` under a large error, a clock-hiccup
+      (negative dt) no-op, and the file-mode override still wins. Verified end-to-end
+      with `petctl run --backend mock --record` for 3 s: 297 valid JSON frames
+      written; PowerManager's emergency-stop path fired on the new nonzero
+      torque/current estimate mid-run (dynamics now feeding real torque into the
+      power model, as intended) and the controller still shut down cleanly. No
+      deviations from the plan.
 
 - [ ] **1.4 Resolve the layered slew filters.** Three first-order filters would sit in
       series once the engine lands, each with a different `dt` source:

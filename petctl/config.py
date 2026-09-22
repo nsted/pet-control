@@ -75,6 +75,21 @@ class ControlLoopLimits:
 
 
 @dataclass(frozen=True)
+class MockDynamicsConfig:
+    """Second-order joint model for `MockBackend` (SHAPE_LAYER Stage 1.3).
+
+    `inertia_kg_m2` and `viscous_friction_nm_s_per_rad` are initial guesses, not
+    measured — the goal is to be *wrong in the same direction* as GL40 II hardware
+    (right order of magnitude, not a fit) so filter and blending work can be
+    developed offline. Fit these from Stage 1.2 (`petctl/recorder.py`) recordings
+    once real motor step responses are available.
+    """
+
+    inertia_kg_m2: float = 0.015
+    viscous_friction_nm_s_per_rad: float = 0.03
+
+
+@dataclass(frozen=True)
 class BehaviorLimits:
     """Limits for the BehaviorEngine (when implemented).
 
@@ -269,6 +284,7 @@ class PowerBudgetConfig:
 
 MOTOR_LIMITS = MotorLimits()
 LOOP_LIMITS = ControlLoopLimits()
+MOCK_DYNAMICS = MockDynamicsConfig()
 BEHAVIOR_LIMITS = BehaviorLimits()
 SENSOR_LIMITS = SensorLimits()
 BATTERY_CONFIG = BatteryConfig()
