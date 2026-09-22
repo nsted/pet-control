@@ -251,11 +251,81 @@ Everything from here lands on that branch.
       own `alpha = 5.0*dt` smoothing. Pick one owner. See Open decisions.
       Use 1.3 to compare candidate arrangements before touching hardware.
 
+      **Still open — needs hardware time (Nick's call, Open decision #2).** Offline mock
+      prep done 2026-09-22: `scripts/compare_slew_filters.py` drives the real, unmodified
+      `Controller._apply_slew_to_commands` and `RobotBackend.send_commands` (not
+      reimplementations) against the real `MockBackend._step_dynamics` plant (Stage 1.3),
+      comparing `controller`-only / `backend`-only / `both` (today's default) on a 1.0 rad
+      step and a snuggle-reference sinusoid (±40° @ 0.4 Hz, `LOOP_LIMITS`' own worked
+      example). This is comparison data for the hardware session, not a decision — run it
+      again (or extend it) there, ideally alongside a real before/after recording.
+
+      **Findings (all at `speed_gain=1.0`, matched-rate 50 Hz unless noted):**
+      - *Step-response overshoot/settle time are not a useful discriminator between
+        candidates.* At default gains (`kp_default=0.8`, `kd_default=0.035`) the mock
+        plant itself is underdamped (`ζ≈0.30`, `ωn≈7.3 rad/s` — computed straight from
+        `MOCK_DYNAMICS`/`MOTOR_LIMITS`) and rings on a step regardless of which filter
+        shapes the target; overshoot varied only 0.23–0.29 rad across all six
+        owner×rate combinations. This is a real property of the current mock gains,
+        separate from the 1.4 question — worth a note for whoever tunes gains later,
+        but not evidence for or against a filter owner.
+      - *Backend-only tracks a smooth target noticeably better than controller-only or
+        both:* peak sine-tracking error 0.146 rad vs 0.273 rad (matched 50 Hz). The
+        difference is structural, not incidental — `Controller`'s tau=0.10s LPF adds
+        real phase lag on a 0.4 Hz signal (~0.25 rad, the right order of magnitude for
+        the observed error) that `RobotBackend`'s pure rate-limit-plus-anti-windup ramp
+        doesn't have.
+      - *Backend-only (and `both`) keep a bounded commanded-vs-actual gap under a large
+        step; controller-only doesn't:* max gap 0.35–0.40 rad vs 0.56–0.61 rad. This is
+        `RobotBackend`'s anti-windup doing exactly what Open decision #2 already named
+        as the reason to prefer it — `last_p` is clamped to within `anti_windup_rad`
+        (0.3) of the *actual* physical position every tick, so the commanded ramp can't
+        run away from where the joint really is. `Controller`'s LPF has no such anchor.
+      - *`both` (today's default) behaves like `backend`-only under a large step (the
+        rate cap saturates identically either way so the second filter is mostly along
+        for the ride) but like `controller`-only on the smooth sinusoid (nothing
+        saturates, so the LPF's phase lag is the dominant, unmasked effect).* In other
+        words: today's stacked-filter default gets backend's step behavior but not its
+        (better) tracking behavior, which is the worst of both rather than the best.
+      - This numerically supports Open decision #2's stated recommendation (backend
+        owns it, strip the controller-level LPF to a pure safety clamp) more than it
+        contradicts it — but it's mock data at nominal gains, not hardware, and doesn't
+        cover contact-driven load, thermal derating, or the reactive power-budget scale
+        interacting with any of this. Bring it to the hardware session as a prior, not
+        a conclusion.
+
 - [ ] **1.5 Control-loop rate.** `Controller._loop` sleeps `1/(motor_update_hz*4)`
       (~200 Hz) while `_pending_frames[sid]` is overwritten and consumed at 50 Hz —
       three of every four `motion.update()` results are discarded, and the slew filter's
       `dt` is 4x smaller than the true command period. Decide whether to run the loop at
       `motor_update_hz` or keep the oversample deliberately, and document why.
+
+      **Still open — bundled with 1.4 as one hardware session (Nick's call, 2026-09-22).**
+      Offline mock prep done in the same pass as 1.4, same script
+      (`scripts/compare_slew_filters.py`), comparing `matched_50hz` (loop = wire rate,
+      nothing discarded) against `oversample_200hz` (today's default: loop = 4x wire
+      rate, `_pending_frames` overwritten 3 of every 4 ticks before a real
+      `motor_tx_loop` pop would fire — reproduced in the harness by only handing the mock
+      plant a new setpoint once per simulated wire period).
+
+      **Findings:** oversampling was strictly worse on every metric, for every filter
+      owner, with no case where it won. Peak sine-tracking error rose ~24% (controller:
+      0.273→0.339 rad; backend: 0.146→0.185 rad; both: 0.273→0.338 rad) and the
+      commanded-vs-actual gap rose similarly. Two separate mechanisms both push the same
+      direction: (1) discarding 3-of-4 computed outputs adds effective latency between
+      when a target is computed and when it reaches the plant (averaging ~2 extra ticks,
+      ~10 ms at 200 Hz) — this alone explains most of the degradation, including for
+      `controller`-only, which has no rate-based dt dependency to speak of; (2)
+      `RobotBackend.send_commands`'s own dt is wall-clock (`now - last_t`), floored at
+      `1/120 s` — at 200 Hz the true per-tick interval (5 ms) is *below* that floor, so
+      the backend ramp silently computes its `max_step` against 8.3 ms instead of the
+      real 5 ms every tick, a second, independent source of behavior that doesn't match
+      what oversampling was presumably meant to buy. No mock evidence supports keeping
+      the oversample; the burden is on finding a reason to. Recommend running the loop
+      at `motor_update_hz` (matching 1.4's rate everywhere), pending confirmation on
+      hardware that this doesn't regress on load the mock doesn't model (thermal
+      derating, reactive power-budget scaling, real motor latency vs the mock's
+      idealized second-order model).
 
 - [x] **1.6 Log commanded vs actual position.** `RerunVisualizer` plots
       `motor_velocities`, `motor_torques` and temperatures per servo, but nothing logs
@@ -464,6 +534,15 @@ knows other primitives exist. Where perception is needed, read the value
       provide this). Params: intensity, width, sign. Writes `angle_deg` only.
 - [ ] **3.3** `stiffness.py` — writes `stiffness`/`damping` only, `angle_deg = 0`.
       Covers yield, freeze, idle, limp.
+- [ ] **3.4a Damping headroom.** `kd_default` (0.035) is 87.5% of `kd_max` (0.04), so
+      `JointIntent.damping` saturates at 1.14x above 1.0 — effectively a reduction-only
+      channel, which leaves `purr.py` nowhere to live. After 1.1, purr's actual
+      modulation depth is 0.005 (was 0.045 at the old 0.08 peak): 9x less, effectively
+      inaudible. Fix by giving purr its own floor rather than starting from default —
+      sweep ~0.010 to `kd_max` for a depth of 0.030, two-thirds of the original and
+      entirely under the ceiling Open decision #1 set. Do **not** lower `kd_default`
+      globally; that changes the feel of every behaviour.
+
 - [ ] **3.4** `purr.py` — writes `damping` only as a travelling wave, `angle_deg = 0`.
       Direct port of `PurrRippleMotion`'s existing approach; proves the gain channel.
 - [ ] **3.5** `drift.py` — bounded random walk. Covers explore, contort, writhe.
@@ -500,6 +579,11 @@ Not covered by primitives, and staying as standalone `Motion` classes: `twitch`,
    has anti-windup and the true per-motor timebase; strip the controller-level LPF to a
    pure safety clamp and let the engine do expressive smoothing. This changes how the
    robot feels, so it wants hardware time and probably a before/after recording.
+   Offline mock comparison (2026-09-22, see 1.4) numerically supports this recommendation
+   — backend-only tracked a smooth target ~1.9x better than controller-only/both and
+   bounded the commanded-vs-actual gap under a step where controller-only didn't — but
+   it's mock data at nominal gains, not a substitute for the hardware session. 1.4 and 1.5
+   are being taken together as one hardware session.
 3. ~~**Does the motor swap land first?**~~ **Resolved 2026-09-22: staying on GL40 II
    for now.** 1.4 and 1.5 are unblocked — tune against GL40 dynamics. Nick's standing
    constraint: *everything here must be motor agnostic*, which is what 1.7 enforces.
