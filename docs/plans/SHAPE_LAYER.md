@@ -1,9 +1,9 @@
 # Shape Layer — Implementation Plan
 
-Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified. Stage 1.2, 1.3,
-and 1.7 complete (2026-09-22)**; 1.1, 1.4, 1.5, 1.6 still open. Supersedes the sequencing
-in `BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1 is absorbed
-into Stage 2 here.
+Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified. Stage 1.1, 1.2,
+1.3, 1.6, 1.7, and 1.8 complete (2026-09-22)**; 1.4, 1.5, 1.9 still open. Supersedes the
+sequencing in `BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1
+is absorbed into Stage 2 here.
 
 ## Why
 
@@ -144,11 +144,33 @@ git checkout -b feat/shape-layer
 
 Everything from here lands on that branch.
 
-- [ ] **1.1 Enforce motor limits at the encoder.** Clamp `kp`, `kd`, `torque_ff`,
+- [x] **1.1 Enforce motor limits at the encoder.** Clamp `kp`, `kd`, `torque_ff`,
       `vel` in `_encode_mit_packet` (or immediately upstream), log once per violation
       rather than per frame. Move `PurrRippleMotion.KD_TARGET` into `config.py`.
       This is the CLAUDE.md rule ("never hardcode servo limits") made enforceable.
       Enforce against the **active motor profile** (1.7), not a module-level constant.
+
+      **Done 2026-09-22.** `vel` was already fixed by 1.7 (clamped to
+      `self._profile.encoding.vel_min/max`, the v_des wire range). Added
+      `RobotBackend._clamp_to_profile_limits()`, called from `send_commands`
+      immediately before `self._profile.encode_command(...)` — clamps `kp` to
+      `[0, profile.gains.kp_max]`, `kd` to `[0, profile.gains.kd_max]`, and
+      `torque_ff` to `[profile.encoding.torque_min, .torque_max]`. This is
+      stricter than `encode_command`'s own wire-range clip (kp 0-500, kd 0-5 for
+      GL40_II), which only guards packet overflow, not the declared safety
+      ceiling — a kp=300 command used to reach the motor as kp≈300 (wire-clipped
+      only at 500); it's now clamped to 1.5 before encoding. Violations log once
+      via `_warn_once_per_violation` (a `(motor_id, field)` set, cleared on
+      recovery so a later violation logs again) rather than every tick at
+      `motor_update_hz`.
+      `PurrRippleMotion.KD_TARGET` (0.08, 2x `kd_max`) is gone — per Nick's
+      resolution of Open decision #1, purr's peak kd is now `MOTOR_LIMITS.kd_max`
+      directly (itself profile-sourced since 1.7), not a separate class constant
+      or a new config field for a value that must always equal `kd_max`.
+      Verified: manual clamp test shows the wire frame actually encodes the
+      clamped kp (not the raw 300), log fires once on violation onset, is
+      silent on repeat and on recovery, and fires again on a later violation.
+      All 83 tests still green.
 
 - [x] **1.2 State recorder.** `petctl run --record <file>.jsonl` writing one line per
       tick: timestamp, sensors, servo positions/velocities/torques/temps, gesture frame,
@@ -235,7 +257,7 @@ Everything from here lands on that branch.
       `dt` is 4x smaller than the true command period. Decide whether to run the loop at
       `motor_update_hz` or keep the oversample deliberately, and document why.
 
-- [ ] **1.6 Log commanded vs actual position.** `RerunVisualizer` plots
+- [x] **1.6 Log commanded vs actual position.** `RerunVisualizer` plots
       `motor_velocities`, `motor_torques` and temperatures per servo, but nothing logs
       `RobotState.servo_commanded_positions` — the post-slew setpoint the Controller
       already populates each tick from `_slew_last_sent_rad`. Without it the plots show
@@ -243,6 +265,17 @@ Everything from here lands on that branch.
       lag and tracking error are invisible. Add a `motors/position/motor_N` series pair
       (commanded and actual) alongside the existing ones.
       Prerequisite for 1.4 — the gap between the two curves *is* the thing 1.4 is tuning.
+
+      **Done 2026-09-22.** `Controller` already populated `servo_commanded_positions`
+      every tick (`controller.py:623`) — the gap was purely in `RerunVisualizer`, which
+      never logged it. Added `motors/position/motor_N/actual` and `.../commanded` as a
+      `SeriesLines` pair per servo in `_setup_motor_series` (same pattern as the
+      existing velocity/torque/temperature series, module 0 excluded since it has no
+      servo), logged each tick from `state.servo_positions` / `state.servo_commanded_
+      positions` in `_log_motor_state`, and added a `motors/position` `TimeSeriesView`
+      to the blueprint alongside velocity/torque/temperature. Verified with a fake `rr`
+      recorder (correct paths, correct values, module 0 correctly excluded) and against
+      the real `rerun` SDK (`rr.init(spawn=False)` + the same log calls, no exceptions).
 
 - [x] **1.7 Motor profile boundary — everything above L2 must be motor agnostic.**
       All hardware specifics belong behind one `MotorProfile`, selected by config/CLI,
@@ -334,7 +367,7 @@ Everything from here lands on that branch.
          (`petctl/motors/`) exists now; wiring everything above L2 through it is
          Stage 4.
 
-- [ ] **1.8 Triage the 5 red `test_power_manager.py` tests.** Pre-existing, not caused
+- [x] **1.8 Triage the 5 red `test_power_manager.py` tests.** Pre-existing, not caused
       by this branch (confirmed via `git stash`). Almost certainly test drift: the test
       file is unchanged since `46780cb`, while `power_manager.py` has six commits after
       it — including `c6d7962` ("emergency stop when current exceeds peak limit for
@@ -342,6 +375,36 @@ Everything from here lands on that branch.
       implementation is wrong; do not simply update assertions to match current output,
       since this is the layer that owns thermal cutoff, current budget and emergency
       stop. Stage 2 rests on this layer being trustworthy.
+
+      **Done 2026-09-22. Root cause: not `c6d7962` — `git bisect`-by-reading found
+      `aff0cfb` ("power: switch to production UPS limits (4A budget, 5.5A peak, 6A
+      wall)", Nick, 2026-06-25).** All 5 failures were `TestBinPackSeed`/
+      `TestBinPackPromotion` cases that construct a bare `PowerManager(bin_policy=...)`
+      with no `budget_override`, so `_effective_budget()` fell through to the live
+      `POWER_BUDGET.max_bus_current_a` default. That default was intentionally moved
+      from the dev value (2.0A) to the production UPS value (4.0A) in `aff0cfb` — a
+      real, human-authored config change, not a bug — and every one of these 5 tests
+      hardcoded arithmetic ("at dev budget (2A) ... only 1 motor seeds") that silently
+      broke the moment the global default no longer matched what the test assumed.
+      The implementation (`allocate_budget`'s bin-pack seeding/promotion) is correct
+      and untouched.
+
+      **Fix:** the 4 tests whose point is the seeding/promotion *algorithm* (not which
+      real-world budget is configured) now pin `budget_override=2.0` explicitly, so
+      they test the algorithm against a known number instead of silently trusting
+      whatever `POWER_BUDGET` happens to default to — this is the fix that survives
+      the next intentional budget change, not "update the assertion to match today's
+      number" (which would just make this the same kind of landmine again).
+      `test_seed_detects_wall_power_source` is different: its entire point is that
+      `_effective_budget()` selects `wall_max_bus_current_a` over `max_bus_current_a`
+      once `PowerSource.WALL` is detected, so it can't use `budget_override` (that
+      bypasses power-source selection for both branches). Instead its expected active
+      motor count is now derived from the live `POWER_BUDGET` (`wall_max_bus_current_a`
+      / worst-case per-motor current) rather than the stale hardcoded "1", with an
+      assertion that the fixture still exercises something (`1 <= expected_n < 7`) so
+      a future budget change that makes the test vacuous (e.g. all 7 or 0 motors fit)
+      fails loudly instead of silently passing.
+      All 83 tests green (`pytest -q`); no production code changed for this item.
 
 - [ ] **1.9 Minimal CI.** No `.github/workflows/`. A single job running `pytest` on push
       would have caught 1.8 six commits earlier, and matters more once Stage 2 starts

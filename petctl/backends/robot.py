@@ -107,6 +107,10 @@ class RobotBackend(_BackendBase):
         # Monotonic time of the last real position command for each motor.
         # Used to revert to zero-torque after LOOP_LIMITS.idle_hold_s of inactivity.
         self._last_command_time: dict[int, float] = {}
+        # (motor_id, field) pairs currently outside the active profile's declared
+        # limits — tracked so a sustained violation logs once on onset, not every
+        # tick (SHAPE_LAYER 1.1), and logs again if it recurs after recovering.
+        self._clamp_violations_logged: set[tuple[int, str]] = set()
         self._motor_tx_task: Optional[asyncio.Task] = None
         self._module_poll_task: Optional[asyncio.Task] = None
         self._motor_poll_task: Optional[asyncio.Task] = None
@@ -292,9 +296,55 @@ class RobotBackend(_BackendBase):
                 vel = cmd.velocity if cmd.velocity is not None else 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
+            kp, kd, torque_ff = self._clamp_to_profile_limits(sid, cmd.kp, cmd.kd, cmd.torque_ff)
             self._pending_frames[sid] = self._profile.encode_command(
-                sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff
+                sid, pos_rad, vel, kp, kd, torque_ff
             )
+
+    def _clamp_to_profile_limits(
+        self, motor_id: int, kp: float, kd: float, torque_ff: float
+    ) -> tuple[float, float, float]:
+        """Clamp kp/kd/torque_ff to the active motor profile's declared limits.
+
+        `encode_command`'s own wire-range clip (e.g. kp 0-500, kd 0-5 for
+        GL40_II) only guards against packet overflow — it is far looser than
+        the profile's declared `gains.kp_max`/`kd_max`, so an out-of-range
+        command would otherwise reach the motor unclamped. This is the
+        CLAUDE.md rule ("never hardcode servo limits") made enforceable — see
+        SHAPE_LAYER Stage 0 finding 0.1 (`PurrRippleMotion.KD_TARGET=0.08`
+        passed through at 2x `kd_max=0.04` for months, undetected).
+        """
+        g = self._profile.gains
+        e = self._profile.encoding
+        clamped_kp = max(0.0, min(g.kp_max, kp))
+        clamped_kd = max(0.0, min(g.kd_max, kd))
+        clamped_torque_ff = max(e.torque_min, min(e.torque_max, torque_ff))
+        self._warn_once_per_violation(motor_id, "kp", kp, clamped_kp)
+        self._warn_once_per_violation(motor_id, "kd", kd, clamped_kd)
+        self._warn_once_per_violation(motor_id, "torque_ff", torque_ff, clamped_torque_ff)
+        return clamped_kp, clamped_kd, clamped_torque_ff
+
+    def _warn_once_per_violation(
+        self, motor_id: int, field: str, requested: float, clamped: float
+    ) -> None:
+        """Log a clamp violation once on onset, not every tick while it persists.
+
+        Clears the flag on recovery so a later, separate violation logs again —
+        a sustained out-of-range command at motor_update_hz (50 Hz) would
+        otherwise flood the log.
+        """
+        key = (motor_id, field)
+        if requested != clamped:
+            if key not in self._clamp_violations_logged:
+                self._clamp_violations_logged.add(key)
+                logger.warning(
+                    "[RobotBackend] motor %d: %s=%.4g exceeds %s profile limit, "
+                    "clamped to %.4g (further violations on this motor/field suppressed "
+                    "until it recovers)",
+                    motor_id, field, requested, self._profile.name, clamped,
+                )
+        else:
+            self._clamp_violations_logged.discard(key)
 
     def set_stagger(self, motor_id: int, delay_s: float) -> None:
         """Delay the next TX frame for motor_id by delay_s seconds."""
