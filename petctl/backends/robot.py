@@ -13,7 +13,10 @@ from typing import Optional, Sequence
 
 import websockets
 
-from petctl.config import LOOP_LIMITS, MOTOR_LIMITS, NUM_MODULES, SENSOR_LIMITS
+from petctl.config import ACTIVE_MOTOR_PROFILE, LOOP_LIMITS, NUM_MODULES, SENSOR_LIMITS
+from petctl.motors.base import MotorProfile
+from petctl.motors.base import byte_to_int8 as _byte_to_int8
+from petctl.motors.base import uint_to_float as _uint_to_float
 from petctl.protocols import Backend as _BackendBase
 from petctl.types import ImuReading, ModuleSensors, RobotState, ServoCommand
 
@@ -61,6 +64,7 @@ class RobotBackend(_BackendBase):
         reconnect_delay: float = 2.0,
         motor_ids: Optional[Sequence[int]] = None,
         fsr_offsets: Optional[dict[int, dict[str, float]]] = None,
+        motor_profile: MotorProfile = ACTIVE_MOTOR_PROFILE,
     ) -> None:
         self.host = host
         self.port = port
@@ -68,6 +72,9 @@ class RobotBackend(_BackendBase):
         self.calibration_samples = calibration_samples
         self.auto_reconnect = auto_reconnect
         self.reconnect_delay = reconnect_delay
+        # Everything MIT-specific (frame layout, gains, thermal limits, power
+        # model) lives behind this — see petctl/motors/ (SHAPE_LAYER Stage 1.7).
+        self._profile: MotorProfile = motor_profile
         # Per-module FSR zero-pressure offsets: {module_id: {face: float}}.
         # Subtracted after normalization; values from scripts/calibrate_fsr.py.
         self._fsr_offsets: dict[int, dict[str, float]] = fsr_offsets or {}
@@ -278,13 +285,16 @@ class RobotBackend(_BackendBase):
                     vel = cmd.velocity
                 else:
                     vel = (pos_rad - last_p) / dt
-                vel = max(MOTOR_LIMITS.vel_min, min(MOTOR_LIMITS.vel_max, vel))
+                e = self._profile.encoding
+                vel = max(e.vel_min, min(e.vel_max, vel))
             else:
                 pos_rad = last_p
                 vel = cmd.velocity if cmd.velocity is not None else 0.0
             self._last_mit_abs_pos[sid] = pos_rad
             self._last_mit_wall_s[sid] = now
-            self._pending_frames[sid] = _encode_mit_packet(sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff)
+            self._pending_frames[sid] = self._profile.encode_command(
+                sid, pos_rad, vel, cmd.kp, cmd.kd, cmd.torque_ff
+            )
 
     def set_stagger(self, motor_id: int, delay_s: float) -> None:
         """Delay the next TX frame for motor_id by delay_s seconds."""
@@ -401,13 +411,13 @@ class RobotBackend(_BackendBase):
             self._discovered_motors = list(self._configured_motor_ids)
             logger.debug("[RobotBackend] Using fixed motor IDs (--motors): %s", self._discovered_motors)
             for mid in self._discovered_motors:
-                await self._ws.send(_encode_mit_enable(mid))
+                await self._ws.send(self._profile.encode_enable(mid))
             await asyncio.sleep(0.5)
         elif self._discovered_motors:
             # Reconnect fast path: reuse cached IDs, just re-enable and wait for first CAN echo.
             logger.debug("[RobotBackend] Reusing motor IDs %s (reconnect)", self._discovered_motors)
             for mid in self._discovered_motors:
-                await self._ws.send(_encode_mit_enable(mid))
+                await self._ws.send(self._profile.encode_enable(mid))
             await asyncio.sleep(0.3)
         else:
             self._discovered_motors = await self._discover_motors()
@@ -509,7 +519,7 @@ class RobotBackend(_BackendBase):
             return []
         self._motor_state.clear()
         for mid in range(1, 8):
-            await self._ws.send(_encode_mit_enable(mid))
+            await self._ws.send(self._profile.encode_enable(mid))
         await asyncio.sleep(1.0)
         discovered = sorted(self._motor_state.keys())
         if not discovered:
@@ -531,7 +541,7 @@ class RobotBackend(_BackendBase):
                 if self._ws is None:
                     break
                 try:
-                    await self._ws.send(_encode_mit_enable(mid))
+                    await self._ws.send(self._profile.encode_enable(mid))
                 except Exception:
                     break
             await asyncio.sleep(0.5)
@@ -665,7 +675,7 @@ class RobotBackend(_BackendBase):
                             continue
                         if t0 < self._stagger_until.get(mid, 0.0):
                             # Stagger active: hold last sent frame, leave pending frame for next tick
-                            frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+                            frame = self._last_sent_frames.get(mid, self._profile.encode_zero_torque(mid))
                         else:
                             pending = self._pending_frames.pop(mid, None)
                             if pending is not None:
@@ -674,9 +684,9 @@ class RobotBackend(_BackendBase):
                             else:
                                 idle_s = t0 - self._last_command_time.get(mid, 0.0)
                                 if idle_s <= LOOP_LIMITS.idle_hold_s:
-                                    frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+                                    frame = self._last_sent_frames.get(mid, self._profile.encode_zero_torque(mid))
                                 else:
-                                    frame = _encode_mit_zero(mid)
+                                    frame = self._profile.encode_zero_torque(mid)
                         self._last_sent_frames[mid] = frame
                         frames.append(frame)
                     if frames:
@@ -895,7 +905,7 @@ class RobotBackend(_BackendBase):
         logger.debug("[RobotBackend] Writing hardware zero to motor(s) %s...", ids)
         for mid in ids:
             async with self._ws_send_lock:
-                await self._ws.send(_encode_mit_set_zero(mid))
+                await self._ws.send(self._profile.encode_set_zero(mid))
         # Allow EEPROM write to complete and next CAN frame to arrive with pos≈0.
         await asyncio.sleep(0.25)
         self._angle_offsets.clear()
@@ -917,7 +927,7 @@ class RobotBackend(_BackendBase):
             return
         ids = self._configured_motor_ids if self._configured_motor_ids else range(1, 8)
         for mid in ids:
-            frame = self._last_sent_frames.get(mid, _encode_mit_zero(mid))
+            frame = self._last_sent_frames.get(mid, self._profile.encode_zero_torque(mid))
             async with self._ws_send_lock:
                 await self._ws.send(frame)
 
@@ -928,7 +938,7 @@ class RobotBackend(_BackendBase):
             ids = self._discovered_motors or list(range(1, 8))
             for mid in ids:
                 async with self._ws_send_lock:
-                    await self._ws.send(_encode_mit_disable(mid))
+                    await self._ws.send(self._profile.encode_disable(mid))
                 self._disabled_motor_ids.add(mid)
         except Exception:
             pass
@@ -939,7 +949,7 @@ class RobotBackend(_BackendBase):
             return
         try:
             async with self._ws_send_lock:
-                await self._ws.send(_encode_mit_disable(motor_id))
+                await self._ws.send(self._profile.encode_disable(motor_id))
             self._disabled_motor_ids.add(motor_id)
         except Exception:
             pass
@@ -949,7 +959,7 @@ class RobotBackend(_BackendBase):
         if self._ws is not None:
             try:
                 async with self._ws_send_lock:
-                    await self._ws.send(_encode_mit_enable(motor_id))
+                    await self._ws.send(self._profile.encode_enable(motor_id))
             except Exception:
                 pass
         # Clear tracking so send_commands re-seeds from physical position on next call,
@@ -1184,27 +1194,13 @@ class RobotBackend(_BackendBase):
 
     def _handle_slcan_frame(self, frame: str) -> None:
         can_id, payload = _parse_slcan(frame)
-        if can_id != 0x000 or len(payload) < 6:
+        fb = self._profile.decode_feedback(can_id, payload)
+        if fb is None:
             return
-        motor_id = payload[0] & 0xF
-        err_code = (payload[0] >> 4) & 0xF
-        p_raw = (payload[1] << 8) | payload[2]
-        v_raw = (payload[3] << 4) | (payload[4] >> 4)
-        t_raw = ((payload[4] & 0xF) << 8) | payload[5]
-        pos = _uint_to_float(p_raw, 16, MOTOR_LIMITS.pos_min, MOTOR_LIMITS.pos_max)
-        vel = _uint_to_float(v_raw, 12, MOTOR_LIMITS.vel_min, MOTOR_LIMITS.vel_max)
-        torque = _uint_to_float(t_raw, 12, MOTOR_LIMITS.torque_min, MOTOR_LIMITS.torque_max)
-        drive_temp = _byte_to_int8(payload[6]) if len(payload) >= 7 else 0
-        motor_temp = _byte_to_int8(payload[7]) if len(payload) >= 8 else 0
-        self._motor_state[motor_id] = {
-            "pos": pos, "vel": vel, "torque": torque,
-            "drive_temp": drive_temp, "motor_temp": motor_temp, "err_code": err_code,
+        self._motor_state[fb.motor_id] = {
+            "pos": fb.pos, "vel": fb.vel, "torque": fb.torque,
+            "drive_temp": fb.drive_temp, "motor_temp": fb.motor_temp, "err_code": fb.err_code,
         }
-
-
-def _byte_to_int8(b: int) -> int:
-    """Reinterpret an unsigned byte as a signed int8 (two's complement)."""
-    return b if b < 128 else b - 256
 
 
 def _normalize_pressure(value: int) -> float:
@@ -1216,56 +1212,6 @@ def _int16_be(msb: int, lsb: int) -> int:
     if raw >= 0x8000:
         raw -= 0x10000
     return raw
-
-
-def _float_to_uint(value: float, bits: int, min_value: float, max_value: float) -> int:
-    span = max_value - min_value
-    clipped = max(min_value, min(max_value, value))
-    scale = (1 << bits) - 1
-    return int((clipped - min_value) * scale / span)
-
-
-def _uint_to_float(value: int, bits: int, min_value: float, max_value: float) -> float:
-    span = max_value - min_value
-    scale = (1 << bits) - 1
-    return min_value + float(value) * span / float(scale)
-
-
-def _encode_mit_packet(motor_id: int, pos: float, vel: float, kp: float, kd: float, torque: float) -> str:
-    p_uint = _float_to_uint(pos, 16, MOTOR_LIMITS.pos_min, MOTOR_LIMITS.pos_max)
-    v_uint = _float_to_uint(vel, 12, MOTOR_LIMITS.vel_min, MOTOR_LIMITS.vel_max)
-    kp_uint = _float_to_uint(kp, 12, 0.0, 500.0)
-    kd_uint = _float_to_uint(kd, 12, 0.0, 5.0)
-    t_uint = _float_to_uint(torque, 12, MOTOR_LIMITS.torque_min, MOTOR_LIMITS.torque_max)
-    payload = [
-        (p_uint >> 8) & 0xFF,
-        p_uint & 0xFF,
-        (v_uint >> 4) & 0xFF,
-        ((v_uint & 0xF) << 4) | ((kp_uint >> 8) & 0xF),
-        kp_uint & 0xFF,
-        (kd_uint >> 4) & 0xFF,
-        ((kd_uint & 0xF) << 4) | ((t_uint >> 8) & 0xF),
-        t_uint & 0xFF,
-    ]
-    return f"t{motor_id:03X}8{''.join(f'{b:02X}' for b in payload)}"
-
-
-def _encode_mit_enable(motor_id: int) -> str:
-    return f"t{motor_id:03X}8FFFFFFFFFFFFFFFC"
-
-
-def _encode_mit_disable(motor_id: int) -> str:
-    return f"t{motor_id:03X}8FFFFFFFFFFFFFFFD"
-
-
-def _encode_mit_set_zero(motor_id: int) -> str:
-    """CubeMars MIT 0xFE — write current encoder position to EEPROM as zero."""
-    return f"t{motor_id:03X}8FFFFFFFFFFFFFFFE"
-
-
-def _encode_mit_zero(motor_id: int) -> str:
-    """MIT packet with pos=0, vel=0, kp=0, kd=0, torque=0 — zero torque state query."""
-    return _encode_mit_packet(motor_id, pos=0.0, vel=0.0, kp=0.0, kd=0.0, torque=0.0)
 
 
 def _parse_slcan(frame: str) -> tuple[int, list[int]]:

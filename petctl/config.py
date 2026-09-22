@@ -8,28 +8,47 @@ Actuators: CubeMars GL40 II in MIT mode (CAN via WebSocket SLCAN text). Joint
 positions in software are radians (`ServoCommand.position`,
 `RobotState.servo_positions`); the wire format uses scaled floats packed to
 16-bit fields within `MOTOR_LIMITS.pos_min`..`pos_max` (see `backends/robot.py`).
+
+Per-motor numbers (MIT wire-encoding ranges, gains, thermal limits, power
+model) are owned by the active `MotorProfile` in `petctl/motors/` (SHAPE_LAYER
+Stage 1.7) — `ACTIVE_MOTOR_PROFILE` below. `MotorLimits`, `MockDynamicsConfig`,
+and `PowerBudgetConfig`'s `per_motor_*` fields are read from it rather than
+hardcoded here, so a motor swap only touches `petctl/motors/`. They keep their
+existing field names/types because most call sites above the joint servo still
+read `MOTOR_LIMITS.*`/`MOCK_DYNAMICS.*` directly — migrating those call sites
+to read the profile is SHAPE_LAYER Stage 4, not this file.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from petctl.motors.gl40 import GL40_II
+
+# The motor/driver currently on the robot. Swapping motors means writing a new
+# MotorProfile in petctl/motors/ and pointing this at it.
+ACTIVE_MOTOR_PROFILE = GL40_II()
+
 
 @dataclass(frozen=True)
 class MotorLimits:
-    """Hard limits for CubeMars GL40 II MIT-mode commands."""
+    """MIT-mode wire-encoding ranges and control gains for `ACTIVE_MOTOR_PROFILE`.
 
-    pos_min: float = -12.5
-    pos_max: float = 12.5
-    vel_min: float = -0.5
-    vel_max: float = 0.5
-    torque_min: float = -1.0
-    torque_max: float = 1.0
-    # Softer defaults — high kp tracks each MIT setpoint sharply (feels "poppy").
-    kp_max: float = 1.5
-    kd_max: float = 0.04
-    kp_default: float = 0.8
-    kd_default: float = 0.035
+    NOT physical limits — pos/vel/torque here are the driver's MIT encoding
+    spans, not what the joint can physically do (that's
+    `ControlLoopLimits.max_speed_rad_s` below). See `petctl/motors/base.py`.
+    """
+
+    pos_min: float = ACTIVE_MOTOR_PROFILE.encoding.pos_min
+    pos_max: float = ACTIVE_MOTOR_PROFILE.encoding.pos_max
+    vel_min: float = ACTIVE_MOTOR_PROFILE.encoding.vel_min
+    vel_max: float = ACTIVE_MOTOR_PROFILE.encoding.vel_max
+    torque_min: float = ACTIVE_MOTOR_PROFILE.encoding.torque_min
+    torque_max: float = ACTIVE_MOTOR_PROFILE.encoding.torque_max
+    kp_max: float = ACTIVE_MOTOR_PROFILE.gains.kp_max
+    kd_max: float = ACTIVE_MOTOR_PROFILE.gains.kd_max
+    kp_default: float = ACTIVE_MOTOR_PROFILE.gains.kp_default
+    kd_default: float = ACTIVE_MOTOR_PROFILE.gains.kd_default
 
 
 @dataclass(frozen=True)
@@ -78,15 +97,17 @@ class ControlLoopLimits:
 class MockDynamicsConfig:
     """Second-order joint model for `MockBackend` (SHAPE_LAYER Stage 1.3).
 
-    `inertia_kg_m2` and `viscous_friction_nm_s_per_rad` are initial guesses, not
-    measured — the goal is to be *wrong in the same direction* as GL40 II hardware
-    (right order of magnitude, not a fit) so filter and blending work can be
-    developed offline. Fit these from Stage 1.2 (`petctl/recorder.py`) recordings
-    once real motor step responses are available.
+    Values come from `ACTIVE_MOTOR_PROFILE.power` — initial guesses, not
+    measured. The goal is to be *wrong in the same direction* as GL40 II
+    hardware (right order of magnitude, not a fit) so filter and blending
+    work can be developed offline. Fit these from Stage 1.2
+    (`petctl/recorder.py`) recordings once real motor step responses exist.
     """
 
-    inertia_kg_m2: float = 0.015
-    viscous_friction_nm_s_per_rad: float = 0.03
+    inertia_kg_m2: float = ACTIVE_MOTOR_PROFILE.power.mock_inertia_kg_m2
+    viscous_friction_nm_s_per_rad: float = (
+        ACTIVE_MOTOR_PROFILE.power.mock_viscous_friction_nm_s_per_rad
+    )
 
 
 @dataclass(frozen=True)
@@ -226,20 +247,17 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # torque_coeff: clamped-motor calibration 2026-06-25, VMAX=0.5/TMAX=1 (correct
-    # encoding). Motor 7, kp=0 kd_max, τ_ff swept 0.02→0.12 Nm both directions,
-    # other motors relaxed.  R²=0.9939, residual rms=0.023 A, n=1008, V_bus=14.70 V.
-    # Previous value 0.71 was fit to 10× inflated torque readings (TMAX mismatch).
-    # mech_coeff: uncalibratable from free-spin (τ² and τ×ω collinear on free rotor).
-    # 0.3 is a conservative estimate; the reactive EMA backstop covers residual error.
-    per_motor_base_a: float = 0.06
-    per_motor_torque_coeff: float = 72.52
-    per_motor_mech_coeff: float = 0.3        # calibration unreliable; reactive backstop covers residual error
+    # These four are per-motor (owned by ACTIVE_MOTOR_PROFILE.power, SHAPE_LAYER
+    # Stage 1.7) — see petctl/motors/gl40.py for calibration notes. Everything else
+    # in this class describes PET's wiring, not its motors, and survives a motor swap.
+    per_motor_base_a: float = ACTIVE_MOTOR_PROFILE.power.per_motor_base_a
+    per_motor_torque_coeff: float = ACTIVE_MOTOR_PROFILE.power.per_motor_torque_coeff
+    per_motor_mech_coeff: float = ACTIVE_MOTOR_PROFILE.power.per_motor_mech_coeff
     bus_voltage_nominal_v: float = 12.0
     # Worst-case power per motor (watts) used as a floor when feedback is unavailable
     # (cold start, first tick after a move begins). Yields 2.0A at 12V, ~1.6A at 14.6V.
     # This ensures slot 0 holds at most 2–3 motors under realistic operating conditions.
-    per_motor_worst_case_w: float = 24.0
+    per_motor_worst_case_w: float = ACTIVE_MOTOR_PROFILE.power.per_motor_worst_case_w
 
     # Stagger: over-budget large-delta motors are held for N TX ticks (largest first)
     stagger_interval_s: float = 0.020       # 1 TX tick at 50 Hz

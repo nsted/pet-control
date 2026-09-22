@@ -20,7 +20,6 @@ import dataclasses
 import time
 from typing import Optional
 
-import petctl.backends.robot as robot_module
 from petctl.backends.robot import RobotBackend
 from petctl.config import ControlLoopLimits, LOOP_LIMITS
 
@@ -88,7 +87,7 @@ async def _instrumented_motor_loop(
                 for mid in ids:
                     frame = (
                         backend._pending_frames.pop(mid, None)
-                        or backend._last_sent_frames.get(mid, robot_module._encode_mit_zero(mid))
+                        or backend._last_sent_frames.get(mid, backend._profile.encode_zero_torque(mid))
                     )
                     backend._last_sent_frames[mid] = frame
                     frames.append(frame)

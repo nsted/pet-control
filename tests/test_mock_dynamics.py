@@ -8,7 +8,7 @@ import time
 import pytest
 
 from petctl.backends.mock import MockBackend
-from petctl.config import MOTOR_LIMITS
+from petctl.config import LOOP_LIMITS, MOTOR_LIMITS
 from petctl.types import ServoCommand
 
 SERVO_ID = 1
@@ -104,14 +104,22 @@ class TestMitLawIntegration:
         assert MOTOR_LIMITS.torque_min <= state.motor_torques[SERVO_ID] <= MOTOR_LIMITS.torque_max
 
     @pytest.mark.asyncio
-    async def test_velocity_clamped_to_motor_limits(self):
-        """A huge position error must not produce velocity beyond MOTOR_LIMITS."""
+    async def test_velocity_clamped_to_physical_speed_limit(self):
+        """A huge position error must not produce velocity beyond the physical
+
+        speed cap (LOOP_LIMITS.max_speed_rad_s) — not MOTOR_LIMITS.vel_min/max,
+        which is the MIT wire-encoding range for v_des, a much smaller number.
+        """
         b = _make_backend()
         await b.send_commands([
             ServoCommand(servo_id=SERVO_ID, position=100.0, kp=MOTOR_LIMITS.kp_max, kd=MOTOR_LIMITS.kd_max)
         ])
         state = await _tick(b, dt=1.0 / 50.0)
-        assert MOTOR_LIMITS.vel_min - 1e-9 <= state.motor_velocities[SERVO_ID] <= MOTOR_LIMITS.vel_max + 1e-9
+        assert (
+            -LOOP_LIMITS.max_speed_rad_s - 1e-9
+            <= state.motor_velocities[SERVO_ID]
+            <= LOOP_LIMITS.max_speed_rad_s + 1e-9
+        )
 
     @pytest.mark.asyncio
     async def test_negative_dt_does_not_move_or_raise(self):

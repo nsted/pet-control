@@ -1,8 +1,8 @@
 # Shape Layer — Implementation Plan
 
-Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified. Stage 1.2 and 1.3
-complete (2026-09-22)**; 1.1, 1.4, 1.5 still open. Supersedes the sequencing in
-`BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1 is absorbed
+Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified. Stage 1.2, 1.3,
+and 1.7 complete (2026-09-22)**; 1.1, 1.4, 1.5, 1.6 still open. Supersedes the sequencing
+in `BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1 is absorbed
 into Stage 2 here.
 
 ## Why
@@ -144,11 +144,11 @@ git checkout -b feat/shape-layer
 
 Everything from here lands on that branch.
 
-- [ ] **1.1 Enforce MOTOR_LIMITS at the encoder.** Clamp `kp`, `kd`, `torque_ff`,
-      `vel` against `MOTOR_LIMITS` in `_encode_mit_packet` (or immediately upstream),
-      log once per violation rather than per frame. Move `PurrRippleMotion.KD_TARGET`
-      into `config.py`. This is the CLAUDE.md rule ("never hardcode servo limits")
-      made enforceable.
+- [ ] **1.1 Enforce motor limits at the encoder.** Clamp `kp`, `kd`, `torque_ff`,
+      `vel` in `_encode_mit_packet` (or immediately upstream), log once per violation
+      rather than per frame. Move `PurrRippleMotion.KD_TARGET` into `config.py`.
+      This is the CLAUDE.md rule ("never hardcode servo limits") made enforceable.
+      Enforce against the **active motor profile** (1.7), not a module-level constant.
 
 - [x] **1.2 State recorder.** `petctl run --record <file>.jsonl` writing one line per
       tick: timestamp, sensors, servo positions/velocities/torques/temps, gesture frame,
@@ -207,6 +207,20 @@ Everything from here lands on that branch.
       torque/current estimate mid-run (dynamics now feeding real torque into the
       power model, as intended) and the controller still shut down cleanly. No
       deviations from the plan.
+      **Bugfix 2026-09-22:** `_step_dynamics` was clamping the integrator's
+      physical velocity to `MOTOR_LIMITS.vel_min/vel_max` (±0.5 rad/s) — that's
+      the MIT wire-encoding range for the `v_des` feedforward field (see 1.7),
+      not a physical speed limit. `backends/robot.py`'s real ramp filter moves
+      the physical position at `LOOP_LIMITS.max_speed_rad_s` (6.0 rad/s) and
+      only clamps the separate `v_des` wire value to `MOTOR_LIMITS.vel_min/max`.
+      The mock was capping simulated joint speed at ~12x slower than real
+      hardware, defeating 1.3's stated purpose ("wrong in the same direction,"
+      not wrong by over an order of magnitude). Fixed to clamp against
+      `LOOP_LIMITS.max_speed_rad_s`; `tests/test_mock_dynamics.py`'s velocity
+      test updated to match. Re-verified end-to-end with `--record`: 608 frames,
+      no errors; PowerManager's worst-case-power floor now trips an emergency
+      stop within the first tick on `stroke-curl` at 7 active motors under the
+      dev budget (4.0A) — expected from the existing bin-pack model, not new.
 
 - [ ] **1.4 Resolve the layered slew filters.** Three first-order filters would sit in
       series once the engine lands, each with a different `dt` source:
@@ -221,7 +235,119 @@ Everything from here lands on that branch.
       `dt` is 4x smaller than the true command period. Decide whether to run the loop at
       `motor_update_hz` or keep the oversample deliberately, and document why.
 
-**Gate:** 1.1–1.3 must be green before Stage 2. 1.4–1.5 may be deferred if they prove
+- [ ] **1.6 Log commanded vs actual position.** `RerunVisualizer` plots
+      `motor_velocities`, `motor_torques` and temperatures per servo, but nothing logs
+      `RobotState.servo_commanded_positions` — the post-slew setpoint the Controller
+      already populates each tick from `_slew_last_sent_rad`. Without it the plots show
+      where each joint *is* with no reference for where it was *told* to be, so filter
+      lag and tracking error are invisible. Add a `motors/position/motor_N` series pair
+      (commanded and actual) alongside the existing ones.
+      Prerequisite for 1.4 — the gap between the two curves *is* the thing 1.4 is tuning.
+
+- [x] **1.7 Motor profile boundary — everything above L2 must be motor agnostic.**
+      All hardware specifics belong behind one `MotorProfile`, selected by config/CLI,
+      with `GL40_II` as the first instance. Nothing above the joint servo may import a
+      motor constant.
+
+      Currently GL40-specific and leaking:
+      - `MotorLimits` is docstringed "Hard limits for CubeMars GL40 II MIT-mode
+        commands". `pos +/-12.5`, `vel +/-0.5`, `torque +/-1.0` are that driver's MIT
+        *encoding ranges*, not physical limits — a different driver packs different
+        ranges (the SteadyWin GDS34 T_Max unit basis is still an open question).
+      - `_encode_mit_packet` hardcodes 16/12/12/12/12 bit field widths.
+      - `kp_default = 0.8`, `kd_default = 0.035` are tuned to the GL40's Kt (0.11 Nm/A).
+        A geared candidate with far higher Kt needs different numbers for the same feel.
+      - `MOCK_DYNAMICS` inertia and friction are per-motor.
+
+      **A module, not a constant table** — some of it is behaviour, not data, so
+      `MotorProfile` is an ABC (matching `protocols.py`) with `GL40_II` as the first
+      implementation. Suggested home: `petctl/motors/base.py` + `petctl/motors/gl40.py`.
+
+      The profile owns, in four groups:
+      1. *Encoding* — ranges, field widths, `_encode_mit_packet` / `_parse_slcan`, and
+         the enable/disable/set-zero magic frames (`...FFFC/FFFD/FFFE`). These are
+         methods: another driver may pack a different layout entirely, not just
+         different bounds.
+      2. *Gains* — `kp_default`, `kd_default`, and the max values; what
+         `JointIntent.stiffness = 1.0` resolves to in Nm/rad.
+      3. *Thermal* — `temp_soft_warning_c` 55 / `temp_hard_cutoff_c` 65 /
+         `temp_global_emergency_c` 75. These are GL40 numbers and they currently live
+         in `power_manager.py`, not `config.py` — already a CLAUDE.md violation
+         ("import all hardware limits from petctl/config.py"). Fix while moving.
+      4. *Power model* — `per_motor_base_a`, `per_motor_torque_coeff` (72.52, fit to
+         GL40 at a specific TMAX encoding), `per_motor_mech_coeff`,
+         `per_motor_worst_case_w`, and mock inertia/friction. All per-motor, all
+         currently inside `PowerBudgetConfig`.
+
+      **Stays out of the profile:** everything in `PowerBudgetConfig` that describes
+      PET's wiring rather than its motors — bus current ceilings, the 8A slip-ring
+      limit, UPS vs wall thresholds, battery calibration. Those survive a motor swap
+      unchanged. The split is the point: a motor swap should touch one module, and a
+      rewiring should touch a different one. Consequence for the layer above: **`JointIntent.stiffness` and
+      `damping` stay normalized 0–1 scales, never raw kp/kd** — already how they are
+      specified in this plan, and the reason it survives a motor swap. The profile
+      defines what 1.0 means in Nm/rad, chosen so felt stiffness stays comparable
+      across motors. A behaviour written today then runs unchanged on GIM3505 or AK45.
+
+      **Done 2026-09-22.** Built `petctl/motors/base.py` (`MotorProfile` ABC +
+      `MotorEncodingRanges`/`MotorGains`/`MotorThermalLimits`/`MotorPowerModel`/
+      `MotorFeedback` frozen dataclasses, plus the shared `float_to_uint`/
+      `uint_to_float`/`byte_to_int8` bit-packing helpers) and
+      `petctl/motors/gl40.py` (`GL40_II(MotorProfile)`, all four groups from the
+      list above, plus `encode_command`/`encode_enable`/`encode_disable`/
+      `encode_set_zero`/`encode_zero_torque`/`decode_feedback` — the 16/12/12/12/12
+      field layout lives in these methods, not as a constant). `RobotBackend` now
+      takes `motor_profile: MotorProfile = ACTIVE_MOTOR_PROFILE` and calls
+      `self._profile.*` for every encode/decode; the module-level
+      `_encode_mit_packet`/`_encode_mit_enable`/`_encode_mit_disable`/
+      `_encode_mit_set_zero`/`_encode_mit_zero`/`_float_to_uint` functions are
+      gone (`scripts/rate_test.py` updated, was calling `_encode_mit_zero`
+      directly). Verified the new `encode_command`/`decode_feedback` produce
+      byte-identical output to the pre-refactor functions across 2000 randomized
+      inputs each, plus the enable/disable/set-zero frames.
+      `config.py` gets `ACTIVE_MOTOR_PROFILE = GL40_II()`; `MotorLimits`,
+      `MockDynamicsConfig`, and `PowerBudgetConfig`'s four `per_motor_*` fields
+      now read their defaults from it instead of hardcoding GL40 numbers, with
+      `MotorLimits`'s docstring corrected (encoding ranges, not physical limits).
+      `power_manager.py`'s `PowerThresholds` thermal fields (`temp_soft_warning_c`
+      / `temp_hard_cutoff_c` / `temp_global_emergency_c` / hysteresis) now default
+      from `ACTIVE_MOTOR_PROFILE.thermal` — fixes the CLAUDE.md violation named
+      above. All of `MOTOR_LIMITS`/`MOCK_DYNAMICS`/`POWER_BUDGET`/`PowerThresholds`
+      keep their existing field names and numeric values, so no call site outside
+      `petctl/motors/` and the four files touched here needed to change.
+
+      **Deviations from the plan, both intentional:**
+      1. `_parse_slcan` (SLCAN text → `(can_id, payload bytes)`) stayed in
+         `backends/robot.py` rather than moving into the profile. It's generic
+         CAN-over-SLCAN framing — true of any driver on this transport — not
+         motor-specific; only *interpreting* the payload (field widths, motor ID
+         nibble, err nibble) is GL40-specific, and that's `decode_feedback`.
+      2. `types.py`/`schemes/patterns.py`/`schemes/command.py`/`schemes/
+         passthrough.py` still read `MOTOR_LIMITS.kp_default`/`.kd_default`/
+         `.pos_max` directly — i.e. "above the joint servo" still imports a
+         motor constant, just indirectly through the config.py compatibility
+         layer described above. Getting all 27 `patterns.py` classes off
+         `MOTOR_LIMITS` and onto `ACTIVE_MOTOR_PROFILE` (or the future
+         `JointIntent`) with no way to validate against hardware in this session
+         is the same call Stage 0 (0.2) made about touching that file — deferred
+         to the Stage 4 migration map, not attempted here. The seam
+         (`petctl/motors/`) exists now; wiring everything above L2 through it is
+         Stage 4.
+
+- [ ] **1.8 Triage the 5 red `test_power_manager.py` tests.** Pre-existing, not caused
+      by this branch (confirmed via `git stash`). Almost certainly test drift: the test
+      file is unchanged since `46780cb`, while `power_manager.py` has six commits after
+      it — including `c6d7962` ("emergency stop when current exceeds peak limit for
+      500ms"), which changed behaviour. For each failure decide whether the test or the
+      implementation is wrong; do not simply update assertions to match current output,
+      since this is the layer that owns thermal cutoff, current budget and emergency
+      stop. Stage 2 rests on this layer being trustworthy.
+
+- [ ] **1.9 Minimal CI.** No `.github/workflows/`. A single job running `pytest` on push
+      would have caught 1.8 six commits earlier, and matters more once Stage 2 starts
+      adding a layer that the existing suite doesn't cover.
+
+**Gate:** 1.1–1.3 and 1.7–1.8 must be green before Stage 2. 1.4–1.5 may be deferred if they prove
 contentious, but record the decision either way — the engine inherits whatever is here.
 
 ---
@@ -258,7 +384,9 @@ throughout; the engine is an additional `--control behavior` option, not a repla
       fade in/out timing, empty-contribution handling, missing-servo handling.
       Pure functions on synthetic state — no backend needed.
 
----
+- [ ] **2.6** Log per-behaviour contributions to Rerun (`behaviors/<name>/motor_N`)
+      alongside the blended result, so a blend can be read apart visually. Extends 1.6
+      from two curves to N+1.---
 
 ## Stage 3 — Primitives
 
@@ -300,16 +428,19 @@ Not covered by primitives, and staying as standalone `Motion` classes: `twitch`,
 
 ## Open decisions (Nick's call — ask, do not assume)
 
-1. **Is `kd_max = 0.04` real?** Purr has been running at 0.08 since March with no
-   apparent harm. Either raise the limit to match reality or lower purr to match the
-   limit. Affects 1.1 and 3.4.
+1. ~~**Is `kd_max = 0.04` real?**~~ **Resolved 2026-09-22: 0.04 stands.**
+   `PurrRippleMotion.KD_TARGET` comes down from 0.08 to comply, and moves into the
+   GL40 II profile (1.7) rather than staying a class constant. Purr will feel weaker
+   than at ICRA/ICSR — expect to recover the effect through the crest envelope
+   (`CREST_POWER`) or ripple rate rather than peak kd. Affects 1.1 and 3.4.
 2. **Who owns the joint servo (1.4)?** Recommendation: the backend, since it already
    has anti-windup and the true per-motor timebase; strip the controller-level LPF to a
    pure safety clamp and let the engine do expressive smoothing. This changes how the
    robot feels, so it wants hardware time and probably a before/after recording.
-3. **Does the motor swap land first?** If GIM3505/AK45 arrive during this work, any
-   gain tuning against GL40 dynamics is discarded. If so, prioritise 1.3 and Stages 2–3
-   (structure, testable offline) and defer 1.4 tuning until the new motors are in.
+3. ~~**Does the motor swap land first?**~~ **Resolved 2026-09-22: staying on GL40 II
+   for now.** 1.4 and 1.5 are unblocked — tune against GL40 dynamics. Nick's standing
+   constraint: *everything here must be motor agnostic*, which is what 1.7 enforces.
+   Gain values are GL40-specific and live in its profile; structure above L2 is not.
 4. **Keep `patterns.py` indefinitely or retire it?** The plan assumes parallel operation
    through Stage 3 and selective retirement in Stage 4.
 

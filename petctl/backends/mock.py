@@ -216,7 +216,10 @@ class MockBackend(Backend):
             tau = max(MOTOR_LIMITS.torque_min, min(MOTOR_LIMITS.torque_max, tau))
 
             accel = (tau - cfg.viscous_friction_nm_s_per_rad * v) / cfg.inertia_kg_m2
-            v = max(MOTOR_LIMITS.vel_min, min(MOTOR_LIMITS.vel_max, v + accel * dt))
+            # Physical joint speed cap, not MOTOR_LIMITS.vel_min/max (that's the
+            # MIT wire-encoding range for the v_des feedforward field — see
+            # backends/robot.py's ramp filter, which keeps the two separate).
+            v = max(-LOOP_LIMITS.max_speed_rad_s, min(LOOP_LIMITS.max_speed_rad_s, v + accel * dt))
             p = p + v * dt
 
             self._servo_positions[sid] = p
