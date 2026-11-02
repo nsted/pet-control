@@ -7,6 +7,7 @@ When ready to execute a plan, break it into GitHub issues for discrete tasks.
 | File | Description |
 |------|-------------|
 | [BEHAVIOR_SYSTEM.md](BEHAVIOR_SYSTEM.md) | Staged implementation plan for behaviors, perception, valence, and agent |
+| [PROCESS_SPLIT.md](PROCESS_SPLIT.md) | Split petctl into driver (safety + backend) and brain (Controller) processes over a local bus |
 
 ## Convention
 - Plans describe *how* and *why*, not just *what*
