@@ -111,7 +111,36 @@ Stage 5 results (2026-11-02): pytest 142 passed, mypy no new errors.
 
 ## Stage 6 — Equivalence and latency
 
-- [ ] In-process vs split recording comparison; loopback latency/jitter numbers recorded here.
+- [x] In-process vs split recording comparison (`scripts/compare_recordings.py`); loopback latency/jitter numbers recorded below (`petctl/latency.py`, logged at driver/brain shutdown).
+
+Stage 6 results (2026-11-02, mock backend, `--control sine`, 60 s runs, same Mac, Zenoh over loopback TCP):
+
+**Equivalence** — `python scripts/compare_recordings.py in_process.jsonl split.jsonl` (aligns start phase within ±3 s, then reports residual):
+
+| metric | result |
+|---|---|
+| aligned RMS, measured joint positions, all 7 servos | ≤ 0.0010 rad (0.06°) |
+| aligned RMS, commanded positions, all 7 servos | ≤ 0.0045 rad (0.26°) |
+| tracking lag cmd→pos (servo 1; 5 ms resolution) | 85 ms in-process, 90 ms split → split adds ≲ 5 ms |
+| loop rate | 166.0 vs 168.6 ticks/s |
+| peak \|pos\| after the first 2 s | 1.079 vs 1.077 rad |
+
+An earlier cross-run comparison showed a 15 ms lag difference; paired runs under matching conditions show ≲ 5 ms, so that was noise. Raw start phases differ by 1–1.4 s between runs because the sine's clock starts in `on_start`, before the Rerun viewer finishes launching — hence the alignment step.
+
+Note: the in-process mock showed a 1.426 rad peak at t = 0.6 s. Cause: the first `get_state()` came 1.36 s after `connect()` (viewer launch blocks the loop), so the mock integrated one huge step. The split run does not have this (the driver's loop is independent of the viewer; the brain's first `dt` is 0).
+
+**Latency & jitter** — one-way, same monotonic clock on both processes (commands: `sent_at` → just before the driver applies, including its queue; state: driver `get_state()` timestamp → decoded on the brain's bus thread). ≈10 000 messages each:
+
+| run | message | mean | std | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|---|---|
+| Rerun on | command | 0.45 ms | 0.32 | 0.41 | 0.80 | 1.22 | 15.3 |
+| Rerun on | state | 1.04 ms | 8.67 | 0.49 | 0.87 | 1.72 | 231 |
+| headless | command | 0.77 ms | 0.52 | 0.65 | 1.53 | 2.38 | 14.8 |
+| headless | state | 1.08 ms | 0.53 | 1.05 | 1.55 | 2.43 | 23.2 |
+
+Inter-arrival (jitter) at ≈165 Hz: commands 5.9–6.2 ms mean, std 0.45–0.69 ms, p99 6.7–8.2 ms; state 5.9–6.2 ms mean, std 0.8–2.4 ms. The single 231 ms state-latency outlier appears only with Rerun on (23 ms headless), consistent with the viewer launch stalling the brain process once at startup (not independently verified).
+
+Takeaway for SHAPE_LAYER 1.5: the bus itself costs ≈ 0.5–1 ms per hop (≈ 0.2 control ticks); the dominant effect of the split is that the brain's ≈165 Hz loop and the driver's ≈165 Hz state publisher are unsynchronised, so a state is occasionally seen twice or skipped (inter-arrival p99 ≈ 8 ms vs 6 ms mean).
 
 ## Stage 7 — Bench (needs Nick's explicit go-ahead; the robot moves)
 

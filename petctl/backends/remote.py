@@ -38,6 +38,7 @@ from typing import Any, Callable, Optional
 
 from petctl import wire
 from petctl.config import LIVENESS_LIMITS
+from petctl.latency import SampleStats
 from petctl.protocols import Backend
 from petctl.transport import Bus
 from petctl.types import RobotState, ServoCommand
@@ -76,6 +77,9 @@ class RemoteBackend(Backend):
         self._last_get_t: Optional[float] = None
         self._open = False
         self.states_received = 0
+        # Stage 6 instrumentation (same-machine monotonic clock on both ends).
+        self.state_latency = SampleStats()        # driver get_state() -> decoded on the brain
+        self.state_interarrival = SampleStats()   # gap between state messages arriving
 
     # ------------------------------------------------------------------
     # Connection
@@ -97,6 +101,8 @@ class RemoteBackend(Backend):
         return True
 
     async def disconnect(self) -> None:
+        logger.info("[Remote] %s", self.state_latency.format("state latency"))
+        logger.info("[Remote] %s", self.state_interarrival.format("state inter-arrival"))
         self._open = False
         self._bus.close()
 
@@ -120,6 +126,9 @@ class RemoteBackend(Backend):
             logger.exception("[Remote] bad state message")
             return
         self._latest_rx_t = self._clock()
+        now = time.monotonic()
+        self.state_latency.add(now - state.timestamp)
+        self.state_interarrival.add_arrival(now)
         loop = self._loop
         if loop is not None:
             loop.call_soon_threadsafe(self._set_state, state)

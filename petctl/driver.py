@@ -30,6 +30,7 @@ from typing import Any, Callable, Optional
 
 from petctl import wire
 from petctl.config import LIVENESS_LIMITS, LOOP_LIMITS, POWER_BUDGET
+from petctl.latency import SampleStats
 from petctl.protocols import Backend
 from petctl.transport import Bus
 from petctl.types import ServoCommand
@@ -65,6 +66,9 @@ class Driver:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop: Optional[asyncio.Event] = None
         self._commands: Optional[asyncio.Queue[bytes]] = None
+        # Stage 6 instrumentation (same-machine monotonic clock on both ends).
+        self.cmd_latency = SampleStats()        # brain send -> just before driver applies (incl. queueing)
+        self.cmd_interarrival = SampleStats()   # gap between command batches arriving
         self.commands_dropped = 0
         self.commands_applied = 0
         self.states_published = 0
@@ -125,6 +129,8 @@ class Driver:
             "[Driver] Shutting down (published %d states, applied %d command batches, dropped %d).",
             self.states_published, self.commands_applied, self.commands_dropped,
         )
+        logger.info("[Driver] %s", self.cmd_latency.format("command latency"))
+        logger.info("[Driver] %s", self.cmd_interarrival.format("command inter-arrival"))
         try:
             await self.backend.disable_torques()
         finally:
@@ -155,6 +161,7 @@ class Driver:
 
     def _on_command_bytes(self, data: bytes) -> None:
         """Bus thread: hand the payload to the event loop."""
+        self.cmd_interarrival.add_arrival(time.monotonic())
         loop = self._loop
         if loop is not None:
             loop.call_soon_threadsafe(self._enqueue_command, data)
@@ -174,7 +181,9 @@ class Driver:
         while True:
             data = await self._commands.get()
             try:
-                commands, _sent_at = wire.decode_commands(data)
+                commands, sent_at = wire.decode_commands(data)
+                if sent_at is not None:
+                    self.cmd_latency.add(time.monotonic() - sent_at)
                 self._note_commands(commands)
                 await self.backend.send_commands(commands)
                 self.commands_applied += 1
