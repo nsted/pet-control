@@ -30,7 +30,7 @@ from petctl.transport import Bus
 logger = logging.getLogger(__name__)
 
 _COMMAND_QUEUE_MAX = 256
-_SERVICE_TIMEOUT_S = 5.0
+_SERVICE_TIMEOUT_S = 15.0   # RemoteBackend waits up to 20 s for the slow ones
 
 
 class Driver:
