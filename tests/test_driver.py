@@ -162,3 +162,103 @@ async def test_command_queue_drops_oldest_when_overloaded() -> None:
         drv._enqueue_command(wire.encode_commands([ServoCommand(servo_id=1, position=float(i))]))
     assert drv.commands_dropped == 3
     await _stopped(drv, task)
+
+
+# ---------------------------------------------------------------------------
+# Command watchdog
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _wd_driver(inner: _SpyMock, clock: _Clock) -> Driver:
+    return Driver(inner, LoopbackBus(), cmd_timeout_s=0.5, ramp_s=1.0, clock=clock)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_idle_until_a_brain_has_commanded() -> None:
+    inner, clock = _SpyMock(), _Clock()
+    drv = _wd_driver(inner, clock)
+    clock.t += 100.0
+    await drv._watchdog_tick()
+    assert inner.sent == [] and drv.watchdog_state == "ok"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_quiet_within_timeout() -> None:
+    inner, clock = _SpyMock(), _Clock()
+    drv = _wd_driver(inner, clock)
+    drv._note_commands([ServoCommand(servo_id=1, position=0.4, kp=0.8, kd=0.1, torque_ff=0.2)])
+    clock.t += 0.4
+    await drv._watchdog_tick()
+    assert inner.sent == [] and drv.watchdog_state == "ok"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_ramps_smoothly_to_zero_holding_position() -> None:
+    inner, clock = _SpyMock(), _Clock()
+    drv = _wd_driver(inner, clock)
+    drv._note_commands([
+        ServoCommand(servo_id=1, position=0.4, kp=0.8, kd=0.1, torque_ff=0.2),
+        ServoCommand(servo_id=2, position=-0.3, kp=0.6, kd=0.05, torque_ff=0.0),
+    ])
+    clock.t += 0.6                       # past the 0.5 s timeout
+    kp1: list[float] = []
+    for _ in range(12):                  # 12 ticks of 0.1 s -> covers the 1.0 s ramp
+        await drv._watchdog_tick()
+        clock.t += 0.1
+    for batch in inner.sent:
+        by_id = {c.servo_id: c for c in batch}
+        assert by_id[1].position == 0.4 and by_id[2].position == -0.3   # target held
+        kp1.append(by_id[1].kp)
+    assert kp1[0] == pytest.approx(0.8)                    # starts at full gain: no step
+    assert all(a >= b for a, b in zip(kp1, kp1[1:]))       # monotone decrease
+    assert max(a - b for a, b in zip(kp1, kp1[1:])) < 0.8 * 0.15   # no big steps (≈10%/tick)
+    assert kp1[-1] == 0.0 and drv.watchdog_state == "held"
+    n = len(inner.sent)
+    await drv._watchdog_tick()
+    assert len(inner.sent) == n                            # nothing more once held
+
+
+@pytest.mark.asyncio
+async def test_watchdog_resumes_on_new_commands_and_can_trigger_again() -> None:
+    inner, clock = _SpyMock(), _Clock()
+    drv = _wd_driver(inner, clock)
+    drv._note_commands([ServoCommand(servo_id=1, position=0.1, kp=0.8)])
+    clock.t += 0.6
+    await drv._watchdog_tick()
+    assert drv.watchdog_state == "ramping"
+    drv._note_commands([ServoCommand(servo_id=1, position=0.2, kp=0.8)])
+    assert drv.watchdog_state == "ok"
+    clock.t += 0.4
+    await drv._watchdog_tick()
+    assert drv.watchdog_state == "ok"
+    clock.t += 0.2
+    await drv._watchdog_tick()
+    assert drv.watchdog_state == "ramping"
+    assert inner.sent[-1][0].position == 0.2               # holds the NEW target
+
+
+@pytest.mark.asyncio
+async def test_brain_going_silent_ramps_down_through_the_real_driver_loop() -> None:
+    inner = _SpyMock()
+    bus = LoopbackBus()
+    drv = Driver(inner, bus, cmd_timeout_s=0.1, ramp_s=0.2)
+    task = asyncio.create_task(drv.run())
+    for _ in range(100):
+        if bus.published:
+            break
+        await asyncio.sleep(0.01)
+    bus.publish(wire.KEY_COMMANDS, wire.encode_commands(
+        [ServoCommand(servo_id=1, position=0.5, kp=0.8, kd=0.1)]))
+    await asyncio.sleep(0.8)             # brain "dies": no more commands
+    assert drv.watchdog_state == "held"
+    last = [c for b in inner.sent for c in b if c.servo_id == 1]
+    assert last[0].kp == pytest.approx(0.8) and last[-1].kp == 0.0
+    assert len(last) > 5                 # a ramp of several steps, not a single cut
+    await _stopped(drv, task)

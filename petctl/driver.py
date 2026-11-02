@@ -13,6 +13,11 @@ formats in ``petctl.wire``:
   serves     pet/svc/<name>  enable_motor, disable_motor, disable_torques, ...
 
 The Backend must already include safety (``SafetyBackend``); the driver adds none.
+
+Command watchdog: if no command batch arrives for ``cmd_timeout_s`` (a dead or
+hung brain), the driver ramps kp / kd / torque_ff of the last commands linearly
+to zero over ``ramp_s``, holding the last position targets — never a hard cut.
+A new command batch resumes normal operation immediately.
 """
 
 from __future__ import annotations
@@ -20,12 +25,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 from petctl import wire
-from petctl.config import LOOP_LIMITS, POWER_BUDGET
+from petctl.config import LIVENESS_LIMITS, LOOP_LIMITS, POWER_BUDGET
 from petctl.protocols import Backend
 from petctl.transport import Bus
+from petctl.types import ServoCommand
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +43,25 @@ _SERVICE_TIMEOUT_S = 15.0   # RemoteBackend waits up to 20 s for the slow ones
 class Driver:
     """Runs one Backend and exposes it on a Bus."""
 
-    def __init__(self, backend: Backend, bus: Bus) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        bus: Bus,
+        *,
+        cmd_timeout_s: Optional[float] = None,
+        ramp_s: Optional[float] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.backend = backend
         self.bus = bus
+        self._cmd_timeout_s = LIVENESS_LIMITS.driver_cmd_timeout_s if cmd_timeout_s is None else cmd_timeout_s
+        self._ramp_s = LIVENESS_LIMITS.safe_hold_ramp_s if ramp_s is None else ramp_s
+        self._clock = clock
+        self._last_cmd_t: Optional[float] = None
+        self._last_cmds: dict[int, ServoCommand] = {}
+        self._ramp_start_t = 0.0
+        # "ok" -> "ramping" -> "held"; any new command batch returns to "ok".
+        self.watchdog_state = "ok"
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop: Optional[asyncio.Event] = None
         self._commands: Optional[asyncio.Queue[bytes]] = None
@@ -121,6 +144,7 @@ class Driver:
                 state = await self.backend.get_state()
                 self.bus.publish(wire.KEY_STATE, wire.encode_state(state))
                 self.states_published += 1
+                await self._watchdog_tick()
             except Exception:
                 logger.exception("[Driver] state loop error")
             await asyncio.sleep(period)
@@ -151,10 +175,55 @@ class Driver:
             data = await self._commands.get()
             try:
                 commands, _sent_at = wire.decode_commands(data)
+                self._note_commands(commands)
                 await self.backend.send_commands(commands)
                 self.commands_applied += 1
             except Exception:
                 logger.exception("[Driver] failed to apply command batch")
+
+    # ------------------------------------------------------------------
+    # Command watchdog
+    # ------------------------------------------------------------------
+
+    def _note_commands(self, commands: list[ServoCommand]) -> None:
+        """Record the latest command per servo and clear any watchdog ramp."""
+        for c in commands:
+            self._last_cmds[c.servo_id] = c
+        self._last_cmd_t = self._clock()
+        if self.watchdog_state != "ok":
+            logger.info("[Driver] Commands resumed — watchdog cleared.")
+            self.watchdog_state = "ok"
+
+    async def _watchdog_tick(self) -> None:
+        """Called every state tick: start, advance or finish the safe-hold ramp."""
+        if self._last_cmd_t is None or not self._last_cmds:
+            return  # no brain has commanded yet; nothing to wind down
+        now = self._clock()
+        if self.watchdog_state == "ok":
+            if now - self._last_cmd_t <= self._cmd_timeout_s:
+                return
+            self.watchdog_state = "ramping"
+            self._ramp_start_t = now
+            logger.warning(
+                "[Driver] No commands for %.2fs — ramping gains to zero over %.2fs.",
+                now - self._last_cmd_t, self._ramp_s,
+            )
+        if self.watchdog_state == "ramping":
+            frac = 1.0 if self._ramp_s <= 0 else max(0.0, 1.0 - (now - self._ramp_start_t) / self._ramp_s)
+            await self.backend.send_commands([
+                ServoCommand(
+                    servo_id=c.servo_id,
+                    position=c.position,
+                    velocity=c.velocity,
+                    kp=c.kp * frac,
+                    kd=c.kd * frac,
+                    torque_ff=c.torque_ff * frac,
+                )
+                for c in self._last_cmds.values()
+            ])
+            if frac == 0.0:
+                self.watchdog_state = "held"
+                logger.warning("[Driver] Safe hold reached (gains zero). Waiting for the brain.")
 
     # ------------------------------------------------------------------
     # Services

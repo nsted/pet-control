@@ -52,6 +52,22 @@ class MotorLimits:
 
 
 @dataclass(frozen=True)
+class LivenessLimits:
+    """Timeouts for the driver/brain split (see docs/plans/PROCESS_SPLIT.md)."""
+
+    # Driver: no command batch for this long -> start ramping gains down.
+    # ~100 Controller ticks at 200 Hz; long enough to ride out a GC pause or a
+    # slow LLM tick, short enough that a dead brain never leaves motors driven.
+    driver_cmd_timeout_s: float = 0.5
+    # Driver: ramp kp / kd / torque_ff linearly to zero over this long, holding the
+    # last commanded position target. Never a hard cut: the 3.3 V rail browns out
+    # on abrupt motor shut-offs.
+    safe_hold_ramp_s: float = 1.0
+    # Brain: no state message from the driver for this long -> report connected=False.
+    brain_state_timeout_s: float = 1.0
+
+
+@dataclass(frozen=True)
 class ControlLoopLimits:
     """Timing and rate limits for the control loop."""
 
@@ -302,6 +318,7 @@ class PowerBudgetConfig:
 
 MOTOR_LIMITS = MotorLimits()
 LOOP_LIMITS = ControlLoopLimits()
+LIVENESS_LIMITS = LivenessLimits()
 MOCK_DYNAMICS = MockDynamicsConfig()
 BEHAVIOR_LIMITS = BehaviorLimits()
 SENSOR_LIMITS = SensorLimits()
