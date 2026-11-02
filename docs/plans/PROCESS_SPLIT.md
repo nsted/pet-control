@@ -80,11 +80,21 @@ Stage 3 results (2026-11-02): `petctl/wire.py` + `tests/test_wire.py` (26 tests)
 
 ## Stage 4 — Driver and `RemoteBackend`
 
-- [ ] Zenoh transport (ask before install), keys `pet/state`, `pet/cmd`, `pet/svc/<name>`; extra `[split]`.
-- [ ] `petctl driver --backend robot|mock`; `RemoteBackend`; `petctl run --backend remote`.
-- [ ] Note Controller 200 Hz loop vs cached 50 Hz state; log for SHAPE_LAYER 1.5.
+- [x] Zenoh transport, keys `pet/state`, `pet/cmd`, `pet/svc/<name>`; extra `[split]` (`petctl/transport.py`: `Bus` ABC, `ZenohBus`, in-memory `LoopbackBus`).
+- [x] `petctl driver --backend robot|mock`; `RemoteBackend`; `petctl run --backend remote [--bus ENDPOINT]`.
+- [x] Note Controller 200 Hz loop vs cached state; logged below for SHAPE_LAYER 1.5.
 
 Done when: mock driver + `--backend remote` brain runs the same scripted motion as baseline.
+
+Stage 4 results (2026-11-02): eclipse-zenoh 1.10.2 installed (Nick approved) into the shared `.venv`; imported lazily, so branches without the `[split]` extra are unaffected. Zenoh runs peer-to-peer on `tcp/127.0.0.1:7447` with multicast and gossip scouting disabled. pytest 132 passed, mypy no new errors. Two-process run (mock driver + `run --backend remote --control sine --duration 40`, Rerun on): 165.4 ticks/s vs 166.5 in-process, max |pos| 1.292 rad (identical), PM RUNNING at 11.99 V, driver dropped 0 command batches. The unmodified `Controller` also runs over `RemoteBackend → Driver → SafetyBackend → Mock` in `tests/test_remote_backend.py`.
+
+Design decisions and caveats:
+- **Driver state rate = 4 × `motor_update_hz`** (same cadence the PowerManager saw in-process; its EMA windows are tuned to it), ≈162 Hz measured. The brain also commands at ≈165 Hz, so the plan's "~50 Hz `pet/cmd`" is really ≈165 Hz to stay behavior-neutral.
+- **SHAPE_LAYER 1.5 input:** Controller loop and driver state publisher are two unsynchronized ≈165 Hz loops, so a given state can be seen twice or skipped. `RemoteBackend` computes `dt` per `get_state()` call (as in-process) rather than per message.
+- Commands are applied in order; the driver's queue (256) drops the oldest on overload.
+- Brain-side `is_real_hardware` is False; the driver logs the dev-power-budget warning itself.
+- `set_stagger` is fire-and-forget from the brain (the Backend method is synchronous).
+- Service timeouts: 5 s for fast calls, 20 s (client) / 15 s (driver) for calibration and EEPROM writes.
 
 ## Stage 5 — Liveness
 
