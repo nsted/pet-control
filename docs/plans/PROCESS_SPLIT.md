@@ -71,10 +71,12 @@ Stage 2 results (2026-11-02): pytest 91 passed (83 + 8 new), mypy 49 errors (one
 
 ## Stage 3 — Wire format (`petctl/wire.py`)
 
-- [ ] State = hardware facts only (no gesture / is_motion_active / servo_commanded_positions / dt). JSON codec, the only module touching serialization.
-- [ ] Commands = `ServoCommand` fields. Services: `enable_motor`, `disable_motor`, `disable_torques`, `write_home_offsets`, `set_stagger`, `calibrate_touch`, `set_touch_threshold`, `power_reset`.
+- [x] State = hardware facts only (no gesture / is_motion_active / servo_commanded_positions / dt). JSON codec, the only module touching serialization.
+- [x] Commands = `ServoCommand` fields. Services: `enable_motor`, `disable_motor`, `disable_torques`, `write_home_offsets`, `set_stagger`, `calibrate_touch`, `set_touch_threshold`, `power_reset`.
 
 Done when: round-trip tests pass.
+
+Stage 3 results (2026-11-02): `petctl/wire.py` + `tests/test_wire.py` (26 tests); pytest 117 passed; mypy 48 errors (two baseline errors gone, none new). JSON, stdlib only (no new dependency). A real 8-module mock state is ≈5.0 KB, encode+decode ≈0.15 ms per message (≈250 KB/s at 50 Hz). State is carried as ROS-JointState-style parallel arrays with `null` for missing values; `dt`, `gesture`, `is_motion_active`, `servo_commanded_positions` are not on the wire. Every message has `"v": 1` and a wrong version is rejected. Service requests are validated on both encode and decode. `info`, `set_home`, `set_hardware_zero`, `poll_positions`, `reset_motor_zero` stay local-only. Commands carry an optional `sent_at` for Stage 6 latency logging.
 
 ## Stage 4 — Driver and `RemoteBackend`
 
