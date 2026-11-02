@@ -123,7 +123,8 @@ class ZenohBus(Bus):
         for reply in self._session.get(key, payload=data, timeout=timeout):
             if reply.ok is not None:
                 return reply.ok.payload.to_bytes()
-            raise RuntimeError(reply.err.payload.to_string())
+            err = reply.err
+            raise RuntimeError(err.payload.to_string() if err is not None else "unknown reply error")
         raise TimeoutError(f"no reply from {key} within {timeout}s")
 
     def close(self) -> None:
