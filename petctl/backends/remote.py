@@ -8,6 +8,13 @@ MockBackend; underneath, state arrives on ``pet/state``, commands leave on
 
 Safety is NOT applied here — the driver's SafetyBackend owns it.
 
+Liveness: if no state arrives for ``state_timeout_s`` the driver is presumed
+dead. ``get_state()`` then returns the last state with ``connected=False`` (as
+the Backend contract requires), commands are not published, and service calls
+return immediately instead of blocking — so a Controller shutting down never
+hangs on a dead driver (the driver's own watchdog winds the motors down).
+Reception resumes automatically if the driver comes back.
+
 Behavior-neutrality notes:
   * ``get_state()`` is non-blocking and returns the latest cached message.
     Every call returns a fresh shallow copy, because the Controller writes
@@ -27,9 +34,10 @@ import asyncio
 import dataclasses
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from petctl import wire
+from petctl.config import LIVENESS_LIMITS
 from petctl.protocols import Backend
 from petctl.transport import Bus
 from petctl.types import RobotState, ServoCommand
@@ -43,9 +51,22 @@ _SLOW_TIMEOUT_S = 20.0   # calibrations and EEPROM writes; the driver waits up t
 class RemoteBackend(Backend):
     """Backend proxy for a driver reachable over a ``Bus``."""
 
-    def __init__(self, bus: Bus, connect_timeout_s: float = 10.0) -> None:
+    def __init__(
+        self,
+        bus: Bus,
+        connect_timeout_s: float = 10.0,
+        *,
+        state_timeout_s: Optional[float] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._bus = bus
         self._connect_timeout_s = connect_timeout_s
+        self._state_timeout_s = (
+            LIVENESS_LIMITS.brain_state_timeout_s if state_timeout_s is None else state_timeout_s
+        )
+        self._clock = clock
+        self._latest_rx_t = 0.0
+        self._driver_lost = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._latest: Optional[RobotState] = None
         self._first_state: Optional[asyncio.Event] = None
@@ -78,7 +99,11 @@ class RemoteBackend(Backend):
 
     @property
     def is_connected(self) -> bool:
-        return self._open and self._latest is not None and self._latest.connected
+        return self._open and not self._is_stale() and self._latest is not None and self._latest.connected
+
+    def _is_stale(self) -> bool:
+        """True if no state has arrived within state_timeout_s (or ever)."""
+        return self._latest is None or self._clock() - self._latest_rx_t > self._state_timeout_s
 
     # ------------------------------------------------------------------
     # State in / commands out
@@ -97,6 +122,7 @@ class RemoteBackend(Backend):
 
     def _set_state(self, state: RobotState) -> None:
         self._latest = state
+        self._latest_rx_t = self._clock()
         self.states_received += 1
         if self._first_state is not None:
             self._first_state.set()
@@ -107,10 +133,19 @@ class RemoteBackend(Backend):
         self._last_get_t = now
         if self._latest is None:
             return RobotState.empty()
+        if self._is_stale():
+            if not self._driver_lost:
+                self._driver_lost = True
+                logger.error("[Remote] No state from the driver for %.1fs — reporting disconnected.",
+                             self._state_timeout_s)
+            return dataclasses.replace(self._latest, connected=False, dt=dt)
+        if self._driver_lost:
+            self._driver_lost = False
+            logger.info("[Remote] Driver is back.")
         return dataclasses.replace(self._latest, dt=dt)
 
     async def send_commands(self, commands: list[ServoCommand]) -> None:
-        if not commands or not self._open:
+        if not commands or not self._open or self._is_stale():
             return
         self._bus.publish(wire.KEY_COMMANDS, wire.encode_commands(commands, sent_at=time.monotonic()))
 
@@ -118,12 +153,20 @@ class RemoteBackend(Backend):
     # Services
     # ------------------------------------------------------------------
 
-    async def _service(self, name: str, timeout: float = _FAST_TIMEOUT_S, **args: Any) -> Any:
+    async def _service(self, name: str, timeout: float = _FAST_TIMEOUT_S, default: Any = None, **args: Any) -> Any:
+        """Call a driver service. Returns ``default`` (and logs) if the driver is unreachable."""
+        if self._is_stale():
+            logger.error("[Remote] Driver unreachable; skipping %s().", name)
+            return default
         loop = asyncio.get_running_loop()
-        raw = await loop.run_in_executor(
-            None, self._bus.request, wire.service_key(name), wire.encode_request(name, **args), timeout
-        )
-        return wire.decode_reply(raw)
+        try:
+            raw = await loop.run_in_executor(
+                None, self._bus.request, wire.service_key(name), wire.encode_request(name, **args), timeout
+            )
+        except TimeoutError:
+            logger.error("[Remote] %s() timed out after %.0fs.", name, timeout)
+            return default
+        return wire.decode_reply(raw)   # a remote error still raises RuntimeError
 
     async def disable_torques(self) -> None:
         await self._service("disable_torques")
@@ -152,7 +195,7 @@ class RemoteBackend(Backend):
         loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_send()))
 
     async def calibrate_touch(self) -> bool:
-        return bool(await self._service("calibrate_touch", timeout=_SLOW_TIMEOUT_S))
+        return bool(await self._service("calibrate_touch", timeout=_SLOW_TIMEOUT_S, default=False))
 
     async def set_touch_threshold(
         self,
@@ -162,9 +205,9 @@ class RemoteBackend(Backend):
         release3: int | None = None,
     ) -> bool:
         return bool(await self._service(
-            "set_touch_threshold", timeout=_SLOW_TIMEOUT_S,
+            "set_touch_threshold", timeout=_SLOW_TIMEOUT_S, default=False,
             touch12=touch12, release12=release12, touch3=touch3, release3=release3,
         ))
 
     async def power_reset(self) -> bool:
-        return bool(await self._service("power_reset"))
+        return bool(await self._service("power_reset", default=False))

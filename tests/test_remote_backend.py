@@ -108,3 +108,94 @@ async def test_controller_drives_mock_through_split() -> None:
     assert drv.commands_applied > 50
     assert drv.states_published > 50
     assert remote.states_received > 50
+
+
+# ---------------------------------------------------------------------------
+# Driver silence
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 500.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+async def _remote_with_state(clock: _Clock) -> tuple[RemoteBackend, LoopbackBus]:
+    from petctl import wire
+    from petctl.types import RobotState
+
+    bus = LoopbackBus()
+    remote = RemoteBackend(bus, connect_timeout_s=1.0, state_timeout_s=1.0, clock=clock)
+    pending = asyncio.create_task(remote.connect())
+    await asyncio.sleep(0)
+    st = RobotState(servo_positions={1: 0.7}, active_servo_ids={1}, connected=True)
+    bus.publish(wire.KEY_STATE, wire.encode_state(st))
+    assert await pending is True
+    return remote, bus
+
+
+@pytest.mark.asyncio
+async def test_silent_driver_reports_disconnected_with_last_state() -> None:
+    clock = _Clock()
+    remote, _ = await _remote_with_state(clock)
+    assert remote.is_connected
+    assert (await remote.get_state()).connected is True
+
+    clock.t += 1.5                                   # driver goes silent
+    s = await remote.get_state()
+    assert s.connected is False
+    assert s.servo_positions == {1: 0.7}             # last known state is kept
+    assert not remote.is_connected
+
+
+@pytest.mark.asyncio
+async def test_silent_driver_blocks_commands_and_services_fail_soft() -> None:
+    from petctl import wire
+
+    clock = _Clock()
+    remote, bus = await _remote_with_state(clock)
+    clock.t += 1.5
+    n = len(bus.published)
+    await remote.send_commands([ServoCommand(servo_id=1, position=0.1)])
+    assert len(bus.published) == n                   # nothing published to a dead driver
+    # Shutdown-path calls must not raise or block.
+    await remote.disable_torques()
+    assert await remote.power_reset() is False
+    assert await remote.calibrate_touch() is False
+    assert wire.KEY_COMMANDS not in [k for k, _ in bus.published[n:]]
+
+
+@pytest.mark.asyncio
+async def test_remote_recovers_when_driver_returns() -> None:
+    from petctl import wire
+    from petctl.types import RobotState
+
+    clock = _Clock()
+    remote, bus = await _remote_with_state(clock)
+    clock.t += 1.5
+    assert (await remote.get_state()).connected is False
+    bus.publish(wire.KEY_STATE, wire.encode_state(
+        RobotState(servo_positions={1: 0.9}, active_servo_ids={1}, connected=True)))
+    await asyncio.sleep(0)
+    s = await remote.get_state()
+    assert s.connected is True and s.servo_positions == {1: 0.9}
+    assert remote.is_connected
+
+
+@pytest.mark.asyncio
+async def test_controller_survives_driver_dying_mid_run() -> None:
+    """Brain keeps running (no crash, clean shutdown) when the driver stops mid-run."""
+    drv, task, remote, _ = await _rig()
+    remote._state_timeout_s = 0.3
+    ctrl = Controller(backend=remote, motion=SineMotion(), visualizers=[])
+    run = asyncio.create_task(ctrl.run())
+    await asyncio.sleep(0.8)
+    drv.stop()                                       # driver dies (its bus subscriptions go with it)
+    await asyncio.wait_for(task, timeout=3.0)
+    await asyncio.sleep(0.8)                         # brain notices and carries on
+    assert not run.done()
+    assert ctrl.state.connected is False
+    ctrl.stop()
+    await asyncio.wait_for(run, timeout=10.0)        # clean shutdown, no hang or exception
