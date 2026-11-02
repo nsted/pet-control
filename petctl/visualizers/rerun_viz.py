@@ -472,7 +472,17 @@ class RerunVisualizer(Visualizer):
         rr = self._rr
         views = []
         if self.show_3d:
-            views.append(rrb.Spatial3DView(origin="/", name="Robot"))
+            # Default camera: the robot spans ~25 units around (0, 4.8, 4.5) at zero
+            # pose (model units) and curls by ±60°, so view it obliquely from ~80 away.
+            views.append(rrb.Spatial3DView(
+                origin="/",
+                name="Robot",
+                eye_controls=rrb.EyeControls3D(
+                    position=(55.0, 50.0, 45.0),
+                    look_target=(0.0, 4.8, 4.5),
+                    eye_up=(0.0, 0.0, 1.0),
+                ),
+            ))
         views.append(rrb.Vertical(
             rrb.TimeSeriesView(origin="motors/position", name="Position (rad, commanded vs actual)"),
             rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
