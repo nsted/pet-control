@@ -55,7 +55,7 @@ Baseline results (2026-11-02, commit 0ce5768 + `--duration`):
 
 ## Stage 1 — Complete the `Backend` interface
 
-- [ ] `enable_motor`, `power_reset`, and a hardware-capability property on the ABC with no-op defaults; MockBackend `enable_motor`; `dev_ui` stops using `hasattr`/private attrs.
+- [x] `enable_motor`, `power_reset`, and a hardware-capability property on the ABC with no-op defaults; MockBackend `enable_motor`; `dev_ui` stops using `hasattr`/private attrs.
 
 Done when: pytest/mypy match baseline; power reset on mock logs no error.
 

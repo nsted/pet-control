@@ -404,7 +404,7 @@ class Controller:
         self._recorder = StateRecorder(record_file) if record_file else None
         self.power_manager = PowerManager()
         if (
-            type(backend).__name__ == "RobotBackend"
+            backend.is_real_hardware
             and POWER_BUDGET.max_bus_current_a <= 2.0
         ):
             logger.warning(

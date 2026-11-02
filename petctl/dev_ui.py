@@ -400,8 +400,8 @@ def _reenable_motors(controller: "Controller") -> None:
     """Re-enable any motors disabled by a previous stop call."""
     backend = controller.backend
     loop = getattr(controller, "_event_loop", None)
-    if loop is not None and hasattr(backend, "enable_motor"):
-        ids = getattr(backend, "_discovered_motors", None) or list(range(1, 8))
+    if loop is not None:
+        ids = sorted(controller.state.active_servo_ids) or list(range(1, 8))
         for mid in ids:
             try:
                 asyncio.run_coroutine_threadsafe(

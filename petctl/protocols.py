@@ -92,6 +92,29 @@ class Backend(ABC):
         Default is a no-op. `RobotBackend` implements this for per-motor thermal disable.
         """
 
+    async def enable_motor(self, motor_id: int) -> None:
+        """
+        Re-enter MIT mode on a single motor after a disable (thermal, limp, stop).
+
+        Default is a no-op (backends with no motor-mode state, e.g. MockBackend).
+        `RobotBackend` re-sends enter-motor-mode and resets ramp state so the
+        first command after recovery does not snap.
+        """
+
+    async def power_reset(self) -> bool:
+        """
+        Operator request to clear a power-manager lockout and re-enable motors.
+
+        Returns True if the system was re-enabled. Default is a no-op returning
+        False; `SafetyBackend` implements it (it owns the PowerManager).
+        """
+        return False
+
+    @property
+    def is_real_hardware(self) -> bool:
+        """True if this backend drives physical motors (used for safety warnings)."""
+        return False
+
     async def write_home_offsets(self) -> None:
         """
         Record the current physical pose as the new software home (e.g. store

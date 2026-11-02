@@ -355,6 +355,10 @@ class RobotBackend(_BackendBase):
         return self._connected
 
     @property
+    def is_real_hardware(self) -> bool:
+        return True
+
+    @property
     def discovered_modules(self) -> list[int]:
         return list(self._discovered_modules)
 
