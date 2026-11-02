@@ -198,6 +198,11 @@ def run(
         "--record",
         help="Write one JSON line per control-loop tick to this .jsonl file",
     ),
+    duration: Optional[float] = typer.Option(
+        None,
+        "--duration",
+        help="Stop automatically after this many seconds (for fixed-length recordings)",
+    ),
 ) -> None:
     """Run the petctl controller."""
 
@@ -282,6 +287,17 @@ def run(
             record_file=record,
         )
         ctrl.speed_gain = vel
+        _timer: Optional[asyncio.Task[None]] = None
+        if duration is not None:
+            async def _stop_after() -> None:
+                # Start the clock once the control loop is actually running
+                # (viz startup can take several seconds).
+                while not ctrl._running:
+                    await asyncio.sleep(0.05)
+                await asyncio.sleep(duration)
+                ctrl.stop()
+
+            _timer = asyncio.create_task(_stop_after())
         _ui = None
         if dev_ui:
             from petctl.dev_ui import DevUI
@@ -291,6 +307,8 @@ def run(
         try:
             await ctrl.run()
         finally:
+            if _timer is not None:
+                _timer.cancel()
             if _ui is not None:
                 _ui.stop()
 

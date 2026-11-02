@@ -50,11 +50,19 @@ import time
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from petctl.config import LOOP_LIMITS, MOCK_DYNAMICS, MOTOR_LIMITS
+from petctl.config import BATTERY_CONFIG, LOOP_LIMITS, MOCK_DYNAMICS, MOTOR_LIMITS
 from petctl.protocols import Backend
 from petctl.types import ModuleSensors, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
+
+# Healthy idle head-board telemetry (≈12 V battery, ≈0 A) as raw values, so the
+# PowerManager does not see a fake 12.5 A spike from all-zero ADC readings.
+_MOCK_BATTERY_VOLTS = 12.0
+_MOCK_BATTERY_VOLTAGE_RAW = int(
+    round((_MOCK_BATTERY_VOLTS * 1000.0 - BATTERY_CONFIG.voltage_offset_mv) / BATTERY_CONFIG.voltage_slope)
+)
+_MOCK_BATTERY_CURRENT_RAW = int(round(BATTERY_CONFIG.zero_v / BATTERY_CONFIG.ads_v_per_bit))
 
 _PRESSURE_FIELDS = ("pressure_middle", "pressure_left", "pressure_right")
 
@@ -172,6 +180,8 @@ class MockBackend(Backend):
             active_servo_ids=set(self._servo_positions.keys()),
             motor_velocities=dict(self._servo_velocities),
             motor_torques=dict(self._servo_torques),
+            battery_current_raw=_MOCK_BATTERY_CURRENT_RAW,
+            battery_voltage_raw=_MOCK_BATTERY_VOLTAGE_RAW,
             connected=self._connected,
             dt=dt,
         )

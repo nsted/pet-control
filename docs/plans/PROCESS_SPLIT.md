@@ -44,9 +44,14 @@ driver:  SafetyBackend( RobotBackend | MockBackend )   → later: MuJoCoBackend
 
 - [x] Branch created by Nick.
 - [x] SHAPE_LAYER notes committed; this plan added to README.
-- [ ] Add `--duration` to `petctl run`; baseline `pytest`, `mypy`, and a fixed-length mock run with `--control sine --record`.
+- [x] Add `--duration` to `petctl run`; baseline `pytest`, `mypy`, and a fixed-length mock run with `--control sine --record`.
 
-Baseline results: _(to fill in)_
+Baseline results (2026-11-02, commit 0ce5768 + `--duration`):
+
+- `pytest`: 83 passed. `mypy petctl`: 50 errors in 9 files (pre-existing; list saved for diffing — do not add new ones).
+- `petctl run --backend mock --control sine --duration 10 --record …` (Rerun on): 1695 ticks recorded.
+- **Finding:** MockBackend left `battery_*_raw` = 0 → PowerManager saw a constant 12.5 A and global-emergency-stopped after 0.5 s (joints never moved; max |pos| 0.003 rad). **Fixed (Nick approved):** mock now reports ≈12 V / ≈0 A idle telemetry (`backends/mock.py`).
+- **Baseline after fix:** pytest 83 passed; mypy unchanged (50 errors); 10 s `--control sine` run, 1650 ticks all with commands, max |pos| 1.30 rad, PM state RUNNING, 11.99 V, 0 A, source=battery, no PM warnings. Recording kept in the session scratchpad (not committed). Rerun viewer launched and received data; visual confirmation of pose/charts is by Nick's eyes — Claude can only check logs and recordings.
 
 ## Stage 1 — Complete the `Backend` interface
 
