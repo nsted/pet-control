@@ -1,7 +1,7 @@
 # Shape Layer — Implementation Plan
 
-Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified. Stage 1.1, 1.2,
-1.3, 1.6, 1.7, and 1.8 complete (2026-09-22)**; 1.4, 1.5, 1.9 still open. Supersedes the
+Status: **Stage 0 complete. Stage 1.1, 1.2, 1.3, 1.6, 1.7, 1.8 complete (2026-09-22).**
+1.4, 1.4a, 1.5, 1.9 open. Supersedes the
 sequencing in `BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1
 is absorbed into Stage 2 here.
 
@@ -21,6 +21,56 @@ fields rather than position alone.
 `nestle_sketch.py`, `undulate_sketch.py`, `recoil_sketch.py`, `posture_sketch.py`.
 Do not copy-paste. The sketches predate the current code and contain three known
 defects — see Stage 2.
+
+---
+
+## Where we left off — 2026-09-22
+
+**Branch:** `feat/shape-layer`, pushed to origin through `4bfacb5`.
+One uncommitted change: this file (the 1.4a notes). Commit it first.
+
+**Next action: a hardware bench session, and it has a prerequisite — do 1.4a before 1.4.**
+
+The short version of why: `scripts/compare_slew_filters.py` says backend-only tracks
+~1.9x better than controller-only. That result only holds at the *guessed* mock plant.
+Sweeping inertia and friction 3x either way flips the ranking — above roughly
+J = 0.03 controller-only wins and backend-only becomes the worst of the three. So the
+real conclusion is "backend-only is high-performance and high-variance; controller-only
+is robust", and PET's actual inertia is unmeasured. It also varies per joint: joint 1
+swings seven modules, joint 7 swings one, a spread wide enough that different joints may
+sit on opposite sides of the flip. Do not pick a filter owner from the harness's default
+run. See 1.4a for the table.
+
+**Bench session, in order:**
+1. Per-joint step response, recorded with `--record` (1.2). Fit inertia and viscous
+   friction for each of servos 1–7.
+2. Put the fitted values in the GL40 II profile (1.7 already owns mock inertia/friction).
+3. Re-run `compare_slew_filters.py` per joint at real inertia. Add a plant-sweep mode
+   while there, so the harness always reports sensitivity, never a bare number.
+4. Only then decide 1.4 (filter owner, Open decision #2) and 1.5 (loop rate — do these
+   together; the 4x oversample and the filter `dt` mismatch are the same problem).
+
+Bonus from step 1: fitted per-joint inertia also feeds the power model, where
+`per_motor_worst_case_w` is currently a flat 24 W regardless of how much body a motor moves.
+
+**Not blocking, pick up any time:**
+- 1.9 (minimal CI) — ~20 min, worth doing before Stage 2 adds a layer the suite doesn't cover.
+- Commit messages under-describe contents: `295312c` carries all of 1.7, `4641c83`
+  carries 1.1 and 1.6 as well as 1.8. Pushed already, so only worth rewriting if you
+  want clean history for a PR; per-item completion notes in this doc cover traceability.
+- 3.4a — purr's modulation depth collapsed to 0.005 (was 0.045) after 1.1. Fix belongs
+  in Stage 3, but the underlying constraint (`kd_default` is 87.5% of `kd_max`, so the
+  damping channel is reduction-only) shapes `JointIntent` in Stage 2. Read it before 2.1.
+
+**Decisions already settled** (see Open decisions): #1 kd_max 0.04 stands;
+#3 staying on GL40 II, everything above L2 stays motor-agnostic.
+Still open: #2 filter ownership (blocked on 1.4a), #4 whether `patterns.py` retires.
+
+**Gate to Stage 2 is already met** (1.1–1.3, 1.7–1.8). If hardware time is scarce, Stage 2
+can start in parallel — it's structural and testable offline. 1.4/1.5 only need to land
+before Stage 3 gain tuning, or that tuning gets redone.
+
+---
 
 ## Target architecture
 
@@ -243,6 +293,35 @@ Everything from here lands on that branch.
       no errors; PowerManager's worst-case-power floor now trips an emergency
       stop within the first tick on `stroke-curl` at 7 active motors under the
       dev budget (4.0A) — expected from the existing bin-pack model, not new.
+
+- [ ] **1.4a Measure joint inertia before choosing a filter owner.**
+      `scripts/compare_slew_filters.py` runs only at the default `MOCK_DYNAMICS`
+      (inertia 0.015, friction 0.03) — values its own 1.3 docstring calls "initial
+      guesses, not measured". Sweeping them 3x either way shows **the ranking flips**:
+
+      ```
+       inertia  friction |    ctrl  backend    both | winner
+        0.0050     0.010 |  0.2037   0.0700  0.2039 | backend    2.91x
+        0.0150     0.030 |  0.2730   0.1458  0.2728 | backend    1.87x  <- the guess
+        0.0450     0.010 |  0.6108   1.2226  1.1659 | controller 0.50x
+        0.0450     0.030 |  0.5563   0.7477  0.7902 | controller 0.74x
+      ```
+
+      (sine peak tracking error, rad, matched 50 Hz; backend-only lost 2 of 9 configs)
+
+      Backend-only spans 0.070–1.223 across the grid (17x); controller-only spans
+      0.204–0.611 (3x). The real finding is not "backend-only is 1.9x better" but
+      "backend-only is high-performance and high-variance, controller-only is robust."
+
+      Compounding it: PET has no single inertia. Joint 1 swings seven modules, joint 7
+      swings one — a spread wide enough that different joints may sit on opposite sides
+      of the flip. A single global owner may be wrong for part of the body.
+
+      Therefore, before 1.4: run a per-joint step response on hardware with the 1.2
+      recorder, fit inertia and viscous friction per joint, put the fitted values in the
+      GL40 II profile (1.7 already owns mock inertia/friction), then re-run the harness.
+      Only then choose an owner. Add plant-sweep mode to the harness so the ranking is
+      always reported with its sensitivity, never as a single number.
 
 - [ ] **1.4 Resolve the layered slew filters.** Three first-order filters would sit in
       series once the engine lands, each with a different `dt` source:
