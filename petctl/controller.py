@@ -48,7 +48,6 @@ from typing import Callable, Optional
 
 from petctl.config import LOOP_LIMITS, POWER_BUDGET
 from petctl.perception.contact import ContactType
-from petctl.power_manager import PowerManager
 from petctl.protocols import Backend, Motion, Visualizer
 from petctl.recorder import StateRecorder
 from petctl.types import GestureEvent, GestureFrame, RobotState, ServoCommand, vitals_phrase
@@ -402,7 +401,6 @@ class Controller:
         self.log_loop = log_loop
         self.cap_recal = cap_recal
         self._recorder = StateRecorder(record_file) if record_file else None
-        self.power_manager = PowerManager()
         if (
             backend.is_real_hardware
             and POWER_BUDGET.max_bus_current_a <= 2.0
@@ -637,44 +635,13 @@ class Controller:
             if self._touch_logger is not None:
                 self._touch_logger.tick(self._state)
 
-            # 1b. Power management — evaluate protection conditions
-            pm = self.power_manager
-            pm.update(self._state, t0)
-            disable_ids, is_global_emergency = pm.drain_disable_events()
-            if is_global_emergency:
-                try:
-                    await self.backend.disable_torques()
-                except Exception as e:
-                    logger.error("[Controller] Emergency disable_torques error: %s", e)
-            elif disable_ids:
-                for _mid in disable_ids:
-                    try:
-                        await self.backend.disable_motor(_mid)
-                    except Exception as e:
-                        logger.error("[Controller] disable_motor(%d) error: %s", _mid, e)
-            if pm.drain_voltage_cutoff():
-                try:
-                    await self.backend.disable_torques()
-                    logger.warning("[Controller] Voltage cutoff: all motor torques disabled.")
-                except Exception as e:
-                    logger.error("[Controller] voltage_cutoff disable_torques error: %s", e)
-            self._state.power_telemetry = pm.get_telemetry(self._state.battery_voltage_v)
-
-            # Handle operator power-reset request
+            # 1b. Operator power-reset request (PowerManager lives in SafetyBackend)
             if self._power_reset_requested:
                 self._power_reset_requested = False
-                if pm.operator_reset():
-                    logger.info("[Controller] Power manager reset: system re-enabled.")
-                    # Re-enter MIT mode for all servos — hardware is still in exit-motor-mode
-                    # after a thermal/compliance disable. enable_motor also resets ramp state,
-                    # preventing a position snap on the first command post-recovery.
-                    for _mid in sorted(self._state.active_servo_ids):
-                        try:
-                            await self.backend.enable_motor(_mid)
-                        except Exception as e:
-                            logger.error("[Controller] enable_motor(%d) after reset error: %s", _mid, e)
-                else:
-                    logger.warning("[Controller] Power manager reset denied: conditions not safe.")
+                try:
+                    await self.backend.power_reset()
+                except Exception as e:
+                    logger.error("[Controller] power_reset error: %s", e)
 
             # 2. Run motion source
             try:
@@ -693,39 +660,15 @@ class Controller:
 
             self._apply_slew_to_commands(commands)
 
-            # 3. Send commands (unless dry run), gated and scaled by PowerManager
+            # 3. Send commands (unless dry run). Thermal gating, compliance scaling and
+            # budget bin-packing are applied by the backend (SafetyBackend).
             commands_sent: list[ServoCommand] = []
             if not self.dry_run and commands:
-                # 3a. Thermal gating — skip disabled motors
-                enabled = [cmd for cmd in commands if pm.is_motor_enabled(cmd.servo_id)]
-
-                # 3b. Thermal compliance scale (independent of budget; handles WARNING state)
-                for cmd in enabled:
-                    scale = pm.get_compliance_scale(cmd.servo_id)
-                    if scale != 1.0:
-                        cmd.kp *= scale
-                        cmd.kd *= scale
-                        cmd.torque_ff *= scale
-
-                # 3c. Budget bin-pack: active bin fires now; pending motors are idled.
-                active_commands, pending_ids = pm.allocate_budget(enabled, self._state)
-                idle_commands = [
-                    ServoCommand(
-                        servo_id=mid,
-                        position=self._state.servo_positions.get(mid, 0.0),
-                        kp=0.0,
-                        kd=0.0,
-                        torque_ff=0.0,
-                    )
-                    for mid in pending_ids
-                ]
-                to_send = active_commands + idle_commands
-                if to_send:
-                    try:
-                        await self.backend.send_commands(to_send)
-                        commands_sent = to_send
-                    except Exception as e:
-                        logger.error("[Controller] Backend send_commands error: %s", e)
+                try:
+                    await self.backend.send_commands(commands)
+                    commands_sent = commands
+                except Exception as e:
+                    logger.error("[Controller] Backend send_commands error: %s", e)
 
             if self._recorder is not None:
                 self._recorder.record(self._state, commands_sent)

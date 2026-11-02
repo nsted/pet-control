@@ -61,11 +61,13 @@ Done when: pytest/mypy match baseline; power reset on mock logs no error.
 
 ## Stage 2 — Move safety out of the Controller
 
-- [ ] `SafetyBackend(Backend)` wrapping another backend; owns `PowerManager`.
-- [ ] Remove those steps from `Controller._loop`; route `request_power_reset` through the backend.
-- [ ] `--backend robot|mock` construct `SafetyBackend(...)` in-process.
+- [x] `SafetyBackend(Backend)` wrapping another backend; owns `PowerManager` (`petctl/backends/safety.py`, `tests/test_safety_backend.py`).
+- [x] Remove those steps from `Controller._loop`; `request_power_reset` now awaits `backend.power_reset()`.
+- [x] `--backend robot|mock` construct `SafetyBackend(...)` in-process (`cli.py`). Note: a `Controller` built directly with a bare backend (scripts/tests) now has no power protection.
 
 Done when: `tests/test_power_manager.py` passes unchanged; mock recording matches baseline within tolerance; thermal/voltage events disable motors in a mock test.
+
+Stage 2 results (2026-11-02): pytest 91 passed (83 + 8 new), mypy 49 errors (one fewer than baseline, none new). 30 s mock sine run with Rerun: max |pos| 1.29 rad (baseline 1.30), ~166 ticks/s (same), PM RUNNING, 11.99 V, telemetry scales 1.0 in both. **Recorder difference:** `--record` now stores the Controller's pre-safety commands (constant kp 0.8) instead of the post-PM commands (baseline kp 0–0.8 from bin-pack scaling). A spy on the inner backend confirms the safety layer still emits the same kp spread (≈630 distinct values, 0–0.8). Power reset on mock logs success and no `enable_motor` error.
 
 ## Stage 3 — Wire format (`petctl/wire.py`)
 

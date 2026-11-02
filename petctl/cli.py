@@ -24,6 +24,7 @@ from typing import Optional
 import typer
 
 from petctl.backends.robot import ROBOT_DEFAULT_HOST, ROBOT_DEFAULT_PORT
+from petctl.protocols import Backend
 
 app = typer.Typer(
     name="petctl",
@@ -216,16 +217,17 @@ def run(
         logging.getLogger("petctl.power_manager").setLevel(logging.DEBUG)
 
     # --- Build backend ---
+    _inner: Backend
     if backend == "mock":
         from petctl.backends.mock import MockBackend
-        _backend = MockBackend(
+        _inner = MockBackend(
             mode=mode,
             state_file=state,
             num_modules=num_modules,
         )
     elif backend == "robot":
         from petctl.backends.robot import RobotBackend
-        _backend = RobotBackend(
+        _inner = RobotBackend(
             host=host,
             port=port,
             calibrate_on_connect=calibrate,
@@ -235,6 +237,11 @@ def run(
     else:
         typer.echo(f"Unknown backend '{backend}'. Choose: mock, robot", err=True)
         raise typer.Exit(1)
+
+    # Thermal / voltage / current protection lives in the backend wrapper,
+    # not in the Controller, so no control scheme can bypass it.
+    from petctl.backends.safety import SafetyBackend
+    _backend = SafetyBackend(_inner)
 
     # --- Build motion source ---
     if control == "keyboard":
