@@ -65,6 +65,9 @@ class RemoteBackend(Backend):
             LIVENESS_LIMITS.brain_state_timeout_s if state_timeout_s is None else state_timeout_s
         )
         self._clock = clock
+        # Arrival time of the newest state, stamped on the bus thread. The event loop can
+        # be blocked for over a second (e.g. the Rerun viewer starting); staleness must
+        # reflect when the driver last spoke, not when the loop got round to the message.
         self._latest_rx_t = 0.0
         self._driver_lost = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -116,13 +119,13 @@ class RemoteBackend(Backend):
         except Exception:
             logger.exception("[Remote] bad state message")
             return
+        self._latest_rx_t = self._clock()
         loop = self._loop
         if loop is not None:
             loop.call_soon_threadsafe(self._set_state, state)
 
     def _set_state(self, state: RobotState) -> None:
         self._latest = state
-        self._latest_rx_t = self._clock()
         self.states_received += 1
         if self._first_state is not None:
             self._first_state.set()

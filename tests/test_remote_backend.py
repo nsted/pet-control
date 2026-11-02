@@ -199,3 +199,20 @@ async def test_controller_survives_driver_dying_mid_run() -> None:
     assert ctrl.state.connected is False
     ctrl.stop()
     await asyncio.wait_for(run, timeout=10.0)        # clean shutdown, no hang or exception
+
+
+@pytest.mark.asyncio
+async def test_blocked_event_loop_is_not_mistaken_for_a_dead_driver() -> None:
+    """A state that arrived on the bus thread counts even if the loop hasn't processed it yet."""
+    from petctl import wire
+    from petctl.types import RobotState
+
+    clock = _Clock()
+    remote, _ = await _remote_with_state(clock)       # state received at t=500
+    clock.t += 1.4
+    # New state arrives on the bus thread; the (blocked) loop has not run _set_state yet.
+    remote._on_state_bytes(wire.encode_state(RobotState(active_servo_ids={1}, connected=True)))
+    clock.t += 0.3                                     # t=501.7: 1.7 s after the *processed* state
+    assert remote._is_stale() is False
+    s = await remote.get_state()
+    assert s.connected is True

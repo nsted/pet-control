@@ -98,8 +98,16 @@ Design decisions and caveats:
 
 ## Stage 5 — Liveness
 
-- [ ] Driver command watchdog: smooth ramp to safe hold (timeout in `config.py`).
-- [ ] Brain: driver silent → `connected=False`, last state, no crash.
+- [x] Driver command watchdog: smooth ramp to safe hold (`LIVENESS_LIMITS` in `config.py`).
+- [x] Brain: driver silent → `connected=False`, last state, no crash.
+
+Stage 5 results (2026-11-02): pytest 142 passed, mypy no new errors.
+- `LIVENESS_LIMITS` (config.py): `driver_cmd_timeout_s` 0.5, `safe_hold_ramp_s` 1.0, `brain_state_timeout_s` 1.0.
+- **Driver watchdog:** after 0.5 s without a command batch, kp/kd/torque_ff of each servo's last command ramp linearly to zero over 1.0 s while the last position target is held; any new batch resumes immediately. It never triggers before a brain has commanded. *The end state is zero gains (limp), not a stiff hold — confirm that is the right "safe hold" for the real robot at Stage 7 (gravity/curl loads).*
+- **Kill test 1 (brain SIGKILL, mock driver, separate processes):** effort fell smoothly to 0.000 within ≈1.5 s of the kill (0.5 s timeout + 1.0 s ramp); joint stayed put (0.727 rad); driver logged "No commands for 0.51s — ramping" and "Safe hold reached". A brief effort blip (0.087 vs ≈0.045 normal) right after the kill is the frozen target against a still-moving joint.
+- **Kill test 2 (driver SIGKILL, brain with Rerun):** brain logged "No state from the driver for 1.0s — reporting disconnected", kept running, and after the driver was restarted Zenoh reconnected on its own within ≈2 s ("Driver is back"). Unit test: a full Controller survives its driver dying and shuts down cleanly.
+- **Bug found and fixed:** the brain flagged a false "disconnected" for one tick at startup because staleness used the time the event loop *processed* a state, and starting Rerun blocks the loop for >1 s. Staleness now uses the arrival time stamped on the bus thread (regression test fails without the fix).
+- While the driver is silent the brain publishes no commands and service calls return immediately (void calls no-op, bool calls return False) so shutdown never hangs.
 
 ## Stage 6 — Equivalence and latency
 
