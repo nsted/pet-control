@@ -1,7 +1,9 @@
 # Shape Layer — Implementation Plan
 
-Status: **Stage 0 complete (2026-09-22), audit-only — nothing modified**. Supersedes the sequencing in `BEHAVIOR_SYSTEM.md`
-(0/17 complete since March); that document's Stage 1 is absorbed into Stage 2 here.
+Status: **Stage 0 complete. Stage 1.1, 1.2, 1.3, 1.6, 1.7, 1.8 complete (2026-09-22).**
+1.4, 1.4a, 1.5, 1.9 open. Supersedes the
+sequencing in `BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1
+is absorbed into Stage 2 here.
 
 ## Why
 
@@ -19,6 +21,56 @@ fields rather than position alone.
 `nestle_sketch.py`, `undulate_sketch.py`, `recoil_sketch.py`, `posture_sketch.py`.
 Do not copy-paste. The sketches predate the current code and contain three known
 defects — see Stage 2.
+
+---
+
+## Where we left off — 2026-09-22
+
+**Branch:** `feat/shape-layer`, pushed to origin through `4bfacb5`.
+One uncommitted change: this file (the 1.4a notes). Commit it first.
+
+**Next action: a hardware bench session, and it has a prerequisite — do 1.4a before 1.4.**
+
+The short version of why: `scripts/compare_slew_filters.py` says backend-only tracks
+~1.9x better than controller-only. That result only holds at the *guessed* mock plant.
+Sweeping inertia and friction 3x either way flips the ranking — above roughly
+J = 0.03 controller-only wins and backend-only becomes the worst of the three. So the
+real conclusion is "backend-only is high-performance and high-variance; controller-only
+is robust", and PET's actual inertia is unmeasured. It also varies per joint: joint 1
+swings seven modules, joint 7 swings one, a spread wide enough that different joints may
+sit on opposite sides of the flip. Do not pick a filter owner from the harness's default
+run. See 1.4a for the table.
+
+**Bench session, in order:**
+1. Per-joint step response, recorded with `--record` (1.2). Fit inertia and viscous
+   friction for each of servos 1–7.
+2. Put the fitted values in the GL40 II profile (1.7 already owns mock inertia/friction).
+3. Re-run `compare_slew_filters.py` per joint at real inertia. Add a plant-sweep mode
+   while there, so the harness always reports sensitivity, never a bare number.
+4. Only then decide 1.4 (filter owner, Open decision #2) and 1.5 (loop rate — do these
+   together; the 4x oversample and the filter `dt` mismatch are the same problem).
+
+Bonus from step 1: fitted per-joint inertia also feeds the power model, where
+`per_motor_worst_case_w` is currently a flat 24 W regardless of how much body a motor moves.
+
+**Not blocking, pick up any time:**
+- 1.9 (minimal CI) — ~20 min, worth doing before Stage 2 adds a layer the suite doesn't cover.
+- Commit messages under-describe contents: `295312c` carries all of 1.7, `4641c83`
+  carries 1.1 and 1.6 as well as 1.8. Pushed already, so only worth rewriting if you
+  want clean history for a PR; per-item completion notes in this doc cover traceability.
+- 3.4a — purr's modulation depth collapsed to 0.005 (was 0.045) after 1.1. Fix belongs
+  in Stage 3, but the underlying constraint (`kd_default` is 87.5% of `kd_max`, so the
+  damping channel is reduction-only) shapes `JointIntent` in Stage 2. Read it before 2.1.
+
+**Decisions already settled** (see Open decisions): #1 kd_max 0.04 stands;
+#3 staying on GL40 II, everything above L2 stays motor-agnostic.
+Still open: #2 filter ownership (blocked on 1.4a), #4 whether `patterns.py` retires.
+
+**Gate to Stage 2 is already met** (1.1–1.3, 1.7–1.8). If hardware time is scarce, Stage 2
+can start in parallel — it's structural and testable offline. 1.4/1.5 only need to land
+before Stage 3 gain tuning, or that tuning gets redone.
+
+---
 
 ## Target architecture
 
@@ -142,20 +194,60 @@ git checkout -b feat/shape-layer
 
 Everything from here lands on that branch.
 
-- [ ] **1.1 Enforce MOTOR_LIMITS at the encoder.** Clamp `kp`, `kd`, `torque_ff`,
-      `vel` against `MOTOR_LIMITS` in `_encode_mit_packet` (or immediately upstream),
-      log once per violation rather than per frame. Move `PurrRippleMotion.KD_TARGET`
-      into `config.py`. This is the CLAUDE.md rule ("never hardcode servo limits")
-      made enforceable.
+- [x] **1.1 Enforce motor limits at the encoder.** Clamp `kp`, `kd`, `torque_ff`,
+      `vel` in `_encode_mit_packet` (or immediately upstream), log once per violation
+      rather than per frame. Move `PurrRippleMotion.KD_TARGET` into `config.py`.
+      This is the CLAUDE.md rule ("never hardcode servo limits") made enforceable.
+      Enforce against the **active motor profile** (1.7), not a module-level constant.
 
-- [ ] **1.2 State recorder.** `petctl run --record <file>.jsonl` writing one line per
+      **Done 2026-09-22.** `vel` was already fixed by 1.7 (clamped to
+      `self._profile.encoding.vel_min/max`, the v_des wire range). Added
+      `RobotBackend._clamp_to_profile_limits()`, called from `send_commands`
+      immediately before `self._profile.encode_command(...)` — clamps `kp` to
+      `[0, profile.gains.kp_max]`, `kd` to `[0, profile.gains.kd_max]`, and
+      `torque_ff` to `[profile.encoding.torque_min, .torque_max]`. This is
+      stricter than `encode_command`'s own wire-range clip (kp 0-500, kd 0-5 for
+      GL40_II), which only guards packet overflow, not the declared safety
+      ceiling — a kp=300 command used to reach the motor as kp≈300 (wire-clipped
+      only at 500); it's now clamped to 1.5 before encoding. Violations log once
+      via `_warn_once_per_violation` (a `(motor_id, field)` set, cleared on
+      recovery so a later violation logs again) rather than every tick at
+      `motor_update_hz`.
+      `PurrRippleMotion.KD_TARGET` (0.08, 2x `kd_max`) is gone — per Nick's
+      resolution of Open decision #1, purr's peak kd is now `MOTOR_LIMITS.kd_max`
+      directly (itself profile-sourced since 1.7), not a separate class constant
+      or a new config field for a value that must always equal `kd_max`.
+      Verified: manual clamp test shows the wire frame actually encodes the
+      clamped kp (not the raw 300), log fires once on violation onset, is
+      silent on repeat and on recovery, and fires again on a later violation.
+      All 83 tests still green.
+
+- [x] **1.2 State recorder.** `petctl run --record <file>.jsonl` writing one line per
       tick: timestamp, sensors, servo positions/velocities/torques/temps, gesture frame,
       commands sent, power telemetry. Non-blocking (bounded queue + daemon thread,
       mirror the `_viz_worker` pattern — drop frames, never stall the loop).
       This is `BEHAVIOR_SYSTEM.md` 5.2, and it is a prerequisite for the post-ICRA
       touch-classifier training as well as for measuring whether Stage 2–3 helps.
+      **Done 2026-09-22.** Built `petctl/recorder.py` — `StateRecorder(path, maxsize=64)`
+      opens the output file line-buffered, `record(state, commands)` builds a
+      JSON-serializable frame and does `queue.put_nowait`, dropping (and counting)
+      on `queue.Full` rather than blocking; `close()` sends a sentinel, joins the
+      writer thread (2 s timeout), and logs the drop count if any frames were lost.
+      `ContactType` (a `(str, Enum)`) round-trips through `json.dumps` with no
+      special-casing, as expected. Wired into `Controller`: new `record_file`
+      constructor arg, `commands_sent` is exactly the `to_send` list actually handed
+      to `backend.send_commands()` this tick (empty on dry-run or a send error), and
+      `record()` is called once per tick right after the send block, before the
+      hotkey-driven side effects (save-home, deactivate, etc.). `close()` runs in
+      `_shutdown()`. CLI: `--record <path>.jsonl` on `petctl run`, passed through as
+      `record_file`. Tests in `tests/test_recorder.py` (4): frame keys/values
+      round-trip through JSON, `ContactType`/`GestureFrame` serialize as plain
+      values, missing gesture/power_telemetry serialize as `null`, and a full queue
+      (writer thread replaced with a no-op stub via `monkeypatch` so it never
+      drains) drops frames and counts them without raising or blocking. No
+      deviations from the plan.
 
-- [ ] **1.3 Mock dynamics.** `MockBackend.send_commands` currently does
+- [x] **1.3 Mock dynamics.** `MockBackend.send_commands` currently does
       `self._servo_positions[sid] = cmd.position` — it teleports. Replace with a
       second-order joint model driven by the MIT law: integrate
       `tau = kp*(p_des-p) + kd*(v_des-v) + tau_ff` against a per-joint inertia and
@@ -163,6 +255,73 @@ Everything from here lands on that branch.
       same direction* as hardware so filter and blending work can be developed and
       tested offline. Expose inertia/friction as config so they can be fitted later
       from Stage 1.2 recordings.
+      **Done 2026-09-22.** `send_commands()` now only records the latest setpoint
+      per servo (`_ServoSetpoint`: position, velocity, kp, kd, torque_ff) — it moves
+      nothing. `get_state()` calls `_step_dynamics(dt)` before building the returned
+      positions, integrating `tau = clamp(kp*(p_des-p) + kd*(v_des-v) + tau_ff,
+      MOTOR_LIMITS.torque_{min,max})`, `accel = (tau - friction*v) / inertia`,
+      `v = clamp(v + accel*dt, MOTOR_LIMITS.vel_{min,max})`, `p += v*dt`, per servo.
+      A servo with no setpoint yet runs at `kp=kd=torque_ff=0` (passive/coasting),
+      matching a motor with no MIT frame sent. Added `MockDynamicsConfig`
+      (`inertia_kg_m2=0.015`, `viscous_friction_nm_s_per_rad=0.03`) and singleton
+      `MOCK_DYNAMICS` in `config.py`, commented as initial guesses to be fit from
+      Stage 1.2 recordings, not measured values. `RobotState.motor_velocities` /
+      `motor_torques` are now populated from the integrator instead of hardcoded
+      `{}`. "file" mode is unaffected: `_build_servo_positions()` still overrides
+      `self._servo_positions` from the JSON file every tick, after dynamics run, so
+      the file wins exactly as before. Tests in `tests/test_mock_dynamics.py` (10):
+      passive default, `send_commands` doesn't teleport, `position=None` commands
+      are ignored, single-tick and converged (500-tick) MIT tracking, velocity/torque
+      populated, both clamped to `MOTOR_LIMITS` under a large error, a clock-hiccup
+      (negative dt) no-op, and the file-mode override still wins. Verified end-to-end
+      with `petctl run --backend mock --record` for 3 s: 297 valid JSON frames
+      written; PowerManager's emergency-stop path fired on the new nonzero
+      torque/current estimate mid-run (dynamics now feeding real torque into the
+      power model, as intended) and the controller still shut down cleanly. No
+      deviations from the plan.
+      **Bugfix 2026-09-22:** `_step_dynamics` was clamping the integrator's
+      physical velocity to `MOTOR_LIMITS.vel_min/vel_max` (±0.5 rad/s) — that's
+      the MIT wire-encoding range for the `v_des` feedforward field (see 1.7),
+      not a physical speed limit. `backends/robot.py`'s real ramp filter moves
+      the physical position at `LOOP_LIMITS.max_speed_rad_s` (6.0 rad/s) and
+      only clamps the separate `v_des` wire value to `MOTOR_LIMITS.vel_min/max`.
+      The mock was capping simulated joint speed at ~12x slower than real
+      hardware, defeating 1.3's stated purpose ("wrong in the same direction,"
+      not wrong by over an order of magnitude). Fixed to clamp against
+      `LOOP_LIMITS.max_speed_rad_s`; `tests/test_mock_dynamics.py`'s velocity
+      test updated to match. Re-verified end-to-end with `--record`: 608 frames,
+      no errors; PowerManager's worst-case-power floor now trips an emergency
+      stop within the first tick on `stroke-curl` at 7 active motors under the
+      dev budget (4.0A) — expected from the existing bin-pack model, not new.
+
+- [ ] **1.4a Measure joint inertia before choosing a filter owner.**
+      `scripts/compare_slew_filters.py` runs only at the default `MOCK_DYNAMICS`
+      (inertia 0.015, friction 0.03) — values its own 1.3 docstring calls "initial
+      guesses, not measured". Sweeping them 3x either way shows **the ranking flips**:
+
+      ```
+       inertia  friction |    ctrl  backend    both | winner
+        0.0050     0.010 |  0.2037   0.0700  0.2039 | backend    2.91x
+        0.0150     0.030 |  0.2730   0.1458  0.2728 | backend    1.87x  <- the guess
+        0.0450     0.010 |  0.6108   1.2226  1.1659 | controller 0.50x
+        0.0450     0.030 |  0.5563   0.7477  0.7902 | controller 0.74x
+      ```
+
+      (sine peak tracking error, rad, matched 50 Hz; backend-only lost 2 of 9 configs)
+
+      Backend-only spans 0.070–1.223 across the grid (17x); controller-only spans
+      0.204–0.611 (3x). The real finding is not "backend-only is 1.9x better" but
+      "backend-only is high-performance and high-variance, controller-only is robust."
+
+      Compounding it: PET has no single inertia. Joint 1 swings seven modules, joint 7
+      swings one — a spread wide enough that different joints may sit on opposite sides
+      of the flip. A single global owner may be wrong for part of the body.
+
+      Therefore, before 1.4: run a per-joint step response on hardware with the 1.2
+      recorder, fit inertia and viscous friction per joint, put the fitted values in the
+      GL40 II profile (1.7 already owns mock inertia/friction), then re-run the harness.
+      Only then choose an owner. Add plant-sweep mode to the harness so the ranking is
+      always reported with its sensitivity, never as a single number.
 
 - [ ] **1.4 Resolve the layered slew filters.** Three first-order filters would sit in
       series once the engine lands, each with a different `dt` source:
@@ -171,13 +330,236 @@ Everything from here lands on that branch.
       own `alpha = 5.0*dt` smoothing. Pick one owner. See Open decisions.
       Use 1.3 to compare candidate arrangements before touching hardware.
 
+      **Still open — needs hardware time (Nick's call, Open decision #2).** Offline mock
+      prep done 2026-09-22: `scripts/compare_slew_filters.py` drives the real, unmodified
+      `Controller._apply_slew_to_commands` and `RobotBackend.send_commands` (not
+      reimplementations) against the real `MockBackend._step_dynamics` plant (Stage 1.3),
+      comparing `controller`-only / `backend`-only / `both` (today's default) on a 1.0 rad
+      step and a snuggle-reference sinusoid (±40° @ 0.4 Hz, `LOOP_LIMITS`' own worked
+      example). This is comparison data for the hardware session, not a decision — run it
+      again (or extend it) there, ideally alongside a real before/after recording.
+
+      **Findings (all at `speed_gain=1.0`, matched-rate 50 Hz unless noted):**
+      - *Step-response overshoot/settle time are not a useful discriminator between
+        candidates.* At default gains (`kp_default=0.8`, `kd_default=0.035`) the mock
+        plant itself is underdamped (`ζ≈0.30`, `ωn≈7.3 rad/s` — computed straight from
+        `MOCK_DYNAMICS`/`MOTOR_LIMITS`) and rings on a step regardless of which filter
+        shapes the target; overshoot varied only 0.23–0.29 rad across all six
+        owner×rate combinations. This is a real property of the current mock gains,
+        separate from the 1.4 question — worth a note for whoever tunes gains later,
+        but not evidence for or against a filter owner.
+      - *Backend-only tracks a smooth target noticeably better than controller-only or
+        both:* peak sine-tracking error 0.146 rad vs 0.273 rad (matched 50 Hz). The
+        difference is structural, not incidental — `Controller`'s tau=0.10s LPF adds
+        real phase lag on a 0.4 Hz signal (~0.25 rad, the right order of magnitude for
+        the observed error) that `RobotBackend`'s pure rate-limit-plus-anti-windup ramp
+        doesn't have.
+      - *Backend-only (and `both`) keep a bounded commanded-vs-actual gap under a large
+        step; controller-only doesn't:* max gap 0.35–0.40 rad vs 0.56–0.61 rad. This is
+        `RobotBackend`'s anti-windup doing exactly what Open decision #2 already named
+        as the reason to prefer it — `last_p` is clamped to within `anti_windup_rad`
+        (0.3) of the *actual* physical position every tick, so the commanded ramp can't
+        run away from where the joint really is. `Controller`'s LPF has no such anchor.
+      - *`both` (today's default) behaves like `backend`-only under a large step (the
+        rate cap saturates identically either way so the second filter is mostly along
+        for the ride) but like `controller`-only on the smooth sinusoid (nothing
+        saturates, so the LPF's phase lag is the dominant, unmasked effect).* In other
+        words: today's stacked-filter default gets backend's step behavior but not its
+        (better) tracking behavior, which is the worst of both rather than the best.
+      - This numerically supports Open decision #2's stated recommendation (backend
+        owns it, strip the controller-level LPF to a pure safety clamp) more than it
+        contradicts it — but it's mock data at nominal gains, not hardware, and doesn't
+        cover contact-driven load, thermal derating, or the reactive power-budget scale
+        interacting with any of this. Bring it to the hardware session as a prior, not
+        a conclusion.
+
 - [ ] **1.5 Control-loop rate.** `Controller._loop` sleeps `1/(motor_update_hz*4)`
       (~200 Hz) while `_pending_frames[sid]` is overwritten and consumed at 50 Hz —
       three of every four `motion.update()` results are discarded, and the slew filter's
       `dt` is 4x smaller than the true command period. Decide whether to run the loop at
       `motor_update_hz` or keep the oversample deliberately, and document why.
 
-**Gate:** 1.1–1.3 must be green before Stage 2. 1.4–1.5 may be deferred if they prove
+      **Still open — bundled with 1.4 as one hardware session (Nick's call, 2026-09-22).**
+      Offline mock prep done in the same pass as 1.4, same script
+      (`scripts/compare_slew_filters.py`), comparing `matched_50hz` (loop = wire rate,
+      nothing discarded) against `oversample_200hz` (today's default: loop = 4x wire
+      rate, `_pending_frames` overwritten 3 of every 4 ticks before a real
+      `motor_tx_loop` pop would fire — reproduced in the harness by only handing the mock
+      plant a new setpoint once per simulated wire period).
+
+      **Findings:** oversampling was strictly worse on every metric, for every filter
+      owner, with no case where it won. Peak sine-tracking error rose ~24% (controller:
+      0.273→0.339 rad; backend: 0.146→0.185 rad; both: 0.273→0.338 rad) and the
+      commanded-vs-actual gap rose similarly. Two separate mechanisms both push the same
+      direction: (1) discarding 3-of-4 computed outputs adds effective latency between
+      when a target is computed and when it reaches the plant (averaging ~2 extra ticks,
+      ~10 ms at 200 Hz) — this alone explains most of the degradation, including for
+      `controller`-only, which has no rate-based dt dependency to speak of; (2)
+      `RobotBackend.send_commands`'s own dt is wall-clock (`now - last_t`), floored at
+      `1/120 s` — at 200 Hz the true per-tick interval (5 ms) is *below* that floor, so
+      the backend ramp silently computes its `max_step` against 8.3 ms instead of the
+      real 5 ms every tick, a second, independent source of behavior that doesn't match
+      what oversampling was presumably meant to buy. No mock evidence supports keeping
+      the oversample; the burden is on finding a reason to. Recommend running the loop
+      at `motor_update_hz` (matching 1.4's rate everywhere), pending confirmation on
+      hardware that this doesn't regress on load the mock doesn't model (thermal
+      derating, reactive power-budget scaling, real motor latency vs the mock's
+      idealized second-order model).
+
+- [x] **1.6 Log commanded vs actual position.** `RerunVisualizer` plots
+      `motor_velocities`, `motor_torques` and temperatures per servo, but nothing logs
+      `RobotState.servo_commanded_positions` — the post-slew setpoint the Controller
+      already populates each tick from `_slew_last_sent_rad`. Without it the plots show
+      where each joint *is* with no reference for where it was *told* to be, so filter
+      lag and tracking error are invisible. Add a `motors/position/motor_N` series pair
+      (commanded and actual) alongside the existing ones.
+      Prerequisite for 1.4 — the gap between the two curves *is* the thing 1.4 is tuning.
+
+      **Done 2026-09-22.** `Controller` already populated `servo_commanded_positions`
+      every tick (`controller.py:623`) — the gap was purely in `RerunVisualizer`, which
+      never logged it. Added `motors/position/motor_N/actual` and `.../commanded` as a
+      `SeriesLines` pair per servo in `_setup_motor_series` (same pattern as the
+      existing velocity/torque/temperature series, module 0 excluded since it has no
+      servo), logged each tick from `state.servo_positions` / `state.servo_commanded_
+      positions` in `_log_motor_state`, and added a `motors/position` `TimeSeriesView`
+      to the blueprint alongside velocity/torque/temperature. Verified with a fake `rr`
+      recorder (correct paths, correct values, module 0 correctly excluded) and against
+      the real `rerun` SDK (`rr.init(spawn=False)` + the same log calls, no exceptions).
+
+- [x] **1.7 Motor profile boundary — everything above L2 must be motor agnostic.**
+      All hardware specifics belong behind one `MotorProfile`, selected by config/CLI,
+      with `GL40_II` as the first instance. Nothing above the joint servo may import a
+      motor constant.
+
+      Currently GL40-specific and leaking:
+      - `MotorLimits` is docstringed "Hard limits for CubeMars GL40 II MIT-mode
+        commands". `pos +/-12.5`, `vel +/-0.5`, `torque +/-1.0` are that driver's MIT
+        *encoding ranges*, not physical limits — a different driver packs different
+        ranges (the SteadyWin GDS34 T_Max unit basis is still an open question).
+      - `_encode_mit_packet` hardcodes 16/12/12/12/12 bit field widths.
+      - `kp_default = 0.8`, `kd_default = 0.035` are tuned to the GL40's Kt (0.11 Nm/A).
+        A geared candidate with far higher Kt needs different numbers for the same feel.
+      - `MOCK_DYNAMICS` inertia and friction are per-motor.
+
+      **A module, not a constant table** — some of it is behaviour, not data, so
+      `MotorProfile` is an ABC (matching `protocols.py`) with `GL40_II` as the first
+      implementation. Suggested home: `petctl/motors/base.py` + `petctl/motors/gl40.py`.
+
+      The profile owns, in four groups:
+      1. *Encoding* — ranges, field widths, `_encode_mit_packet` / `_parse_slcan`, and
+         the enable/disable/set-zero magic frames (`...FFFC/FFFD/FFFE`). These are
+         methods: another driver may pack a different layout entirely, not just
+         different bounds.
+      2. *Gains* — `kp_default`, `kd_default`, and the max values; what
+         `JointIntent.stiffness = 1.0` resolves to in Nm/rad.
+      3. *Thermal* — `temp_soft_warning_c` 55 / `temp_hard_cutoff_c` 65 /
+         `temp_global_emergency_c` 75. These are GL40 numbers and they currently live
+         in `power_manager.py`, not `config.py` — already a CLAUDE.md violation
+         ("import all hardware limits from petctl/config.py"). Fix while moving.
+      4. *Power model* — `per_motor_base_a`, `per_motor_torque_coeff` (72.52, fit to
+         GL40 at a specific TMAX encoding), `per_motor_mech_coeff`,
+         `per_motor_worst_case_w`, and mock inertia/friction. All per-motor, all
+         currently inside `PowerBudgetConfig`.
+
+      **Stays out of the profile:** everything in `PowerBudgetConfig` that describes
+      PET's wiring rather than its motors — bus current ceilings, the 8A slip-ring
+      limit, UPS vs wall thresholds, battery calibration. Those survive a motor swap
+      unchanged. The split is the point: a motor swap should touch one module, and a
+      rewiring should touch a different one. Consequence for the layer above: **`JointIntent.stiffness` and
+      `damping` stay normalized 0–1 scales, never raw kp/kd** — already how they are
+      specified in this plan, and the reason it survives a motor swap. The profile
+      defines what 1.0 means in Nm/rad, chosen so felt stiffness stays comparable
+      across motors. A behaviour written today then runs unchanged on GIM3505 or AK45.
+
+      **Done 2026-09-22.** Built `petctl/motors/base.py` (`MotorProfile` ABC +
+      `MotorEncodingRanges`/`MotorGains`/`MotorThermalLimits`/`MotorPowerModel`/
+      `MotorFeedback` frozen dataclasses, plus the shared `float_to_uint`/
+      `uint_to_float`/`byte_to_int8` bit-packing helpers) and
+      `petctl/motors/gl40.py` (`GL40_II(MotorProfile)`, all four groups from the
+      list above, plus `encode_command`/`encode_enable`/`encode_disable`/
+      `encode_set_zero`/`encode_zero_torque`/`decode_feedback` — the 16/12/12/12/12
+      field layout lives in these methods, not as a constant). `RobotBackend` now
+      takes `motor_profile: MotorProfile = ACTIVE_MOTOR_PROFILE` and calls
+      `self._profile.*` for every encode/decode; the module-level
+      `_encode_mit_packet`/`_encode_mit_enable`/`_encode_mit_disable`/
+      `_encode_mit_set_zero`/`_encode_mit_zero`/`_float_to_uint` functions are
+      gone (`scripts/rate_test.py` updated, was calling `_encode_mit_zero`
+      directly). Verified the new `encode_command`/`decode_feedback` produce
+      byte-identical output to the pre-refactor functions across 2000 randomized
+      inputs each, plus the enable/disable/set-zero frames.
+      `config.py` gets `ACTIVE_MOTOR_PROFILE = GL40_II()`; `MotorLimits`,
+      `MockDynamicsConfig`, and `PowerBudgetConfig`'s four `per_motor_*` fields
+      now read their defaults from it instead of hardcoding GL40 numbers, with
+      `MotorLimits`'s docstring corrected (encoding ranges, not physical limits).
+      `power_manager.py`'s `PowerThresholds` thermal fields (`temp_soft_warning_c`
+      / `temp_hard_cutoff_c` / `temp_global_emergency_c` / hysteresis) now default
+      from `ACTIVE_MOTOR_PROFILE.thermal` — fixes the CLAUDE.md violation named
+      above. All of `MOTOR_LIMITS`/`MOCK_DYNAMICS`/`POWER_BUDGET`/`PowerThresholds`
+      keep their existing field names and numeric values, so no call site outside
+      `petctl/motors/` and the four files touched here needed to change.
+
+      **Deviations from the plan, both intentional:**
+      1. `_parse_slcan` (SLCAN text → `(can_id, payload bytes)`) stayed in
+         `backends/robot.py` rather than moving into the profile. It's generic
+         CAN-over-SLCAN framing — true of any driver on this transport — not
+         motor-specific; only *interpreting* the payload (field widths, motor ID
+         nibble, err nibble) is GL40-specific, and that's `decode_feedback`.
+      2. `types.py`/`schemes/patterns.py`/`schemes/command.py`/`schemes/
+         passthrough.py` still read `MOTOR_LIMITS.kp_default`/`.kd_default`/
+         `.pos_max` directly — i.e. "above the joint servo" still imports a
+         motor constant, just indirectly through the config.py compatibility
+         layer described above. Getting all 27 `patterns.py` classes off
+         `MOTOR_LIMITS` and onto `ACTIVE_MOTOR_PROFILE` (or the future
+         `JointIntent`) with no way to validate against hardware in this session
+         is the same call Stage 0 (0.2) made about touching that file — deferred
+         to the Stage 4 migration map, not attempted here. The seam
+         (`petctl/motors/`) exists now; wiring everything above L2 through it is
+         Stage 4.
+
+- [x] **1.8 Triage the 5 red `test_power_manager.py` tests.** Pre-existing, not caused
+      by this branch (confirmed via `git stash`). Almost certainly test drift: the test
+      file is unchanged since `46780cb`, while `power_manager.py` has six commits after
+      it — including `c6d7962` ("emergency stop when current exceeds peak limit for
+      500ms"), which changed behaviour. For each failure decide whether the test or the
+      implementation is wrong; do not simply update assertions to match current output,
+      since this is the layer that owns thermal cutoff, current budget and emergency
+      stop. Stage 2 rests on this layer being trustworthy.
+
+      **Done 2026-09-22. Root cause: not `c6d7962` — `git bisect`-by-reading found
+      `aff0cfb` ("power: switch to production UPS limits (4A budget, 5.5A peak, 6A
+      wall)", Nick, 2026-06-25).** All 5 failures were `TestBinPackSeed`/
+      `TestBinPackPromotion` cases that construct a bare `PowerManager(bin_policy=...)`
+      with no `budget_override`, so `_effective_budget()` fell through to the live
+      `POWER_BUDGET.max_bus_current_a` default. That default was intentionally moved
+      from the dev value (2.0A) to the production UPS value (4.0A) in `aff0cfb` — a
+      real, human-authored config change, not a bug — and every one of these 5 tests
+      hardcoded arithmetic ("at dev budget (2A) ... only 1 motor seeds") that silently
+      broke the moment the global default no longer matched what the test assumed.
+      The implementation (`allocate_budget`'s bin-pack seeding/promotion) is correct
+      and untouched.
+
+      **Fix:** the 4 tests whose point is the seeding/promotion *algorithm* (not which
+      real-world budget is configured) now pin `budget_override=2.0` explicitly, so
+      they test the algorithm against a known number instead of silently trusting
+      whatever `POWER_BUDGET` happens to default to — this is the fix that survives
+      the next intentional budget change, not "update the assertion to match today's
+      number" (which would just make this the same kind of landmine again).
+      `test_seed_detects_wall_power_source` is different: its entire point is that
+      `_effective_budget()` selects `wall_max_bus_current_a` over `max_bus_current_a`
+      once `PowerSource.WALL` is detected, so it can't use `budget_override` (that
+      bypasses power-source selection for both branches). Instead its expected active
+      motor count is now derived from the live `POWER_BUDGET` (`wall_max_bus_current_a`
+      / worst-case per-motor current) rather than the stale hardcoded "1", with an
+      assertion that the fixture still exercises something (`1 <= expected_n < 7`) so
+      a future budget change that makes the test vacuous (e.g. all 7 or 0 motors fit)
+      fails loudly instead of silently passing.
+      All 83 tests green (`pytest -q`); no production code changed for this item.
+
+- [ ] **1.9 Minimal CI.** No `.github/workflows/`. A single job running `pytest` on push
+      would have caught 1.8 six commits earlier, and matters more once Stage 2 starts
+      adding a layer that the existing suite doesn't cover.
+
+**Gate:** 1.1–1.3 and 1.7–1.8 must be green before Stage 2. 1.4–1.5 may be deferred if they prove
 contentious, but record the decision either way — the engine inherits whatever is here.
 
 ---
@@ -214,7 +596,9 @@ throughout; the engine is an additional `--control behavior` option, not a repla
       fade in/out timing, empty-contribution handling, missing-servo handling.
       Pure functions on synthetic state — no backend needed.
 
----
+- [ ] **2.6** Log per-behaviour contributions to Rerun (`behaviors/<name>/motor_N`)
+      alongside the blended result, so a blend can be read apart visually. Extends 1.6
+      from two curves to N+1.---
 
 ## Stage 3 — Primitives
 
@@ -229,6 +613,15 @@ knows other primitives exist. Where perception is needed, read the value
       provide this). Params: intensity, width, sign. Writes `angle_deg` only.
 - [ ] **3.3** `stiffness.py` — writes `stiffness`/`damping` only, `angle_deg = 0`.
       Covers yield, freeze, idle, limp.
+- [ ] **3.4a Damping headroom.** `kd_default` (0.035) is 87.5% of `kd_max` (0.04), so
+      `JointIntent.damping` saturates at 1.14x above 1.0 — effectively a reduction-only
+      channel, which leaves `purr.py` nowhere to live. After 1.1, purr's actual
+      modulation depth is 0.005 (was 0.045 at the old 0.08 peak): 9x less, effectively
+      inaudible. Fix by giving purr its own floor rather than starting from default —
+      sweep ~0.010 to `kd_max` for a depth of 0.030, two-thirds of the original and
+      entirely under the ceiling Open decision #1 set. Do **not** lower `kd_default`
+      globally; that changes the feel of every behaviour.
+
 - [ ] **3.4** `purr.py` — writes `damping` only as a travelling wave, `angle_deg = 0`.
       Direct port of `PurrRippleMotion`'s existing approach; proves the gain channel.
 - [ ] **3.5** `drift.py` — bounded random walk. Covers explore, contort, writhe.
@@ -256,16 +649,24 @@ Not covered by primitives, and staying as standalone `Motion` classes: `twitch`,
 
 ## Open decisions (Nick's call — ask, do not assume)
 
-1. **Is `kd_max = 0.04` real?** Purr has been running at 0.08 since March with no
-   apparent harm. Either raise the limit to match reality or lower purr to match the
-   limit. Affects 1.1 and 3.4.
+1. ~~**Is `kd_max = 0.04` real?**~~ **Resolved 2026-09-22: 0.04 stands.**
+   `PurrRippleMotion.KD_TARGET` comes down from 0.08 to comply, and moves into the
+   GL40 II profile (1.7) rather than staying a class constant. Purr will feel weaker
+   than at ICRA/ICSR — expect to recover the effect through the crest envelope
+   (`CREST_POWER`) or ripple rate rather than peak kd. Affects 1.1 and 3.4.
 2. **Who owns the joint servo (1.4)?** Recommendation: the backend, since it already
    has anti-windup and the true per-motor timebase; strip the controller-level LPF to a
    pure safety clamp and let the engine do expressive smoothing. This changes how the
    robot feels, so it wants hardware time and probably a before/after recording.
-3. **Does the motor swap land first?** If GIM3505/AK45 arrive during this work, any
-   gain tuning against GL40 dynamics is discarded. If so, prioritise 1.3 and Stages 2–3
-   (structure, testable offline) and defer 1.4 tuning until the new motors are in.
+   Offline mock comparison (2026-09-22, see 1.4) numerically supports this recommendation
+   — backend-only tracked a smooth target ~1.9x better than controller-only/both and
+   bounded the commanded-vs-actual gap under a step where controller-only didn't — but
+   it's mock data at nominal gains, not a substitute for the hardware session. 1.4 and 1.5
+   are being taken together as one hardware session.
+3. ~~**Does the motor swap land first?**~~ **Resolved 2026-09-22: staying on GL40 II
+   for now.** 1.4 and 1.5 are unblocked — tune against GL40 dynamics. Nick's standing
+   constraint: *everything here must be motor agnostic*, which is what 1.7 enforces.
+   Gain values are GL40-specific and live in its profile; structure above L2 is not.
 4. **Keep `patterns.py` indefinitely or retire it?** The plan assumes parallel operation
    through Stage 3 and selective retirement in Stage 4.
 

@@ -512,12 +512,19 @@ class TestBinPackSeed:
     """Active bin is seeded from the priority-ordered pending queue up to budget."""
 
     def test_seed_puts_one_motor_at_dev_budget(self) -> None:
-        """At dev budget (2A) with worst-case 2A/motor, only 1 motor seeds the active bin."""
+        """At dev budget (2A) with worst-case 2A/motor, only 1 motor seeds the active bin.
+
+        Pins the budget via `budget_override` rather than relying on
+        `POWER_BUDGET.max_bus_current_a`'s default — that default is the live
+        production value (4A UPS, see `aff0cfb`) and has already changed once
+        since this test was written; the seeding *algorithm* this test checks
+        is independent of which real-world budget is configured.
+        """
         from petctl.power_manager import BinPackPolicy
 
         motor_ids = [1, 2, 3, 4, 5]
         state = _alloc_state()
-        pm = PowerManager(bin_policy=BinPackPolicy(priority=motor_ids))
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=motor_ids), budget_override=2.0)
         active, pending = pm.allocate_budget(_commands(motor_ids), state)
 
         assert len(pm._active_motor_set) == 1
@@ -525,34 +532,53 @@ class TestBinPackSeed:
         assert set(pending) == {2, 3, 4, 5}
 
     def test_seed_respects_priority_order(self) -> None:
-        """Pending queue is ordered by BinPackPolicy.priority."""
+        """Pending queue is ordered by BinPackPolicy.priority.
+
+        Budget pinned via `budget_override` — see test_seed_puts_one_motor_at_dev_budget.
+        """
         from petctl.power_manager import BinPackPolicy
 
         motor_ids = [1, 2, 3, 4, 5]
         priority = [5, 3, 1, 4, 2]
         state = _alloc_state()
-        pm = PowerManager(bin_policy=BinPackPolicy(priority=priority))
+        pm = PowerManager(bin_policy=BinPackPolicy(priority=priority), budget_override=2.0)
         _, pending = pm.allocate_budget(_commands(motor_ids), state)
 
         assert pending == [3, 1, 4, 2]   # motor 5 seeded, rest in priority order
 
     def test_seed_detects_wall_power_source(self) -> None:
-        """Wall power source is detected after wall_confirm_ticks; dev wall budget
-        (2.5A at 14.6V) still seeds only 1 motor — floor is ~1.64A/motor so only
-        1 fits. The test verifies detection and that bin-pack continues working."""
+        """Wall power source is detected after wall_confirm_ticks, and bin-pack seeds
+        against the wall budget (not the battery budget) once detected.
+
+        Deliberately does NOT use `budget_override` — the point of this test is that
+        `_effective_budget()` picks `wall_max_bus_current_a` over `max_bus_current_a`
+        once `_power_source == WALL`, so the expected motor count is derived from
+        today's live `POWER_BUDGET` rather than a hardcoded number (which is exactly
+        what went stale here before: this test assumed the dev wall budget of 2.5A
+        and broke silently when `aff0cfb` moved it to the 6A production slip-ring
+        ceiling).
+        """
         from petctl.config import POWER_BUDGET as b
         from petctl.power_manager import BinPackPolicy
 
         motor_ids = [1, 2, 3, 4, 5, 6, 7]
-        state = _alloc_state(voltage_v=14.6)
+        voltage_v = 14.6
+        state = _alloc_state(voltage_v=voltage_v)
         pm = PowerManager(bin_policy=BinPackPolicy(priority=motor_ids))
         # Trigger wall power source detection (requires wall_confirm_ticks consecutive readings)
         for _ in range(b.wall_confirm_ticks + 1):
             pm.update(state, now=0.0)
         _, pending = pm.allocate_budget(_commands(motor_ids), state)
 
+        worst_case_a = b.per_motor_worst_case_w / voltage_v
+        expected_n = int(b.wall_max_bus_current_a / worst_case_a)
+        assert 1 <= expected_n < len(motor_ids), (
+            "test fixture assumption broken: wall budget should fit more than one "
+            "motor but fewer than all seven, or this test stops exercising anything"
+        )
+
         assert pm._power_source == PowerSource.WALL
-        assert len(pm._active_motor_set) == 1   # dev wall budget (2.5A) < 2 × floor (1.64A)
+        assert len(pm._active_motor_set) == expected_n
         assert 1 in pm._active_motor_set         # priority-first motor seeded
 
     def test_no_pending_when_all_fit(self) -> None:
@@ -572,13 +598,17 @@ class TestBinPackPromotion:
     """Motors are promoted from pending when bus current EMA shows headroom."""
 
     def test_promotion_when_ema_below_threshold(self) -> None:
-        """Pending motor is promoted when _current_ema < budget × headroom_factor."""
+        """Pending motor is promoted when _current_ema < budget × headroom_factor.
+
+        Budget pinned via `budget_override` — see
+        TestBinPackSeed.test_seed_puts_one_motor_at_dev_budget for why.
+        """
         from petctl.power_manager import BinPackPolicy
 
         motor_ids = [1, 2, 3]
         policy = BinPackPolicy(priority=motor_ids, headroom_factor=0.8)
         state = _alloc_state()
-        pm = PowerManager(bin_policy=policy)
+        pm = PowerManager(bin_policy=policy, budget_override=2.0)
 
         # First tick: seed with motor 1, motors 2 and 3 pending
         pm.allocate_budget(_commands(motor_ids), state)
@@ -592,13 +622,17 @@ class TestBinPackPromotion:
         assert 2 not in pending
 
     def test_no_promotion_when_ema_above_threshold(self) -> None:
-        """No promotion when bus current EMA is at or above budget × headroom_factor."""
+        """No promotion when bus current EMA is at or above budget × headroom_factor.
+
+        Budget pinned via `budget_override` — see
+        TestBinPackSeed.test_seed_puts_one_motor_at_dev_budget for why.
+        """
         from petctl.power_manager import BinPackPolicy
 
         motor_ids = [1, 2, 3]
         policy = BinPackPolicy(priority=motor_ids, headroom_factor=0.8)
         state = _alloc_state()
-        pm = PowerManager(bin_policy=policy)
+        pm = PowerManager(bin_policy=policy, budget_override=2.0)
 
         pm.allocate_budget(_commands(motor_ids), state)
         pm._current_ema = 1.7   # 1.7A > 2A × 0.8 = 1.6A → no headroom

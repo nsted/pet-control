@@ -36,7 +36,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
-from petctl.config import POWER_BUDGET
+from petctl.config import ACTIVE_MOTOR_PROFILE, POWER_BUDGET
 from petctl.types import PowerTelemetry, RobotState, ServoCommand
 
 logger = logging.getLogger(__name__)
@@ -84,14 +84,21 @@ class SystemState(Enum):
 
 @dataclass(frozen=True)
 class PowerThresholds:
-    """Thermal protection thresholds. Tune here without touching logic."""
+    """Protection thresholds. Tune here without touching logic.
+
+    Thermal thresholds are per-motor data, owned by the active MotorProfile
+    (SHAPE_LAYER Stage 1.7, see petctl/motors/) — sourced from there rather
+    than hardcoded here, which is what made them a CLAUDE.md violation before
+    ("import all hardware limits from petctl/config.py"). Voltage thresholds
+    describe PET's battery/ADC wiring, not the motor, so they stay here.
+    """
 
     # --- Thermal (per motor; applied to max(drive_temp, winding_temp)) ---
-    temp_soft_warning_c: float = 55.0       # reduce Kp/Kd/τ_ff by 50%
-    temp_hard_cutoff_c: float = 65.0        # exit motor mode for this motor
-    temp_global_emergency_c: float = 75.0   # exit motor mode for ALL motors
-    temp_hysteresis_recovery_c: float = 50.0
-    temp_hysteresis_cooldown_s: float = 30.0
+    temp_soft_warning_c: float = ACTIVE_MOTOR_PROFILE.thermal.temp_soft_warning_c
+    temp_hard_cutoff_c: float = ACTIVE_MOTOR_PROFILE.thermal.temp_hard_cutoff_c
+    temp_global_emergency_c: float = ACTIVE_MOTOR_PROFILE.thermal.temp_global_emergency_c
+    temp_hysteresis_recovery_c: float = ACTIVE_MOTOR_PROFILE.thermal.temp_hysteresis_recovery_c
+    temp_hysteresis_cooldown_s: float = ACTIVE_MOTOR_PROFILE.thermal.temp_hysteresis_cooldown_s
 
     # --- Voltage display ---
     voltage_low_warning_v: float = 10.8    # 3.6 V/cell — informational

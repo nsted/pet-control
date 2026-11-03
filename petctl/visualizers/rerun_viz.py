@@ -472,8 +472,19 @@ class RerunVisualizer(Visualizer):
         rr = self._rr
         views = []
         if self.show_3d:
-            views.append(rrb.Spatial3DView(origin="/", name="Robot"))
+            # Default camera: the robot spans ~25 units around (0, 4.8, 4.5) at zero
+            # pose (model units) and curls by ±60°, so view it obliquely from ~80 away.
+            views.append(rrb.Spatial3DView(
+                origin="/",
+                name="Robot",
+                eye_controls=rrb.EyeControls3D(
+                    position=(55.0, 50.0, 45.0),
+                    look_target=(0.0, 4.8, 4.5),
+                    eye_up=(0.0, 0.0, 1.0),
+                ),
+            ))
         views.append(rrb.Vertical(
+            rrb.TimeSeriesView(origin="motors/position", name="Position (rad, commanded vs actual)"),
             rrb.TimeSeriesView(origin="motors/velocity", name="Velocity (rad/s)"),
             rrb.TimeSeriesView(origin="motors/torque", name="Torque (Nm)"),
             rrb.TimeSeriesView(origin="motors/temperature", name="Temperature (°C)"),
@@ -498,12 +509,24 @@ class RerunVisualizer(Visualizer):
         servo_ids = [int(mod["id"]) for mod in self._module_meta if int(mod["id"]) > 0]
         for sid in servo_ids:
             label = f"motor {sid}"
+            rr.log(f"motors/position/motor_{sid}/actual", rr.SeriesLines(names=f"{label} actual"), static=True)
+            rr.log(f"motors/position/motor_{sid}/commanded", rr.SeriesLines(names=f"{label} commanded"), static=True)
             rr.log(f"motors/velocity/motor_{sid}", rr.SeriesLines(names=label), static=True)
             rr.log(f"motors/torque/motor_{sid}", rr.SeriesLines(names=label), static=True)
             rr.log(f"motors/temperature/motor_{sid}", rr.SeriesLines(names=label), static=True)
 
     def _log_motor_state(self, rr, state: RobotState) -> None:
-        """Log velocity, torque, and temperature for each motor."""
+        """Log position (commanded vs actual), velocity, torque, and temperature for each motor.
+
+        Commanded is the post-slew setpoint (`RobotState.servo_commanded_positions`,
+        populated each tick by Controller from `_slew_last_sent_rad`) — plotting it
+        alongside actual position is what makes filter lag and tracking error visible
+        (SHAPE_LAYER 1.6; the gap between the two curves is what 1.4 tunes).
+        """
+        for sid, val in state.servo_positions.items():
+            rr.log(f"motors/position/motor_{sid}/actual", rr.Scalars(float(val)))
+        for sid, val in state.servo_commanded_positions.items():
+            rr.log(f"motors/position/motor_{sid}/commanded", rr.Scalars(float(val)))
         for sid, val in state.motor_velocities.items():
             rr.log(f"motors/velocity/motor_{sid}", rr.Scalars(float(val)))
         for sid, val in state.motor_torques.items():

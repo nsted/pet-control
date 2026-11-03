@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = ["torch>=2.0.0"]
+split = ["eclipse-zenoh>=1.10"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

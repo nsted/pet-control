@@ -1972,7 +1972,12 @@ class PurrRippleMotion(Motion):
 
     name = "purr"
 
-    KD_TARGET: float = 0.08  # peak kd — causes vibration
+    # Peak kd — was a class constant (0.08, 2x kd_max) that passed through the
+    # encoder unclamped for months (SHAPE_LAYER Stage 0 finding 0.1). Nick's
+    # call (Open decision #1): 0.04 (kd_max) stands, so purr's peak is kd_max
+    # itself — read from the active motor profile via MOTOR_LIMITS (SHAPE_LAYER
+    # 1.1/1.7), not hardcoded here. Recover the ICRA/ICSR feel through
+    # CREST_POWER or ripple rate, not peak kd.
     BASE_HZ: float = 0.3    # ripple frequency at speed=1.0 (~3.3s per pass)
     CREST_POWER: float = 0.5    # exponent on sin envelope; fractional values narrow the crest
 
@@ -1986,7 +1991,7 @@ class PurrRippleMotion(Motion):
         self._start = time.monotonic()
         hz = self.BASE_HZ * self.speed
         logger.info("[BEHAVIOR] PurrRipple: speed=%.1f (%.2f Hz)", self.speed, hz)
-        logger.debug("[BEHAVIOR] PurrRipple: kd target=%.2f, %.2f Hz.", self.KD_TARGET, hz)
+        logger.debug("[BEHAVIOR] PurrRipple: kd target=%.2f, %.2f Hz.", MOTOR_LIMITS.kd_max, hz)
 
     def is_active(self) -> bool:
         return True
@@ -2011,7 +2016,7 @@ class PurrRippleMotion(Motion):
             else:
                 # Higher CREST_POWER narrows the active lobe without changing motor ordering
                 envelope = math.sin(phase) ** self.CREST_POWER
-                kd = MOTOR_LIMITS.kd_default + envelope * (self.KD_TARGET - MOTOR_LIMITS.kd_default)
+                kd = MOTOR_LIMITS.kd_default + envelope * (MOTOR_LIMITS.kd_max - MOTOR_LIMITS.kd_default)
                 cmds.append(ServoCommand(servo_id=sid, position=0.0, kp=MOTOR_LIMITS.kp_default, kd=kd, torque_ff=0.0))
 
         return cmds

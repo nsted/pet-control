@@ -10,6 +10,7 @@ Usage:
     petctl run --no-viz                         # headless (sensors only, no Rerun)
     petctl run --dry-run                        # never send servo commands
     petctl run --host 192.168.1.42              # connect to robot by IP
+    petctl run --record session.jsonl           # log one JSON line per tick
     petctl info                                 # connect and print robot status
 """
 
@@ -23,6 +24,8 @@ from typing import Optional
 import typer
 
 from petctl.backends.robot import ROBOT_DEFAULT_HOST, ROBOT_DEFAULT_PORT
+from petctl.protocols import Backend
+from petctl.transport import DEFAULT_ENDPOINT
 
 app = typer.Typer(
     name="petctl",
@@ -59,11 +62,44 @@ def _load_fsr_offsets() -> Optional[dict[int, dict[str, float]]]:
         return None
 
 
+def _build_inner_backend(
+    backend: str,
+    *,
+    mode: str,
+    state: Optional[str],
+    num_modules: int,
+    host: str,
+    port: int,
+    calibrate: bool,
+    motors: Optional[str],
+) -> Backend:
+    """Construct the hardware-side backend ('mock' or 'robot'); exits on an unknown name."""
+    if backend == "mock":
+        from petctl.backends.mock import MockBackend
+        return MockBackend(mode=mode, state_file=state, num_modules=num_modules)  # type: ignore[arg-type]
+    if backend == "robot":
+        from petctl.backends.robot import RobotBackend
+        return RobotBackend(
+            host=host,
+            port=port,
+            calibrate_on_connect=calibrate,
+            motor_ids=_parse_motor_ids(motors),
+            fsr_offsets=_load_fsr_offsets(),
+        )
+    typer.echo(f"Unknown backend '{backend}'. Choose: mock, robot", err=True)
+    raise typer.Exit(1)
+
+
 @app.command()
 def run(
     backend: str = typer.Option(
         "mock",
-        help="Backend: 'mock' (no robot) or 'robot' (real robot)",
+        help="Backend: 'mock' (no robot), 'robot' (real robot), or 'remote' (a running `petctl driver`)",
+    ),
+    bus: str = typer.Option(
+        DEFAULT_ENDPOINT,
+        "--bus",
+        help="Message-bus endpoint for --backend remote (must match `petctl driver --bus`)",
     ),
     control: str = typer.Option(
         "engage",
@@ -192,6 +228,16 @@ def run(
         "--vel",
         help="Default motion speed scale (0.05–1.0). For ollama: used until LLM responds. For patterns: scales hz/speed at launch.",
     ),
+    record: Optional[str] = typer.Option(
+        None,
+        "--record",
+        help="Write one JSON line per control-loop tick to this .jsonl file",
+    ),
+    duration: Optional[float] = typer.Option(
+        None,
+        "--duration",
+        help="Stop automatically after this many seconds (for fixed-length recordings)",
+    ),
 ) -> None:
     """Run the petctl controller."""
 
@@ -205,25 +251,21 @@ def run(
         logging.getLogger("petctl.power_manager").setLevel(logging.DEBUG)
 
     # --- Build backend ---
-    if backend == "mock":
-        from petctl.backends.mock import MockBackend
-        _backend = MockBackend(
-            mode=mode,
-            state_file=state,
-            num_modules=num_modules,
-        )
-    elif backend == "robot":
-        from petctl.backends.robot import RobotBackend
-        _backend = RobotBackend(
-            host=host,
-            port=port,
-            calibrate_on_connect=calibrate,
-            motor_ids=_parse_motor_ids(motors),
-            fsr_offsets=_load_fsr_offsets(),
-        )
+    _backend: Backend
+    if backend == "remote":
+        # Hardware and safety live in the driver process; nothing is wrapped here.
+        from petctl.backends.remote import RemoteBackend
+        from petctl.transport import ZenohBus
+        _backend = RemoteBackend(ZenohBus(connect=bus))
     else:
-        typer.echo(f"Unknown backend '{backend}'. Choose: mock, robot", err=True)
-        raise typer.Exit(1)
+        _inner = _build_inner_backend(
+            backend, mode=mode, state=state, num_modules=num_modules,
+            host=host, port=port, calibrate=calibrate, motors=motors,
+        )
+        # Thermal / voltage / current protection lives in the backend wrapper,
+        # not in the Controller, so no control scheme can bypass it.
+        from petctl.backends.safety import SafetyBackend
+        _backend = SafetyBackend(_inner)
 
     # --- Build motion source ---
     if control == "keyboard":
@@ -273,8 +315,20 @@ def run(
             log_touch=log_touch,
             log_loop=log_loop,
             cap_recal=cap_recal,
+            record_file=record,
         )
         ctrl.speed_gain = vel
+        _timer: Optional[asyncio.Task[None]] = None
+        if duration is not None:
+            async def _stop_after() -> None:
+                # Start the clock once the control loop is actually running
+                # (viz startup can take several seconds).
+                while not ctrl._running:
+                    await asyncio.sleep(0.05)
+                await asyncio.sleep(duration)
+                ctrl.stop()
+
+            _timer = asyncio.create_task(_stop_after())
         _ui = None
         if dev_ui:
             from petctl.dev_ui import DevUI
@@ -284,8 +338,49 @@ def run(
         try:
             await ctrl.run()
         finally:
+            if _timer is not None:
+                _timer.cancel()
             if _ui is not None:
                 _ui.stop()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def driver(
+    backend: str = typer.Option("mock", help="Hardware side: 'mock' or 'robot'"),
+    bus: str = typer.Option(DEFAULT_ENDPOINT, "--bus", help="Endpoint to listen on (brain: `petctl run --backend remote --bus ...`)"),
+    mode: str = typer.Option("interactive", help="Mock mode: 'interactive', 'file', 'mock-sensor-sine', 'noise'"),
+    state: Optional[str] = typer.Option(None, "--state", help="Path to mock_state.json for file/interactive modes"),
+    num_modules: int = typer.Option(8, help="Number of simulated modules (mock backend only)"),
+    host: str = typer.Option(ROBOT_DEFAULT_HOST, help="Robot hostname or IP address (robot backend)"),
+    port: int = typer.Option(ROBOT_DEFAULT_PORT, help="Robot WebSocket port (robot backend)"),
+    calibrate: bool = typer.Option(False, "--calibrate", help="Re-zero software offsets to current pose on connect (robot backend)"),
+    motors: Optional[str] = typer.Option(None, "--motors", help="Comma-separated MIT motor IDs to use (robot backend)"),
+    log_robot: bool = typer.Option(False, "--log-robot", help="Debug logging for the robot backend"),
+    log_power: bool = typer.Option(False, "--log-power", help="Debug logging for the power manager"),
+) -> None:
+    """Run the hardware side (SafetyBackend + backend) and serve it on the message bus."""
+    if log_robot:
+        logging.getLogger("petctl.backends.robot").setLevel(logging.DEBUG)
+    if log_power:
+        logging.getLogger("petctl.power_manager").setLevel(logging.DEBUG)
+
+    inner = _build_inner_backend(
+        backend, mode=mode, state=state, num_modules=num_modules,
+        host=host, port=port, calibrate=calibrate, motors=motors,
+    )
+
+    from petctl.backends.safety import SafetyBackend
+    from petctl.driver import Driver
+    from petctl.transport import ZenohBus
+
+    async def _run() -> None:
+        drv = Driver(SafetyBackend(inner), ZenohBus(listen=bus))
+        await drv.run()
 
     try:
         asyncio.run(_run())
