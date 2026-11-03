@@ -330,3 +330,14 @@ temperature (all chatter runs were at 33–42 °C, all quiet runs at 43–45 °C
 the chain swinging in Nick's hand, or where the tail happened to rest inside its backlash. The statement that "the default kd 0.035 is too high" is **not
 established**; the sweep's kd comparison was real for that session but did not reproduce.
 
+#### Slow-excitation run for the tail (built 2026-11-03; not yet run on the robot)
+
+`scripts/excite_tail.py` + `petctl/tail_fit.py`. Smooth rate-limited steps (±0.3, ±0.4 rad at 3 rad/s) and gentle sweeps (0.2–1.4 Hz, ±0.15 rad) that the 50 Hz telemetry
+can resolve; every motor frame is logged at its true arrival time (`RobotBackend.set_feedback_listener`) with the commands as sent. The fit simulates the whole
+closed loop at 1 kHz and fits seven parameters at once to the measured **position and torque**: inertia J, viscous B and Coulomb C friction, a stiffness K of
+either sign, the *effective* kp and kd (so gain units are measured, not assumed) and the command delay. An earlier integral-regression fit was rejected: at 50 Hz it
+overestimated J by 20-40% in simulation. Validation: on simulated data it recovers kp/kd/J/C/delay (kp to 15%, J to 25%, delay to 15 ms) and detects a 2x kp-units
+discrepancy from a bad starting guess (ratio 2.4 vs 2.0); end-to-end on the mock it recovers J 0.0145 (true 0.015), B 0.032 (0.030), effective kp 0.298 (commanded 0.30),
+position error < 1% of travel. Runs at the gl40.py-quiet gains by default (kp 0.3, kd 0.02) and stops on bus current, temperature, power-manager intervention or a
+runaway (angle leaves ±0.6 rad, then parks at soft gains and goes on).
+
