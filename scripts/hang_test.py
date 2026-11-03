@@ -48,6 +48,7 @@ from petctl.hang_analysis import (
     fit_gravity_friction,
     modules_below,
     predicted_stiffness,
+    predicted_stiffness_point_masses,
 )
 from petctl.types import RobotState, ServoCommand
 
@@ -63,7 +64,12 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--servo", type=int, nargs="+", default=[7], help="Servos to test, in order (lightest first)")
     p.add_argument("--held-module", type=int, default=0, help="Module you hold the robot by (0 = head)")
     p.add_argument("--mass-kg", type=float, default=2.2, help="Total robot mass")
-    p.add_argument("--pitch-cm", type=float, default=5.1, help="Distance between adjacent joint axes")
+    p.add_argument("--pitch-cm", type=float, default=5.1,
+                   help="Distance between adjacent motor/joint axes (UNCONFIRMED: 5.1 from the viewer model, ~11.6 from the CAD)")
+    p.add_argument("--com-model", choices=["motor-axis", "uniform"], default="motor-axis",
+                   help="motor-axis: each module's mass sits at its motor axis (Nick); uniform: mass spread along each module")
+    p.add_argument("--module-masses", type=float, nargs=8, default=None, metavar="KG",
+                   help="Mass of modules 0..7 in kg (default: total mass split equally)")
     p.add_argument("--tilt-deg", type=float, default=45.0, help="Joint axis tilt from vertical-plane geometry")
     p.add_argument("--step-rad", type=float, default=0.04, help="Command increment between holds")
     p.add_argument("--max-cmd-rad", type=float, default=0.30, help="Largest command offset from the hanging pose")
@@ -267,14 +273,19 @@ async def main_async(args: argparse.Namespace) -> int:
             pts, stats = await sweep_joint(rig, servo)
             all_points.extend(pts)
             n_below = modules_below(servo, args.held_module)
-            k_pred = predicted_stiffness(n_below, args.mass_kg, args.pitch_cm / 100.0, tilt_deg=args.tilt_deg)
+            masses = args.module_masses or [args.mass_kg / 8.0] * 8
+            if args.com_model == "motor-axis":
+                k_pred = predicted_stiffness_point_masses(servo, args.held_module, masses, args.pitch_cm / 100.0,
+                                                          tilt_deg=args.tilt_deg)
+            else:
+                k_pred = predicted_stiffness(n_below, sum(masses), args.pitch_cm / 100.0, tilt_deg=args.tilt_deg)
             fit = fit_gravity_friction(pts)
             if fit is None:
                 print(f"  not enough data ({len(pts)} holds)" + (f"; stopped: {rig.abort}" if rig.abort else ""))
             else:
-                ratio = fit.stiffness_nm_per_rad / k_pred if k_pred > 0 else float("nan")
+                ratio_txt = f"{fit.stiffness_nm_per_rad / k_pred:.2f}" if k_pred > 1e-6 else "n/a (no gravity lever predicted)"
                 print(f"  {len(pts)} holds, {n_below} modules below: K = {fit.stiffness_nm_per_rad:.3f} ± {fit.stiffness_se:.3f} N·m/rad "
-                      f"(predicted {k_pred:.3f}, measured/predicted {ratio:.2f}); Coulomb friction c = {fit.coulomb_nm:.4f} ± {fit.coulomb_se:.4f} N·m; "
+                      f"(predicted {k_pred:.3f}, measured/predicted {ratio_txt}); Coulomb friction c = {fit.coulomb_nm:.4f} ± {fit.coulomb_se:.4f} N·m; "
                       f"offset {fit.offset_nm:+.4f}; residual {fit.resid_rms_nm:.4f}; max |tau| {stats['max_tau']:.3f}; "
                       f"temp {stats.get('temp_start', 0):.0f}->{stats.get('temp_end', 0):.0f} C")
                 rows_out.append({"servo": servo, "n_below": n_below, "K": fit.stiffness_nm_per_rad, "K_se": fit.stiffness_se,

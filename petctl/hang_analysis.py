@@ -67,6 +67,23 @@ def predicted_stiffness(
     return GRAVITY_M_S2 * math.cos(math.radians(tilt_deg)) * m * pitch_m * n_below ** 2 / 2.0
 
 
+def predicted_stiffness_point_masses(
+    servo_id: int, held_module: int, module_masses_kg: Sequence[float], pitch_m: float, *, tilt_deg: float = 45.0
+) -> float:
+    """Predicted gravity stiffness (N·m/rad) with each module's mass concentrated at its motor axis.
+
+    Bench information (Nick, 2026-11-03): the bulk of each module's mass is at the middle of its motor, and
+    servo k's motor axis is joint k's axis. So module j sits ``|j - k| * pitch_m`` from joint k's axis and a
+    module's own mass has no lever arm about its own joint. ``K = g*cos(tilt) * sum_j m_j * |j - k| * pitch``
+    over the modules on the moving side of the joint (modules >= k if the robot is held by a module < k,
+    otherwise modules < k). Servo 7 held by the head therefore has K = 0 (only its friction can be measured).
+    """
+    n = len(module_masses_kg)
+    moving = range(servo_id, n) if held_module < servo_id else range(0, servo_id)
+    lever = sum(module_masses_kg[j] * abs(j - servo_id) * pitch_m for j in moving)
+    return GRAVITY_M_S2 * math.cos(math.radians(tilt_deg)) * lever
+
+
 def fit_gravity_friction(points: Sequence[HoldPoint], *, with_offset: bool = True) -> Optional[GravityFriction]:
     """Least squares ``tau = K*theta + c*direction (+ b0)``. None if under-determined."""
     if len(points) < (4 if with_offset else 3):
