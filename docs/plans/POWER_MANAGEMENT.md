@@ -341,3 +341,20 @@ discrepancy from a bad starting guess (ratio 2.4 vs 2.0); end-to-end on the mock
 position error < 1% of travel. Runs at the gl40.py-quiet gains by default (kp 0.3, kd 0.02) and stops on bus current, temperature, power-manager intervention or a
 runaway (angle leaves ±0.6 rad, then parks at soft gains and goes on).
 
+#### RESULT: tail slow-excitation run (servo 7 hanging from the head, 2026-11-03, data/excite/excite_s7_a.json)
+
+6 trials (steps ±0.3, ±0.4 rad; sweeps 0.2–1.4 Hz), commanded kp 0.3 / kd 0.02, motors 43–46 °C, bus peak 0.80 A, no aborts. The tail reached 0.286 / 0.396 rad on the
+0.3 / 0.4 rad steps. Closed-loop simulation fit to measured position and torque (position rmse 0.017 rad = 3–8% of travel; torque rmse 0.003 N·m):
+
+| quantity | result | confidence |
+|---|---|---|
+| effective kp | 0.285 N·m/rad (commanded 0.3, ratio 0.95) | spread 36%: **the gain units are N·m/rad as assumed** (the earlier "2.2x" claim was wrong) |
+| effective kd | 0.0198 N·m·s/rad (commanded 0.02, ratio 0.99) | spread 27%: units confirmed |
+| Coulomb friction C | 0.0057 N·m | spread 34%; **agrees with the independent torque-pulse breakaway bracket 0.0037–0.0075** |
+| stiffness K | −0.008 N·m/rad (tiny, slightly negative) | consistent with the predicted ~0 gravity lever for the tail; too small to explain the runaway at kp 0.1 |
+| command delay | ~20 ms | poorly pinned (spread 83%) |
+| viscous friction B | ~0.0004–0.0007 N·m·s/rad (small) | weakly determined |
+| **inertia J** | **not identified; upper bound ≈ 1e-3 kg·m², most likely 1–5e-4** | profile of the fit loss at fixed J: ×1.00 (1e-4), ×1.02 (3e-4), ×1.07 (6e-4), ×1.23 (1.2e-3), ×1.64 (2.4e-3, which would also need kp 0.73 / kd 0.08) |
+
+The mock's 0.015 kg·m² is at least ~15x too large for the tail. A real inertia estimate needs faster excitation than 50 Hz telemetry resolves (or a held-joint measurement), which this run cannot provide.
+
