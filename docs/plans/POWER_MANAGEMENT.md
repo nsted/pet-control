@@ -382,3 +382,15 @@ The mock's 0.015 kg·m² is at least ~15x too large for the tail. A real inertia
   mass below it than servo 4), so a single mass scaling cannot explain both. Suspected (not verified): the other joints, held by kp 0.8 springs, deflect as the tested joint rotates the chain (axes alternate, so rotating one joint loads its
   neighbours), so the measured stiffness is a coupled-system quantity. The masses therefore cannot be inferred from these sweeps; weigh the modules, or fit all seven joints together.
 
+#### Coupled gravity model validated; one-run characterisation built (2026-11-03)
+
+`petctl/gravity_model.py`: exact static model of the hanging robot from the CAD geometry (joint axes and module positions), 0.275 kg per module with the centre of mass on the motor axis (Nick), every joint held by
+`tau = kp·(cmd − phi)` springs (kp 0.8, confirmed in N·m/rad). It reproduces the simple closed form for an isolated joint (1.70, 1.22, 0.81, 0.50, 0.25, 0.09, 0 N·m/rad) but shows that with the neighbours held
+the stiffness seen at a joint is lower and falls monotonically (servo 1…7: 0.86, 0.47, 0.36, 0.27, 0.18, 0.08, 0), which resolves the earlier "non-monotonic" servo 3 vs 4 puzzle (it was coupling through the held joints).
+With **no free parameters** it predicts the torques of the *other* joints in the existing runs: servo 3 test: joint 2 slope 0.91 (corr 0.99), joint 3 0.81 (0.98), joint 4 0.98 (0.99), joint 5 0.55, joint 6 0.32; servo 4 test:
+joint 2 0.98 (0.84), joint 3 0.70 (0.96), joint 5 0.51, joint 6 0.35. The tested joint's own torque is inflated by its friction (servo 4: 1.8x). So the 275 g / motor-axis model is right to about the accuracy of the friction.
+
+`scripts/capture_all.py`: one automated run that sweeps all seven joints in succession (hysteresis sweeps, then steps and a gentle chirp each) and then in groups (adjacent pairs, a travelling wave over all seven, six static whole-body poses), logging every
+joint's angle, torque and velocity, the commands, bus current/voltage, temperatures, power-manager caps and every motor feedback frame at its true arrival time to one `.npz`. Offline analysis follows from the raw data. Dry-run on the mock
+(78 s at quick scale); the real run is ~8–9 min with cool-down waits and the usual stops (4.5 A bus, 52 °C, 0.6 rad per joint, power-manager intervention).
+
