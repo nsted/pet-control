@@ -434,3 +434,18 @@ Findings:
 Open: joint 1 needs its own protocol (threshold above its static torque, or a relative threshold); capture the 5-7 reaches/gains with
 the allocator's caps raised or the joint alone commanded (no limit change made, ask first); group poses should use a floor
 amplitude rather than the min reach.
+
+## RESULT: MuJoCo model + replay of the capture (2026-11-03)
+
+`petctl/sim/mujoco_model.py` (CAD chain, 7 x 0.275 kg on the motor axes, MIT PD law applied in Python with delay and torque cap,
+`frictionloss` from the capture, armature as rotor inertia) and `scripts/replay_mujoco.py` (replays the logged commands, compares
+angle/torque). Statics agree with `gravity_model.equilibrium` (test: angles 0.01 rad, torques 0.01 N.m). `pip install mujoco`
+(optional extra `sim`).
+
+Replay (kp 0.8, kd 0.035, logged commands): joints 2-7 angle corr 0.77-0.99, RMS 0.04-0.09 rad, real-vs-sim angle slope 0.9-1.1;
+torque corr 0.76-0.97 for joints 2-6. Phase RMS: baseline 0.015, ramps 0.05, steps/pairs 0.10, waves 0.14 rad.
+- The sweep over delay 0-0.16 s, armature 1e-4..1e-3 and logged-vs-constant cap barely changes the score (0.086-0.096 rad mean RMS):
+  this capture does NOT constrain delay, armature or the cap mode -> randomise them in the sim.
+- Joint 1 does not match (angle corr 0.07): real moved -0.9..+0.23 rad with a mean +0.08 N.m torque; sim -0.15..+0.13. A rigid head
+  mount is wrong - the hand hold is compliant/yawing. Needs a compliant head support (or a measured one) in the sim.
+- Tail torque (joint 7) corr ~0: the measured tail torque is dominated by the chatter noted above, which isn't modelled.
