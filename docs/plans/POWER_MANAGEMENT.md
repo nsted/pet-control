@@ -261,3 +261,15 @@ The robot hung straight (all static torques ≤ 0.03 N·m; motors 33–38 °C; b
 - Script now has `--kp/--kd` for the joint under test, a windowed (0.1 s mean) speed guard, and reports the hold-still jitter.
 Next: a passive observation of servo 7 with zero gains (equilibrium angle, ring-down) to separate those causes.
 
+#### Hanging test, servo 7 at the default gains (kp 0.8, kd 0.035; Nick: these are the usable gains), 2026-11-03
+
+Connected by IP (192.168.18.33) because `pet-robot.local` briefly failed to resolve. Robot hung straight (static torques ≤ 0.007 N·m, motors 34 °C,
+bus 0.9–1.45 A). One hold completed, then the 0.45 rad/s mean-speed guard tripped on chatter; not a safety event.
+- **The free-hanging tail is in a sustained ~6.5 Hz limit cycle while holding still:** angle ±0.02 rad (std 0.0146), torque ±0.076 N·m
+  (std 0.052, ~25x a stable joint), mean |velocity| 0.21 rad/s. This is the PD loop oscillating at sqrt(kp/J) with the 20-100 ms feedback delay.
+- **Tail inertia from the oscillation frequency:** J ≈ kp/(2π·6.5)² ≈ 4.8e-4 kg·m² (approximate; delay lowers the frequency). Agrees with the
+  ~5e-4 estimated earlier from the 70 ms rise to 0.3 rad/s; the mock's 0.015 is ~30x too large for the tail.
+- Tail friction cannot be read through that chatter (torque jitter 0.05 vs friction 0.004-0.0075 N·m), and its predicted gravity lever is zero, so
+  the hanging test is not informative for servo 7. Proceed to the loaded joints (servos 4, 3, 2, 1).
+- For the RL actuator model: the default PD gains limit-cycle on a light, free joint; the sim needs the feedback delay and 50 Hz sampling to reproduce it.
+
