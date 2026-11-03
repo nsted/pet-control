@@ -164,8 +164,13 @@ Stage 7 results so far (real robot, wall supply 14.4 V, driver + brain on one Ma
 - **Loaded-body limp (brain SIGKILL while holding a ±0.4 rad alternating curl on all 7 servos, twice):** gains ramped to zero over 1 s; joints eased back 0.1–0.3 rad over ~1.5 s. Nick: "It curled then relaxed" — smooth, nothing dropped. **Decision: limp is the accepted safe-hold end state; no low-stiffness hold needed.**
 - **LLM-driven motion over the split (`--control ollama`, qwen2.5:7b-instruct because gemma3:4b is not pulled; Nick touched the robot for 75 s):** gesture detection fired ("warm and full of energy"), the model returned ENGAGE (0.8–0.9) and EXPLORE (0.7) decisions, speed updates were applied and the behavior switched to Explore. Four early `TimeoutError`s are the Ollama HTTP client timing out while the 7B model loaded cold (not the split; later calls 3–8 s). The recorder dropped 744 frames (queue full) in this run; likely CPU contention from the 7B model but not verified.
 - **Driver SIGKILL while holding a 0.3 rad curl:** the robot STAYED STIFF (command latched in firmware); the brain correctly reported the driver lost but cannot release it. Starting a new `petctl driver` released the motors (firmware reboot on connect). So: after a driver crash, restart the driver. A firmware-side command timeout would be the only full fix (not in this plan's scope; flag for firmware work). A SIGKILL cannot run shutdown code; normal exits (SIGINT/SIGTERM) disable torques.
-- [ ] Then resume SHAPE_LAYER 1.4a → 1.4 → 1.5 with the filter decision made inside the driver; then `MuJoCoBackend`.
+- [ ] Next (re-scoped 2026-11-03, see `SHAPE_LAYER.md` "Re-scope"; the LLM-driven approach is archived in favour of RL, which is what this split is for):
+  - [ ] SHAPE_LAYER 1.4a — measure per-joint inertia and friction on hardware (system ID for the simulator).
+  - [ ] Audit the driver's `RobotBackend.send_commands` ramp so it is purely protective (SHAPE_LAYER 1.4, rewritten). Any other filtering becomes part of the training environment and must be identical in the MuJoCo driver and the real driver.
+  - [ ] `MuJoCoBackend` as a driver behind the same bus and `SafetyBackend`.
+  - [ ] Scope the RL plan (action space and action rate, SHAPE_LAYER 1.5 deferred to it). Not yet written.
+  - Optional hardening found in Stage 7: a firmware-side command timeout (a SIGKILLed driver leaves the last command latched).
 
 ## Out of scope
 
-MuJoCo, RL, ROS 2, changing slew filters or loop rate, splitting the brain further, retiring `patterns.py`.
+Within this plan: MuJoCo, RL training, ROS 2, changing slew filters or loop rate, splitting the brain further, retiring `patterns.py`. (MuJoCo and RL are now the intended follow-ups; see the Next item above.)

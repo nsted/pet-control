@@ -7,6 +7,7 @@ When ready to execute a plan, break it into GitHub issues for discrete tasks.
 | File | Description |
 |------|-------------|
 | [BEHAVIOR_SYSTEM.md](BEHAVIOR_SYSTEM.md) | Staged implementation plan for behaviors, perception, valence, and agent |
+| [SHAPE_LAYER.md](SHAPE_LAYER.md) | Joint-level foundations (limits, recorder, mock dynamics, motor profile). **Re-scoped 2026-11-03:** behavior engine/primitives/migration archived in favour of RL; 1.4a (system ID) kept |
 | [PROCESS_SPLIT.md](PROCESS_SPLIT.md) | Split petctl into driver (safety + backend) and brain (Controller) processes over a local bus |
 
 ## Convention

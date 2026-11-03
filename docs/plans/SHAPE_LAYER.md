@@ -1,7 +1,9 @@
 # Shape Layer — Implementation Plan
 
-Status: **Stage 0 complete. Stage 1.1, 1.2, 1.3, 1.6, 1.7, 1.8 complete (2026-09-22).**
-1.4, 1.4a, 1.5, 1.9 open. Supersedes the
+Status: **RE-SCOPED 2026-11-03 — see "Re-scope" below.** The LLM-driven approach is being
+archived in favour of an RL-driven brain, so Stages 2–4 (engine, primitives, migration)
+and the L3–L5 layers are archived. Stage 0 and 1.1, 1.2, 1.3, 1.6, 1.7, 1.8 are complete
+(2026-09-22) and stay. 1.4a is kept; 1.4 and 1.5 are rewritten for RL; 1.9 open. Supersedes the
 sequencing in `BEHAVIOR_SYSTEM.md` (0/17 complete since March); that document's Stage 1
 is absorbed into Stage 2 here.
 
@@ -24,12 +26,43 @@ defects — see Stage 2.
 
 ---
 
-## Where we left off — 2026-09-22
+## Re-scope — 2026-11-03: RL replaces the LLM-driven approach
+
+Decision (Nick): archive the LLM-driven behavior approach and move to an RL-driven brain.
+The driver/brain process split (`PROCESS_SPLIT.md`, merged to `main`) exists for this:
+a policy brain, a MuJoCo driver for training, and the same `SafetyBackend` under both.
+
+**Archived (kept in git history and below for reference, not to be built):**
+- L5 mood layer (Ollama), L4 `BehaviorEngine`, L3 primitives, and Stages 2, 3 and 4
+  (engine, primitives, migration of the 27 `patterns.py` classes). A learned policy emits
+  actions directly; there is nothing to blend or hand-tune. `patterns.py` and the Ollama
+  scheme stay working and untouched; they are simply no longer being extended.
+
+**Kept (the layers an RL policy runs on):**
+- Stage 0 audit, 1.1 limits, 1.2 recorder, 1.3 mock dynamics, 1.6 commanded-vs-actual
+  logging, 1.7 motor profile, 1.8 power tests, 1.9 CI.
+- **1.4a** — measure per-joint inertia and friction. This is system identification for
+  the simulator; a MuJoCo model with guessed inertia is a weak training environment.
+- Protective limits: `MOTOR_LIMITS`, thermal/voltage/current protection and the command
+  watchdog (now in the driver's `SafetyBackend`). These bound what is physically allowed
+  and do not constrain what the policy can learn.
+
+**Rewritten:** 1.4 and 1.5 (below).
+
+**Principle.** Any filter between the policy and the motor is part of the *environment*.
+If it exists at deployment it must exist in training, or the policy behaves differently
+on the robot than it did in simulation. So: no behavior-shaping smoothing beyond what the
+hardware needs, and anything that remains is shared between the simulator and the real
+driver and known to the training setup.
+
+---
+
+## Where we left off — 2026-09-22 (historical; superseded by the re-scope above)
 
 **Branch:** `feat/shape-layer`, pushed to origin through `4bfacb5`.
 One uncommitted change: this file (the 1.4a notes). Commit it first.
 
-**Next action: a hardware bench session, and it has a prerequisite — do 1.4a before 1.4.**
+**Next action (as of 2026-09-22; now narrowed to 1.4a only, see Re-scope): a hardware bench session — measure per-joint inertia and friction.**
 
 The short version of why: `scripts/compare_slew_filters.py` says backend-only tracks
 ~1.9x better than controller-only. That result only holds at the *guessed* mock plant.
@@ -73,6 +106,8 @@ before Stage 3 gain tuning, or that tuning gets redone.
 ---
 
 ## Target architecture
+
+> **Archived 2026-11-03 above L2.** L3–L5 below were the LLM/behavior-engine design. Only L2 (joint servo / one MIT conversion) and L1 (firmware) carry forward; an RL policy replaces L3–L5. Kept for reference.
 
 ```
 L5  Mood (ollama)      engine.request("curl", BehaviorParams(intensity=0.6))   ~0.5 Hz
@@ -294,7 +329,12 @@ Everything from here lands on that branch.
       stop within the first tick on `stroke-curl` at 7 active motors under the
       dev budget (4.0A) — expected from the existing bin-pack model, not new.
 
-- [ ] **1.4a Measure joint inertia before choosing a filter owner.**
+- [ ] **1.4a Measure joint inertia and friction (KEPT — system ID for the RL simulator).**
+      *Re-scoped 2026-11-03:* the motivation is now fitting the MuJoCo model, not choosing
+      a filter owner. Procedure unchanged: per-joint step response with the 1.2 recorder,
+      fit inertia and viscous friction for servos 1–7, store in the GL40 II profile (1.7).
+      The text below is the original filter-owner rationale, kept for the data.
+     
       `scripts/compare_slew_filters.py` runs only at the default `MOCK_DYNAMICS`
       (inertia 0.015, friction 0.03) — values its own 1.3 docstring calls "initial
       guesses, not measured". Sweeping them 3x either way shows **the ranking flips**:
@@ -323,7 +363,20 @@ Everything from here lands on that branch.
       Only then choose an owner. Add plant-sweep mode to the harness so the ranking is
       always reported with its sensitivity, never as a single number.
 
-- [ ] **1.4 Resolve the layered slew filters.** Three first-order filters would sit in
+- [ ] **1.4 Joint-command filtering (REWRITTEN 2026-11-03 for RL — not to be built as originally framed).**
+      **New scope:** keep only a *protective* rate limit in the driver, sized to what the
+      motor can physically do (and the existing anti-windup), and audit what the driver's
+      `RobotBackend.send_commands` ramp does today so it is purely protective. Remove the
+      brain-side behavior-shaping low-pass (`Controller._apply_slew_to_commands`, tau 0.10 s)
+      from the RL path: it caps the bandwidth the policy can use and makes the robot move
+      the way a human thought smooth motion should look. Anything smoothing beyond
+      protection becomes part of the training environment (action filtering, action-rate
+      penalty) and must be identical in the MuJoCo driver and the real driver. The
+      expressive-smoothing question ("who owns the joint servo") is dropped with the
+      engine. **Decide the exact action→command mapping when the RL plan is scoped.**
+      Original framing, kept for the data:
+
+      **Resolve the layered slew filters.** Three first-order filters would sit in
       series once the engine lands, each with a different `dt` source:
       `Controller._apply_slew_to_commands` (tau=0.10 s LPF + delta cap, controller-tick dt),
       `RobotBackend.send_commands` (ramp + anti-windup, wall-clock dt), and the sketch's
@@ -373,7 +426,16 @@ Everything from here lands on that branch.
         interacting with any of this. Bring it to the hardware session as a prior, not
         a conclusion.
 
-- [ ] **1.5 Control-loop rate.** `Controller._loop` sleeps `1/(motor_update_hz*4)`
+- [ ] **1.5 Control-loop rate (REWRITTEN 2026-11-03 for RL — deferred).**
+      **New scope:** the policy's action rate is a training decision (likely below the
+      driver's ~165 Hz, with the driver holding or interpolating between actions). Decide
+      it when the RL plan is scoped, together with the action space; do not tune the
+      hand-written loop rate now. The mock findings below still stand as evidence that
+      discarding 3 of 4 computed outputs adds latency, and the driver's wall-clock `dt`
+      floor of 1/120 s is worth fixing when the protective ramp is audited (1.4).
+      Original framing, kept for the data:
+
+      **Control-loop rate.** `Controller._loop` sleeps `1/(motor_update_hz*4)`
       (~200 Hz) while `_pending_frames[sid]` is overwritten and consumed at 50 Hz —
       three of every four `motion.update()` results are discarded, and the slew filter's
       `dt` is 4x smaller than the true command period. Decide whether to run the loop at
@@ -566,6 +628,8 @@ contentious, but record the decision either way — the engine inherits whatever
 
 ## Stage 2 — BehaviorEngine
 
+> **ARCHIVED 2026-11-03** (LLM-driven approach replaced by RL; see Re-scope). Do not build. Kept for reference; items stay unchecked deliberately.
+
 Build fresh in `petctl/behaviors/`. `patterns.py` stays untouched and working
 throughout; the engine is an additional `--control behavior` option, not a replacement.
 
@@ -602,6 +666,8 @@ throughout; the engine is an additional `--control behavior` option, not a repla
 
 ## Stage 3 — Primitives
 
+> **ARCHIVED 2026-11-03** (see Re-scope). Do not build.
+
 Each is a pure function of `(params, state)`. None holds per-servo bookkeeping; none
 knows other primitives exist. Where perception is needed, read the value
 `petctl/perception/` already computes — do not re-derive from raw pads.
@@ -635,6 +701,8 @@ Not covered by primitives, and staying as standalone `Motion` classes: `twitch`,
 
 ## Stage 4 — Migration
 
+> **ARCHIVED 2026-11-03** (see Re-scope). `patterns.py` and the Ollama scheme stay as they are, unextended.
+
 - [ ] **4.1** Migration map: each of the 27 `ALL_PATTERNS` entries to either a
       primitive + parameters, a standalone `Motion`, or retired. Write it down before
       moving anything.
@@ -654,7 +722,7 @@ Not covered by primitives, and staying as standalone `Motion` classes: `twitch`,
    GL40 II profile (1.7) rather than staying a class constant. Purr will feel weaker
    than at ICRA/ICSR — expect to recover the effect through the crest envelope
    (`CREST_POWER`) or ripple rate rather than peak kd. Affects 1.1 and 3.4.
-2. **Who owns the joint servo (1.4)?** Recommendation: the backend, since it already
+2. ~~**Who owns the joint servo (1.4)?**~~ **Superseded 2026-11-03:** replaced by the RL principle in Re-scope (protective limit in the driver; any other filtering is part of the training environment). Original note: Recommendation: the backend, since it already
    has anti-windup and the true per-motor timebase; strip the controller-level LPF to a
    pure safety clamp and let the engine do expressive smoothing. This changes how the
    robot feels, so it wants hardware time and probably a before/after recording.
@@ -667,7 +735,7 @@ Not covered by primitives, and staying as standalone `Motion` classes: `twitch`,
    for now.** 1.4 and 1.5 are unblocked — tune against GL40 dynamics. Nick's standing
    constraint: *everything here must be motor agnostic*, which is what 1.7 enforces.
    Gain values are GL40-specific and live in its profile; structure above L2 is not.
-4. **Keep `patterns.py` indefinitely or retire it?** The plan assumes parallel operation
+4. ~~**Keep `patterns.py` indefinitely or retire it?**~~ **Resolved 2026-11-03:** keep it working, untouched and unextended; retire it only if/when the RL brain makes it redundant. Original note: The plan assumes parallel operation
    through Stage 3 and selective retirement in Stage 4.
 
 ## Conventions
