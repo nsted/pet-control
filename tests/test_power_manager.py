@@ -656,3 +656,115 @@ class TestBinPackPromotion:
 
         assert 1 not in pm._active_motor_set
         assert 1 not in pm._pending_queue
+
+
+# ---------------------------------------------------------------------------
+# Per-motor torque cap: equal share vs demand-weighted allocation, peak and sustained limits
+# ---------------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+import math  # noqa: E402
+import random  # noqa: E402
+
+from petctl.config import POWER_BUDGET  # noqa: E402
+
+_BASE, _COEFF = POWER_BUDGET.per_motor_base_a, POWER_BUDGET.per_motor_torque_coeff
+
+
+def _tau(current_a: float) -> float:
+    return math.sqrt(max(0.0, current_a - _BASE) / _COEFF)
+
+
+def _amps(tau: float) -> float:
+    return _BASE + _COEFF * tau ** 2
+
+
+def _cap_pm(monkeypatch: pytest.MonkeyPatch, mode: str, budget: float = 6.0, n: int = 7) -> PowerManager:
+    monkeypatch.setattr("petctl.power_manager.POWER_BUDGET", dataclasses.replace(POWER_BUDGET, per_motor_cap_mode=mode))
+    pm = PowerManager(budget_override=budget)
+    pm._active_motor_set = set(range(1, n + 1))     # skip cold-start staging: all motors active
+    pm._pending_queue = []
+    return pm
+
+
+def _ff_cmds(torques: dict[int, float]) -> list[ServoCommand]:
+    return [ServoCommand(servo_id=m, position=None, kp=0.0, kd=0.0, torque_ff=t) for m, t in torques.items()]
+
+
+def _applied(pm: PowerManager, torques: dict[int, float], state: RobotState | None = None) -> dict[int, float]:
+    active, _pending = pm.allocate_budget(_ff_cmds(torques), state or _alloc_state())
+    return {c.servo_id: c.torque_ff for c in active}
+
+
+class TestPerMotorTorqueCap:
+    def test_equal_mode_is_the_original_budget_over_n(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "equal")
+        out = _applied(pm, {1: 0.3, **{m: 0.0 for m in range(2, 8)}})
+        assert out[1] == pytest.approx(_tau(6.0 / 7))              # ~0.105 N·m, whatever the others ask
+
+    def test_demand_mode_lets_a_lone_motor_use_the_budget_others_leave(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand")
+        out = _applied(pm, {1: 0.3, **{m: 0.0 for m in range(2, 8)}})
+        assert out[1] == pytest.approx(_tau(POWER_BUDGET.per_motor_peak_current_a))   # the 2 A peak limit, ~0.164
+        assert out[1] > _tau(6.0 / 7)
+
+    def test_two_amp_peak_is_a_hard_limit_per_motor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand", budget=100.0)             # budget is irrelevant here
+        out = _applied(pm, {1: 5.0})
+        assert _amps(out[1]) <= POWER_BUDGET.per_motor_peak_current_a + 1e-9
+
+    def test_everyone_asking_for_a_lot_falls_back_to_the_equal_share(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand")
+        out = _applied(pm, {m: 0.15 for m in range(1, 8)})
+        assert all(v == pytest.approx(_tau(6.0 / 7)) for v in out.values())
+
+    def test_unequal_demand_is_split_by_water_filling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand")
+        asks = {1: 0.15, 2: 0.15, 3: 0.15, 4: 0.12, 5: 0.12, 6: 0.0, 7: 0.0}
+        out = _applied(pm, asks)
+        level = (6.0 - 2 * _amps(0.12) - 2 * _BASE) / 3                # the three heavy motors share the rest
+        assert out[1] == out[2] == out[3] == pytest.approx(_tau(level))
+        assert out[4] == pytest.approx(0.12) and out[5] == pytest.approx(0.12)   # modest asks untouched
+        assert out[6] == 0.0 and out[7] == 0.0
+        assert sum(_amps(abs(v)) for v in out.values()) <= 6.0 + 1e-9
+
+    def test_total_predicted_current_never_exceeds_the_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        rng = random.Random(7)
+        for _ in range(200):
+            pm = _cap_pm(monkeypatch, "demand", budget=rng.choice([2.0, 4.0, 6.0]))
+            asks = {m: rng.choice([0.0, 0.02, 0.05, 0.1, 0.15, 0.3]) for m in range(1, 8)}
+            out = _applied(pm, asks)
+            assert sum(_amps(abs(v)) for v in out.values()) <= pm._effective_budget() + 1e-9
+            assert all(_amps(abs(v)) <= POWER_BUDGET.per_motor_peak_current_a + 1e-9 for v in out.values())
+
+    def test_sustained_limit_eases_the_allowance_down_to_one_amp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand")
+        peak = _applied(pm, {1: 0.3})[1]
+        pm._motor_current_ema[1] = POWER_BUDGET.per_motor_sustained_current_a      # average has reached 1 A
+        sustained = _applied(pm, {1: 0.3})[1]
+        assert peak == pytest.approx(_tau(2.0))
+        assert sustained == pytest.approx(_tau(1.0))                               # ~0.114 N·m
+        pm._motor_current_ema[1] = 0.9                                             # in the knee: in between
+        assert _tau(1.0) < _applied(pm, {1: 0.3})[1] < _tau(2.0)
+
+    def test_running_average_current_is_tracked_from_measured_torque(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand")
+        st = _alloc_state(torques={1: 0.12})
+        st.dt = 0.01
+        for _ in range(1500):                                                      # 15 s = 5 time constants
+            pm.allocate_budget(_ff_cmds({1: 0.12}), st)
+        assert pm._motor_current_ema[1] == pytest.approx(_amps(0.12), rel=0.05)   # ~1.1 A, converged
+
+    def test_over_torquing_motor_still_has_kp_scaled_down(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand", n=2)
+        st = _alloc_state(torques={1: 0.3})                                        # fighting a clamp: 0.3 N·m actual
+        cmd = ServoCommand(servo_id=1, position=None, kp=0.8, kd=0.0, torque_ff=0.0)
+        active, _ = pm.allocate_budget([cmd], st)
+        assert active[0].kp < 0.8
+
+    def test_cap_is_published_in_telemetry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pm = _cap_pm(monkeypatch, "demand")
+        _applied(pm, {1: 0.3, **{m: 0.0 for m in range(2, 8)}})
+        tele = pm.get_telemetry(12.0)
+        assert tele.per_motor_torque_cap_nm[1] == pytest.approx(_tau(2.0))
+        assert set(tele.per_motor_torque_cap_nm) == set(range(1, 8))

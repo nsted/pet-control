@@ -198,3 +198,30 @@ Before the cutoffs are trusted in the gallery, run normal operation logs for 30+
 - The voltage spike behavior is poorly understood as of this writing. Implement the monitoring and the conservative emergency thresholds, but don't tune the per-minute spike rate threshold tightly until we have data on how often spikes occur during clean operation vs anomalous operation.
 - Component voltage ratings (≥25V for most, ≥32V for regulator and motors) mean we have real headroom. The voltage thresholds above are conservative — adjust only after the cause of spikes is understood.
 - All thresholds, including the per-motor temperature triers and all voltage levels, should live in a single configuration dataclass at the top of the module so they can be tuned without code changes elsewhere.
+
+## Per-motor torque cap: demand-weighted allocation (2026-11-03, Nick)
+
+Decision: the total stays at the effective budget (4 A battery, 6 A wall), but it need not be split
+equally between motors; it may be divided unequally and differently from tick to tick. Per motor, a hard
+**2 A peak** and a **sustained average below 1 A**.
+
+Implemented (`PowerBudgetConfig.per_motor_cap_mode`, default `"demand"`; `"equal"` is the old behaviour):
+- Each active motor's *demand* is the model current of the larger of its commanded torque
+  (`|torque_ff|`, `kp·|position error|`) and its measured torque, limited to its own allowance.
+- The budget (minus the idle base current of any pending motors) is split **max-min fair (water-filling)**
+  over those demands: a motor asking for little keeps what it asks for, the rest flows to the motors asking
+  for more, and when everything is demanded at once it reduces to the old equal share. The predicted total
+  can never exceed the budget.
+- Per-motor allowance: peak 2 A (≈0.164 N·m by the model) while that motor's running-average current is low,
+  eased linearly to 1 A as the average (time constant 3 s) goes from 0.8 A to 1 A, tighter above 1 A.
+- The cap is published each tick in `PowerTelemetry.per_motor_torque_cap_nm` and
+  `per_motor_sustained_current_a` (it reflects the *current* requests, so an idle motor shows ≈0).
+- Unchanged: the reactive measured-current backstop, the sustained-peak emergency stop, voltage cutoff,
+  thermal gating, and the cold-start staging of motors.
+
+Caveats: (1) the current model was calibrated only for tau_ff 0.02–0.12 N·m, so 2 A is an extrapolation and
+has **not been checked against measured bus current on the robot**; (2) the kp·error demand uses kp in
+our units, which the code comments say do not map linearly to N·m; (3) the per-motor current is
+model-estimated, the robot only measures total bus current. Hardware validation (step the torque up while
+logging bus current against the model) is still to do before this is merged.
+

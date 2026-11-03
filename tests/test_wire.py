@@ -179,3 +179,28 @@ def test_wrong_version_rejected() -> None:
 
 def test_service_key() -> None:
     assert wire.service_key("power_reset") == "pet/svc/power_reset"
+
+
+def test_power_telemetry_cap_fields_roundtrip_with_int_keys() -> None:
+    from petctl import wire
+    from petctl.types import PowerTelemetry, RobotState
+
+    st = RobotState(power_telemetry=PowerTelemetry(
+        per_motor_torque_cap_nm={1: 0.16, 7: 0.11}, per_motor_sustained_current_a={1: 0.9, 7: 0.2}))
+    back = wire.decode_state(wire.encode_state(st)).power_telemetry
+    assert back is not None
+    assert back.per_motor_torque_cap_nm == {1: 0.16, 7: 0.11}
+    assert back.per_motor_sustained_current_a == {1: 0.9, 7: 0.2}
+
+
+def test_telemetry_from_an_older_sender_without_the_cap_fields_still_decodes() -> None:
+    import json
+
+    from petctl import wire
+    from petctl.types import PowerTelemetry, RobotState
+
+    d = json.loads(wire.encode_state(RobotState(power_telemetry=PowerTelemetry())))
+    d["power_telemetry"].pop("per_motor_torque_cap_nm")
+    d["power_telemetry"].pop("per_motor_sustained_current_a")
+    back = wire.decode_state(json.dumps(d).encode()).power_telemetry
+    assert back is not None and back.per_motor_torque_cap_nm == {}

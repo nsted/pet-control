@@ -47,6 +47,8 @@ class PowerTelemetry:
     voltage_cutoff_active: bool = False                             # True when < low_voltage_cutoff_v
     active_motor_ids: list[int] = field(default_factory=list)       # motors in the current active bin
     pending_motor_ids: list[int] = field(default_factory=list)      # motors queued awaiting headroom
+    per_motor_torque_cap_nm: dict[int, float] = field(default_factory=dict)       # predictive |torque_ff| cap per active motor
+    per_motor_sustained_current_a: dict[int, float] = field(default_factory=dict)  # running-average estimated current per motor
 
 
 @dataclass

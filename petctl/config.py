@@ -291,6 +291,21 @@ class PowerBudgetConfig:
     reactive_scale_max_rate: float = 20.0       # max scale decrease per second (attack); direct ratio cap handles spikes
     reactive_scale_recovery_rate: float = 0.5  # max scale increase per second; slow to let setpoint-tracking work
     enable_per_motor_torque_cap: bool = True    # predictive cap: τ_max = sqrt((budget/n - base) / torque_coeff)
+    # How the total budget is shared between the active motors when capping torque:
+    #   "equal":  every active motor gets budget / n_active (the original behaviour).
+    #   "demand": max-min fair (water-filling) split of the budget over the currents the motors are
+    #             asking for right now, so a motor that needs more can borrow what the others are not
+    #             using. The total still never exceeds the effective budget (4 A battery / 6 A wall).
+    per_motor_cap_mode: str = "demand"
+    # Per-motor limits that hold in "demand" mode whatever the share: a hard peak limit, and a
+    # lower sustained limit enforced on a running average of the (model-estimated) motor current.
+    # Peaks up to per_motor_peak_current_a are allowed while the average is low; the allowance eases
+    # towards per_motor_sustained_current_a as the average (time constant per_motor_sustained_window_s)
+    # approaches it. NB: the current model is calibrated only for tau_ff 0.02-0.12 N·m, so 2 A
+    # (~0.164 N·m) is an extrapolation; the measured-current backstop below is the real guard.
+    per_motor_peak_current_a: float = 2.0
+    per_motor_sustained_current_a: float = 1.0
+    per_motor_sustained_window_s: float = 3.0
 
     # Power source auto-detection via bus voltage
     # Wall supply ≈14.7V, 3S LiPo max ≈12.6V — clearly distinguishable.

@@ -79,11 +79,11 @@ async def test_healthy_passthrough_and_telemetry() -> None:
     sb = SafetyBackend(inner)
     state = await sb.get_state()
     assert state.power_telemetry is not None
-    cmds = [_cmd(M1)]
+    cmds = [ServoCommand(servo_id=M1, position=0.5, kp=10.0, kd=1.0, torque_ff=0.1)]   # within the 2 A peak
     await sb.send_commands(cmds)
     assert len(inner.sent) == 1
     out = inner.sent[0]
-    assert [(c.servo_id, c.position, c.kp, c.kd, c.torque_ff) for c in out] == [(M1, 0.5, 10.0, 1.0, 0.2)]
+    assert [(c.servo_id, c.position, c.kp, c.kd, c.torque_ff) for c in out] == [(M1, 0.5, 10.0, 1.0, 0.1)]
     assert inner.calls == []
 
 
