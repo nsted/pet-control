@@ -50,6 +50,7 @@ TICK_S = 0.01
 SLEW_RAD_S = 3.0                       # command slew limit, well under the backend's 6 rad/s ramp
 FAST_SLEW_RAD_S = 5.5                  # the "fast" steps: just under the backend's 6 rad/s ramp
 N = 7
+GROUP_CAP_FRAC = 0.6                   # group motions never exceed this fraction of --max-angle on any joint
 MAX_REACH_RAD = 0.9                    # never command more than this from the hanging pose (~52 deg)
 
 
@@ -255,8 +256,14 @@ class Capture:
         await self.run(f"chirp{joint}", T + 1.0, lambda t: self._vec(joint, A * math.sin(2 * math.pi * (f0 * t + (f1 - f0) * t * t / (2 * T)))
                                                                      * min(1.0, t / 0.5) * min(1.0, max(0.0, (T - t) / 0.5)) if t < T else 0.0))
 
-    def _wave(self, f: float, lag: float, amp: float) -> Callable[[float], np.ndarray]:
-        amps = amp * self.reach                              # each joint moves a fraction of its own reach
+    def group_amp(self, scale: float = 1.0) -> np.ndarray:
+        """Per-joint amplitude for group motions: --amp-frac of the measured reach, hard-capped at GROUP_CAP_FRAC * --max-angle
+        (after ``scale``) so no joint can approach its abort window even when its reach is large (e.g. the tail)."""
+        cap = GROUP_CAP_FRAC * self.a.max_angle
+        return np.minimum(scale * self.a.amp_frac * self.reach, cap)
+
+    def _wave(self, f: float, lag: float, scale: float) -> Callable[[float], np.ndarray]:
+        amps = self.group_amp(scale)                         # each joint moves a (capped) fraction of its own reach
         return lambda t: np.array([amps[j] * math.sin(2 * math.pi * f * t - j * lag) * min(1.0, t / 1.0) for j in range(N)])
 
     async def fast_steps(self, joint: int) -> None:
@@ -271,27 +278,28 @@ class Capture:
             globals()["SLEW_RAD_S"] = old
 
     async def groups(self) -> None:
-        F = self.a.amp_frac
+        G = self.group_amp()
         for pair in ((7, 6), (5, 4), (3, 2)):
             def fn(t: float, pair: tuple[int, int] = pair) -> np.ndarray:
                 v = np.zeros(N)
-                w = math.sin(2 * math.pi * 0.4 * t) * min(1.0, t / 1.0) * F
-                v[pair[0] - 1], v[pair[1] - 1] = w * self.reach[pair[0] - 1], -w * self.reach[pair[1] - 1]
+                w = math.sin(2 * math.pi * 0.4 * t) * min(1.0, t / 1.0)
+                v[pair[0] - 1], v[pair[1] - 1] = w * G[pair[0] - 1], -w * G[pair[1] - 1]
                 return v
             await self.run(f"pair{pair[0]}{pair[1]}", 8.0, fn)
             await self.settle(1.0)
-        await self.run("wave_0.3Hz", 12.0, self._wave(0.3, 2 * math.pi / N, F))
+        await self.run("wave_0.3Hz", 12.0, self._wave(0.3, 2 * math.pi / N, 1.0))
         await self.settle(1.5)
-        await self.run("wave_0.6Hz", 10.0, self._wave(0.6, 2 * math.pi / N, F * 0.7))
+        await self.run("wave_0.6Hz", 10.0, self._wave(0.6, 2 * math.pi / N, 0.7))
         await self.settle(1.5)
-        R = F * self.reach
+        R = G
+        cap = GROUP_CAP_FRAC * self.a.max_angle
         poses = {
             "pose_zigzag": np.array([R[j] * (1 if j % 2 == 0 else -1) for j in range(N)]),
             "pose_zagzig": np.array([R[j] * (-1 if j % 2 == 0 else 1) for j in range(N)]),
             "pose_all_pos": R.copy(),
             "pose_all_neg": -R,
-            "pose_ramp_up": np.array([R[j] * (j + 1) / N * 1.5 for j in range(N)]),
-            "pose_ramp_down": np.array([-R[j] * (j + 1) / N * 1.5 for j in range(N)]),
+            "pose_ramp_up": np.array([min(cap, R[j] * (j + 1) / N * 1.5) for j in range(N)]),
+            "pose_ramp_down": np.array([-min(cap, R[j] * (j + 1) / N * 1.5) for j in range(N)]),
         }
         for name, pose in poses.items():
             await self.run(name, 4.0, lambda t, pose=pose: pose)
