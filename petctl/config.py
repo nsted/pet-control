@@ -10,13 +10,13 @@ positions in software are radians (`ServoCommand.position`,
 16-bit fields within `MOTOR_LIMITS.pos_min`..`pos_max` (see `backends/robot.py`).
 
 Per-motor numbers (MIT wire-encoding ranges, gains, thermal limits, power
-model) are owned by the active `MotorProfile` in `petctl/motors/` (SHAPE_LAYER
+model) are owned by the active `MotorProfile` in `petctl/motors/` (JOINT_FOUNDATIONS
 Stage 1.7) — `ACTIVE_MOTOR_PROFILE` below. `MotorLimits`, `MockDynamicsConfig`,
 and `PowerBudgetConfig`'s `per_motor_*` fields are read from it rather than
 hardcoded here, so a motor swap only touches `petctl/motors/`. They keep their
 existing field names/types because most call sites above the joint servo still
 read `MOTOR_LIMITS.*`/`MOCK_DYNAMICS.*` directly — migrating those call sites
-to read the profile is SHAPE_LAYER Stage 4, not this file.
+to read the profile is JOINT_FOUNDATIONS Stage 4, not this file.
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ class ControlLoopLimits:
 
 @dataclass(frozen=True)
 class MockDynamicsConfig:
-    """Second-order joint model for `MockBackend` (SHAPE_LAYER Stage 1.3).
+    """Second-order joint model for `MockBackend` (JOINT_FOUNDATIONS Stage 1.3).
 
     Values come from `ACTIVE_MOTOR_PROFILE.power` — initial guesses, not
     measured. The goal is to be *wrong in the same direction* as GL40 II
@@ -263,7 +263,7 @@ class PowerBudgetConfig:
     #   I ≈ base + torque_coeff × τ² × (V_nom / V_bus)   [copper-loss term]
     #         + mech_coeff × |τ × ω| / V_bus              [mechanical power term]
     #
-    # These four are per-motor (owned by ACTIVE_MOTOR_PROFILE.power, SHAPE_LAYER
+    # These four are per-motor (owned by ACTIVE_MOTOR_PROFILE.power, JOINT_FOUNDATIONS
     # Stage 1.7) — see petctl/motors/gl40.py for calibration notes. Everything else
     # in this class describes PET's wiring, not its motors, and survives a motor swap.
     per_motor_base_a: float = ACTIVE_MOTOR_PROFILE.power.per_motor_base_a

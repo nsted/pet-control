@@ -87,7 +87,7 @@ class PowerThresholds:
     """Protection thresholds. Tune here without touching logic.
 
     Thermal thresholds are per-motor data, owned by the active MotorProfile
-    (SHAPE_LAYER Stage 1.7, see petctl/motors/) — sourced from there rather
+    (JOINT_FOUNDATIONS Stage 1.7, see petctl/motors/) — sourced from there rather
     than hardcoded here, which is what made them a CLAUDE.md violation before
     ("import all hardware limits from petctl/config.py"). Voltage thresholds
     describe PET's battery/ADC wiring, not the motor, so they stay here.

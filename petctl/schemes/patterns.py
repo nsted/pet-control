@@ -1973,9 +1973,9 @@ class PurrRippleMotion(Motion):
     name = "purr"
 
     # Peak kd — was a class constant (0.08, 2x kd_max) that passed through the
-    # encoder unclamped for months (SHAPE_LAYER Stage 0 finding 0.1). Nick's
+    # encoder unclamped for months (JOINT_FOUNDATIONS Stage 0 finding 0.1). Nick's
     # call (Open decision #1): 0.04 (kd_max) stands, so purr's peak is kd_max
-    # itself — read from the active motor profile via MOTOR_LIMITS (SHAPE_LAYER
+    # itself — read from the active motor profile via MOTOR_LIMITS (JOINT_FOUNDATIONS
     # 1.1/1.7), not hardcoded here. Recover the ICRA/ICSR feel through
     # CREST_POWER or ripple rate, not peak kd.
     BASE_HZ: float = 0.3    # ripple frequency at speed=1.0 (~3.3s per pass)

@@ -25,7 +25,7 @@ Behavior-neutrality notes:
     not time since the last message.
   * The Controller loop (~200 Hz) and the driver's state rate (also 4 ×
     motor_update_hz) are not locked, so a given state may be returned more
-    than once or skipped. Logged for SHAPE_LAYER 1.5.
+    than once or skipped. Logged for JOINT_FOUNDATIONS 1.5.
 """
 
 from __future__ import annotations

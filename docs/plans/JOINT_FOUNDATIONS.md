@@ -1,4 +1,6 @@
-# Shape Layer — Implementation Plan
+# Joint Foundations — Implementation Plan
+
+> Formerly the "Shape Layer" plan (renamed 2026-11-03). The shape/behavior layers above L2 are archived for the RL direction; what remains is the joint-level foundation (limits, recorder, mock dynamics, motor profile, system ID). The git branch is still named `feat/shape-layer`.
 
 Status: **RE-SCOPED 2026-11-03 — see "Re-scope" below.** The LLM-driven approach is being
 archived in favour of an RL-driven brain, so Stages 2–4 (engine, primitives, migration)

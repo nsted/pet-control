@@ -1,5 +1,5 @@
 """
-petctl.motors.gl40 — CubeMars GL40 II motor profile (SHAPE_LAYER Stage 1.7).
+petctl.motors.gl40 — CubeMars GL40 II motor profile (JOINT_FOUNDATIONS Stage 1.7).
 
 MIT-mode over CAN (SLCAN text), as wired for PET. Bit field widths
 (16/12/12/12/12) and the enable/disable/set-zero magic frames are this
@@ -58,7 +58,7 @@ class GL40_II(MotorProfile):
         # in power_manager.py covers residual error.
         per_motor_mech_coeff=0.3,
         per_motor_worst_case_w=24.0,
-        # Mock joint dynamics (SHAPE_LAYER Stage 1.3) — initial guesses, not
+        # Mock joint dynamics (JOINT_FOUNDATIONS Stage 1.3) — initial guesses, not
         # measured; fit from petctl/recorder.py recordings once real motor step
         # responses are available.
         mock_inertia_kg_m2=0.015,

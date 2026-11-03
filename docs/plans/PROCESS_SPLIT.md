@@ -23,7 +23,7 @@ driver:  SafetyBackend( RobotBackend | MockBackend )   → later: MuJoCoBackend
 
 - Work only on `feat/process-split`. Never commit to `main` or `feat/shape-layer`.
 - `.venv` is shared; `eclipse-zenoh` goes in optional extra `[split]`.
-- **Behavior-neutral.** Slew filter stays in `Controller`; loop rate unchanged (SHAPE_LAYER 1.4, 1.4a, 1.5 stay open).
+- **Behavior-neutral.** Slew filter stays in `Controller`; loop rate unchanged (JOINT_FOUNDATIONS 1.4, 1.4a, 1.5 stay open).
 - In-process `petctl run --backend robot|mock` must work after every change (this is the rollback).
 - Ask before installing anything (incl. zenoh), moving the robot, or any GitHub issue action.
 - Hardware limits come from `petctl/config.py`.
@@ -43,7 +43,7 @@ driver:  SafetyBackend( RobotBackend | MockBackend )   → later: MuJoCoBackend
 ## Stage 0 — Branch and baseline
 
 - [x] Branch created by Nick.
-- [x] SHAPE_LAYER notes committed; this plan added to README.
+- [x] JOINT_FOUNDATIONS notes committed; this plan added to README.
 - [x] Add `--duration` to `petctl run`; baseline `pytest`, `mypy`, and a fixed-length mock run with `--control sine --record`.
 
 Baseline results (2026-11-02, commit 0ce5768 + `--duration`):
@@ -82,7 +82,7 @@ Stage 3 results (2026-11-02): `petctl/wire.py` + `tests/test_wire.py` (26 tests)
 
 - [x] Zenoh transport, keys `pet/state`, `pet/cmd`, `pet/svc/<name>`; extra `[split]` (`petctl/transport.py`: `Bus` ABC, `ZenohBus`, in-memory `LoopbackBus`).
 - [x] `petctl driver --backend robot|mock`; `RemoteBackend`; `petctl run --backend remote [--bus ENDPOINT]`.
-- [x] Note Controller 200 Hz loop vs cached state; logged below for SHAPE_LAYER 1.5.
+- [x] Note Controller 200 Hz loop vs cached state; logged below for JOINT_FOUNDATIONS 1.5.
 
 Done when: mock driver + `--backend remote` brain runs the same scripted motion as baseline.
 
@@ -90,7 +90,7 @@ Stage 4 results (2026-11-02): eclipse-zenoh 1.10.2 installed (Nick approved) int
 
 Design decisions and caveats:
 - **Driver state rate = 4 × `motor_update_hz`** (same cadence the PowerManager saw in-process; its EMA windows are tuned to it), ≈162 Hz measured. The brain also commands at ≈165 Hz, so the plan's "~50 Hz `pet/cmd`" is really ≈165 Hz to stay behavior-neutral.
-- **SHAPE_LAYER 1.5 input:** Controller loop and driver state publisher are two unsynchronized ≈165 Hz loops, so a given state can be seen twice or skipped. `RemoteBackend` computes `dt` per `get_state()` call (as in-process) rather than per message.
+- **JOINT_FOUNDATIONS 1.5 input:** Controller loop and driver state publisher are two unsynchronized ≈165 Hz loops, so a given state can be seen twice or skipped. `RemoteBackend` computes `dt` per `get_state()` call (as in-process) rather than per message.
 - Commands are applied in order; the driver's queue (256) drops the oldest on overload.
 - Brain-side `is_real_hardware` is False; the driver logs the dev-power-budget warning itself.
 - `set_stagger` is fire-and-forget from the brain (the Backend method is synchronous).
@@ -140,7 +140,7 @@ Note: the in-process mock showed a 1.426 rad peak at t = 0.6 s. Cause: the first
 
 Inter-arrival (jitter) at ≈165 Hz: commands 5.9–6.2 ms mean, std 0.45–0.69 ms, p99 6.7–8.2 ms; state 5.9–6.2 ms mean, std 0.8–2.4 ms. The single 231 ms state-latency outlier appears only with Rerun on (23 ms headless), consistent with the viewer launch stalling the brain process once at startup (not independently verified).
 
-Takeaway for SHAPE_LAYER 1.5: the bus itself costs ≈ 0.5–1 ms per hop (≈ 0.2 control ticks); the dominant effect of the split is that the brain's ≈165 Hz loop and the driver's ≈165 Hz state publisher are unsynchronised, so a state is occasionally seen twice or skipped (inter-arrival p99 ≈ 8 ms vs 6 ms mean).
+Takeaway for JOINT_FOUNDATIONS 1.5: the bus itself costs ≈ 0.5–1 ms per hop (≈ 0.2 control ticks); the dominant effect of the split is that the brain's ≈165 Hz loop and the driver's ≈165 Hz state publisher are unsynchronised, so a state is occasionally seen twice or skipped (inter-arrival p99 ≈ 8 ms vs 6 ms mean).
 
 ## Stage 7 — Bench (needs Nick's explicit go-ahead; the robot moves)
 
@@ -164,11 +164,11 @@ Stage 7 results so far (real robot, wall supply 14.4 V, driver + brain on one Ma
 - **Loaded-body limp (brain SIGKILL while holding a ±0.4 rad alternating curl on all 7 servos, twice):** gains ramped to zero over 1 s; joints eased back 0.1–0.3 rad over ~1.5 s. Nick: "It curled then relaxed" — smooth, nothing dropped. **Decision: limp is the accepted safe-hold end state; no low-stiffness hold needed.**
 - **LLM-driven motion over the split (`--control ollama`, qwen2.5:7b-instruct because gemma3:4b is not pulled; Nick touched the robot for 75 s):** gesture detection fired ("warm and full of energy"), the model returned ENGAGE (0.8–0.9) and EXPLORE (0.7) decisions, speed updates were applied and the behavior switched to Explore. Four early `TimeoutError`s are the Ollama HTTP client timing out while the 7B model loaded cold (not the split; later calls 3–8 s). The recorder dropped 744 frames (queue full) in this run; likely CPU contention from the 7B model but not verified.
 - **Driver SIGKILL while holding a 0.3 rad curl:** the robot STAYED STIFF (command latched in firmware); the brain correctly reported the driver lost but cannot release it. Starting a new `petctl driver` released the motors (firmware reboot on connect). So: after a driver crash, restart the driver. A firmware-side command timeout would be the only full fix (not in this plan's scope; flag for firmware work). A SIGKILL cannot run shutdown code; normal exits (SIGINT/SIGTERM) disable torques.
-- [ ] Next (re-scoped 2026-11-03, see `SHAPE_LAYER.md` "Re-scope"; the LLM-driven approach is archived in favour of RL, which is what this split is for):
-  - [ ] SHAPE_LAYER 1.4a — measure per-joint inertia and friction on hardware (system ID for the simulator).
-  - [ ] Audit the driver's `RobotBackend.send_commands` ramp so it is purely protective (SHAPE_LAYER 1.4, rewritten). Any other filtering becomes part of the training environment and must be identical in the MuJoCo driver and the real driver.
+- [ ] Next (re-scoped 2026-11-03, see `JOINT_FOUNDATIONS.md` "Re-scope"; the LLM-driven approach is archived in favour of RL, which is what this split is for):
+  - [ ] JOINT_FOUNDATIONS 1.4a — measure per-joint inertia and friction on hardware (system ID for the simulator).
+  - [ ] Audit the driver's `RobotBackend.send_commands` ramp so it is purely protective (JOINT_FOUNDATIONS 1.4, rewritten). Any other filtering becomes part of the training environment and must be identical in the MuJoCo driver and the real driver.
   - [ ] `MuJoCoBackend` as a driver behind the same bus and `SafetyBackend`.
-  - [ ] Scope the RL plan (action space and action rate, SHAPE_LAYER 1.5 deferred to it). Not yet written.
+  - [ ] Scope the RL plan (action space and action rate, JOINT_FOUNDATIONS 1.5 deferred to it). Not yet written.
   - Optional hardening found in Stage 7: a firmware-side command timeout (a SIGKILLed driver leaves the last command latched).
 
 ## Out of scope

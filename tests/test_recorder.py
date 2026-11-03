@@ -1,4 +1,4 @@
-"""Tests for StateRecorder (SHAPE_LAYER Stage 1.2)."""
+"""Tests for StateRecorder (JOINT_FOUNDATIONS Stage 1.2)."""
 
 from __future__ import annotations
 

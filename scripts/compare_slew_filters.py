@@ -1,5 +1,5 @@
 """
-compare_slew_filters.py — SHAPE_LAYER Stage 1.4/1.5 offline prep (mock-only).
+compare_slew_filters.py — JOINT_FOUNDATIONS Stage 1.4/1.5 offline prep (mock-only).
 
 Compares candidate arrangements for:
 
@@ -10,7 +10,7 @@ Compares candidate arrangements for:
       (50 Hz), or today's 4x oversample where `_pending_frames` is overwritten
       three times out of four before the TX loop ever sends it?
 
-This is NOT the decision. Open decision #2 in docs/plans/SHAPE_LAYER.md is
+This is NOT the decision. Open decision #2 in docs/plans/JOINT_FOUNDATIONS.md is
 explicit that who-owns-the-servo is Nick's call and "wants hardware time and
 probably a before/after recording." This script produces comparison data to
 bring to that session — it does not touch `controller.py` or `robot.py`, and
@@ -96,7 +96,7 @@ async def simulate(*, owner: Owner, loop_hz: float, target_fn: Callable[[float],
     `loop_hz` picks the control-loop rate. A new setpoint reaches the mock's
     physical plant only once per wire period (1/WIRE_HZ), mirroring
     `_pending_frames` being overwritten by the controller loop between
-    `_motor_tx_loop` pops — the actual mechanism SHAPE_LAYER 1.5 flags.
+    `_motor_tx_loop` pops — the actual mechanism JOINT_FOUNDATIONS 1.5 flags.
     """
     dt_loop = 1.0 / loop_hz
     wire_period = 1.0 / WIRE_HZ

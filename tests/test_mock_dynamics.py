@@ -1,4 +1,4 @@
-"""Tests for MockBackend's second-order joint dynamics (SHAPE_LAYER Stage 1.3)."""
+"""Tests for MockBackend's second-order joint dynamics (JOINT_FOUNDATIONS Stage 1.3)."""
 
 from __future__ import annotations
 

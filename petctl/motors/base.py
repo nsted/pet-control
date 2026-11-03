@@ -1,5 +1,5 @@
 """
-petctl.motors.base — MotorProfile ABC (SHAPE_LAYER Stage 1.7).
+petctl.motors.base — MotorProfile ABC (JOINT_FOUNDATIONS Stage 1.7).
 
 Everything specific to one motor/driver combination — MIT-mode wire encoding,
 control gains, thermal limits, and the electrical power model — lives behind
@@ -46,7 +46,7 @@ class MotorEncodingRanges:
 class MotorGains:
     """Control gains for this motor.
 
-    Once the behavior layer lands (SHAPE_LAYER Stage 2), `JointIntent.
+    Once the behavior layer lands (JOINT_FOUNDATIONS Stage 2), `JointIntent.
     stiffness`/`damping` stay normalized 0-1 scales; these are what 1.0
     resolves to in Nm/rad for this motor, chosen so felt stiffness stays
     comparable across a motor swap.
@@ -72,7 +72,7 @@ class MotorThermalLimits:
 @dataclass(frozen=True)
 class MotorPowerModel:
     """Per-motor electrical power model (`petctl.power_manager`) and the mock
-    joint-dynamics constants used by `MockBackend` (SHAPE_LAYER Stage 1.3)."""
+    joint-dynamics constants used by `MockBackend` (JOINT_FOUNDATIONS Stage 1.3)."""
 
     per_motor_base_a: float
     per_motor_torque_coeff: float

@@ -521,7 +521,7 @@ class RerunVisualizer(Visualizer):
         Commanded is the post-slew setpoint (`RobotState.servo_commanded_positions`,
         populated each tick by Controller from `_slew_last_sent_rad`) — plotting it
         alongside actual position is what makes filter lag and tracking error visible
-        (SHAPE_LAYER 1.6; the gap between the two curves is what 1.4 tunes).
+        (JOINT_FOUNDATIONS 1.6; the gap between the two curves is what 1.4 tunes).
         """
         for sid, val in state.servo_positions.items():
             rr.log(f"motors/position/motor_{sid}/actual", rr.Scalars(float(val)))

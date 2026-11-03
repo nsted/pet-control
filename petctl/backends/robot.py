@@ -73,7 +73,7 @@ class RobotBackend(_BackendBase):
         self.auto_reconnect = auto_reconnect
         self.reconnect_delay = reconnect_delay
         # Everything MIT-specific (frame layout, gains, thermal limits, power
-        # model) lives behind this — see petctl/motors/ (SHAPE_LAYER Stage 1.7).
+        # model) lives behind this — see petctl/motors/ (JOINT_FOUNDATIONS Stage 1.7).
         self._profile: MotorProfile = motor_profile
         # Per-module FSR zero-pressure offsets: {module_id: {face: float}}.
         # Subtracted after normalization; values from scripts/calibrate_fsr.py.
@@ -109,7 +109,7 @@ class RobotBackend(_BackendBase):
         self._last_command_time: dict[int, float] = {}
         # (motor_id, field) pairs currently outside the active profile's declared
         # limits — tracked so a sustained violation logs once on onset, not every
-        # tick (SHAPE_LAYER 1.1), and logs again if it recurs after recovering.
+        # tick (JOINT_FOUNDATIONS 1.1), and logs again if it recurs after recovering.
         self._clamp_violations_logged: set[tuple[int, str]] = set()
         self._motor_tx_task: Optional[asyncio.Task] = None
         self._module_poll_task: Optional[asyncio.Task] = None
@@ -311,7 +311,7 @@ class RobotBackend(_BackendBase):
         the profile's declared `gains.kp_max`/`kd_max`, so an out-of-range
         command would otherwise reach the motor unclamped. This is the
         CLAUDE.md rule ("never hardcode servo limits") made enforceable — see
-        SHAPE_LAYER Stage 0 finding 0.1 (`PurrRippleMotion.KD_TARGET=0.08`
+        JOINT_FOUNDATIONS Stage 0 finding 0.1 (`PurrRippleMotion.KD_TARGET=0.08`
         passed through at 2x `kd_max=0.04` for months, undetected).
         """
         g = self._profile.gains
