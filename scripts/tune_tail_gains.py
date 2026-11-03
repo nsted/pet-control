@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import datetime as dt
 import json
 import logging
@@ -59,6 +60,13 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--bail-std", type=float, default=0.05, help="Skip stiffer kd/kp once hold jitter std exceeds this (rad)")
     p.add_argument("--max-bus-a", type=float, default=4.5)
     p.add_argument("--max-temp-c", type=float, default=52.0)
+    p.add_argument("--cap-mode", choices=["demand", "equal"], default=None,
+                   help="Override the power manager's per-motor torque cap mode for this run (default: the configured one). "
+                        "'equal' is the original behaviour, 'demand' the new demand-weighted allocation")
+    p.add_argument("--raw", action="store_true",
+                   help="Bypass SafetyBackend/power manager entirely and talk to the robot backend directly (as the old "
+                        "tune_kp_kd.py did). Only for short, low-torque comparisons; keeps the bus-current/temperature stops")
+    p.add_argument("--still-only", action="store_true", help="Measure only the hold-still phase (no step)")
     p.add_argument("--out", default=None)
     p.add_argument("--confirm-motion", action="store_true")
     return p.parse_args()
@@ -177,7 +185,12 @@ async def main_async(args: argparse.Namespace) -> int:
               "a hand ready).", file=sys.stderr)
         return 2
     inner: Any = RobotBackend(host=args.host, port=args.port, auto_reconnect=False) if args.backend == "robot" else MockBackend()
-    backend = SafetyBackend(inner)
+    if args.cap_mode is not None:
+        import petctl.power_manager as pm_mod
+
+        pm_mod.POWER_BUDGET = dataclasses.replace(pm_mod.POWER_BUDGET, per_motor_cap_mode=args.cap_mode)
+    backend: Any = inner if args.raw else SafetyBackend(inner)
+    print(f"Power path: {'RAW backend (no power manager)' if args.raw else 'SafetyBackend, cap mode ' + (args.cap_mode or 'as configured')}")
     out = Path(args.out or f"data/tune/tune_{args.backend}_{dt.datetime.now():%Y%m%d_%H%M%S}.jsonl")
     out.parent.mkdir(parents=True, exist_ok=True)
     if not await backend.connect():
@@ -213,7 +226,8 @@ async def main_async(args: argparse.Namespace) -> int:
                 await tn.phase(SAFE_KP, SAFE_KD, 0.0, 1.0, "park")
                 outcome = await tn.phase(kp, kd, 0.0, 0.8, "settle")
                 outcome = outcome or await tn.phase(kp, kd, 0.0, args.still_s, f"still_{kp}_{kd}")
-                outcome = outcome or await tn.phase(kp, kd, args.step_rad, args.step_s, f"step_{kp}_{kd}")
+                if not args.still_only:
+                    outcome = outcome or await tn.phase(kp, kd, args.step_rad, args.step_s, f"step_{kp}_{kd}")
                 if tn.abort:
                     break
                 if outcome == "runaway":

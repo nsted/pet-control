@@ -305,3 +305,13 @@ The tail is the lightest joint; heavier joints may tolerate or need more kd and 
 Gain *units* remain unresolved: the "effective kp ≈ 1.8 (2.2x nominal)" regression from the chattering trace is withdrawn, and the step-onset torque (0.28x of kp·0.1)
 cannot decide it either, since the joint settles within 3-7 telemetry samples. A units check needs a held, non-moving error (e.g. a joint clamped by hand or a loaded joint).
 
+#### CONFOUND in the tail-chatter evidence (2026-11-03)
+
+Nick: holding the robot vertical with the gl40.py gains (kp 0.8, kd 0.035) has always been smooth for him. The bench measurement that looked quiet
+(servo 7, default gains, angle std 0.00023 rad, torque std 0.0004 N·m) was taken on the **original power manager**; every hanging run that
+chattered (angle std 0.0146 rad, torque std 0.052 N·m) ran on `feat/power-allocation` with the **new demand-weighted torque cap** active. So the
+chatter may be caused by that change, not by the hanging pose or the gains. To separate them, `scripts/tune_tail_gains.py` now has
+`--cap-mode equal|demand`, `--raw` (no power manager, as the old `tune_kp_kd.py`) and `--still-only`. Planned test, hanging, kp 0.8 / kd 0.035:
+demand vs equal vs raw. The earlier conclusion "the default kd is the culprit" is not established until that is done (the kd comparison in the sweep
+was within the demand mode only).
+
