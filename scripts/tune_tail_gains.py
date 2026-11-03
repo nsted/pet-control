@@ -50,8 +50,8 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--host", default=ROBOT_DEFAULT_HOST)
     p.add_argument("--port", type=int, default=ROBOT_DEFAULT_PORT)
     p.add_argument("--servo", type=int, default=7)
-    p.add_argument("--kp", type=float, nargs="+", default=[0.1, 0.2, 0.3, 0.45, 0.6, 0.8])
-    p.add_argument("--kd", type=float, nargs="+", default=[0.005, 0.01, 0.02, 0.035])
+    p.add_argument("--kp", type=float, nargs="+", default=[0.15, 0.2, 0.3, 0.45, 0.6, 0.8])
+    p.add_argument("--kd", type=float, nargs="+", default=[0.01, 0.02, 0.035])
     p.add_argument("--step-rad", type=float, default=0.1)
     p.add_argument("--still-s", type=float, default=2.0)
     p.add_argument("--step-s", type=float, default=1.5)
@@ -76,7 +76,8 @@ class Tuner:
         self.p0: dict[int, float] = {}
         self.rows: list[dict[str, Any]] = []
         self.fh = out.open("a")
-        self.abort = ""
+        self.abort = ""              # hard stop: bus current, temperature, power manager, disconnect
+        self.runaway = False         # soft failure of one gain pair: the angle left the window
         self.max_bus = 0.0
         self.max_temp = 0.0
 
@@ -102,11 +103,11 @@ class Tuner:
         reason = self._check()
         s = self.state
         theta = s.servo_positions.get(a.servo, 0.0) - self.p0[a.servo]
-        if not reason and abs(theta) > a.window:
-            reason = f"angle {theta:+.2f} rad left the window"
         if reason and not self.abort:
             self.abort = reason
-        if self.abort:
+        if not self.abort and abs(theta) > a.window:
+            self.runaway = True
+        if self.abort or self.runaway:
             kp, kd, offset = SAFE_KP, SAFE_KD, 0.0
         kp, kd = _clip_gain(kp, kd)
         cmds = [ServoCommand(servo_id=i, position=self.p0[i]) for i in self.ids if i != a.servo]
@@ -125,6 +126,8 @@ class Tuner:
         while time.monotonic() < end:
             if await self.tick(kp, kd, offset, tag):
                 return self.abort
+            if self.runaway:
+                return "runaway"
         return ""
 
     def _distinct(self, tag: str) -> list[dict[str, Any]]:
@@ -206,12 +209,19 @@ async def main_async(args: argparse.Namespace) -> int:
             for kd in args.kd:
                 if tn.abort:
                     break
-                await tn.phase(SAFE_KP, SAFE_KD, 0.0, 0.7, "park")
-                await tn.phase(kp, kd, 0.0, 0.8, "settle")
-                if await tn.phase(kp, kd, 0.0, args.still_s, f"still_{kp}_{kd}"):
+                tn.runaway = False
+                await tn.phase(SAFE_KP, SAFE_KD, 0.0, 1.0, "park")
+                outcome = await tn.phase(kp, kd, 0.0, 0.8, "settle")
+                outcome = outcome or await tn.phase(kp, kd, 0.0, args.still_s, f"still_{kp}_{kd}")
+                outcome = outcome or await tn.phase(kp, kd, args.step_rad, args.step_s, f"step_{kp}_{kd}")
+                if tn.abort:
                     break
-                if await tn.phase(kp, kd, args.step_rad, args.step_s, f"step_{kp}_{kd}"):
-                    break
+                if outcome == "runaway":
+                    results.append({"kp": kp, "kd": kd, "stable": False, "runaway": True})
+                    print(f"{kp:5.2f} {kd:6.3f} |   RUNAWAY: the angle left the +/-{args.window} rad window; parked at the soft gains", flush=True)
+                    await tn.phase(SAFE_KP, SAFE_KD, 0.0, 2.5, "recover")   # bring it back before the next pair
+                    tn.runaway = False
+                    continue
                 await tn.phase(kp, kd, 0.0, 1.0, f"back_{kp}_{kd}")
                 r = tn.measure(kp, kd)
                 results.append(r)

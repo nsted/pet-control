@@ -286,3 +286,22 @@ bus 0.9–1.45 A). One hold completed, then the 0.45 rad/s mean-speed guard trip
   `scripts/tune_tail_gains.py` sweeps (kp, kd) soft to stiff on a hanging tail, measures hold jitter, step response and the effective kp/kd the
   motor applies (it recovers kp within 6% on the mock), and reports the stiffest stable pair. Not yet run on the robot.
 
+#### Tail gain sweep (servo 7 hanging from the head, 2026-11-03, `scripts/tune_tail_gains.py`, data/tune/tune_s7_b.jsonl)
+
+First attempt (kp 0.1, kd 0.005) ran away: after 1.1 s at rest the angle grew ~10x in 0.19 s with only −0.004…−0.010 N·m of restoring torque, i.e. an unstable
+equilibrium (suspected small negative gravity stiffness of the tail at the hanging pose; unverified). Gains kp 0.15/kd 0.02 held the joint perfectly still
+(angle ±0.0004 rad, torque ≈ −0.0005 N·m). The sweep was then rerun from kp 0.15 up, as a per-pair pass/fail with no runaways:
+
+| kd | kp 0.15 … 0.8 behaviour |
+|---|---|
+| 0.010 | quiet at every kp (angle std 0.0002–0.0004, torque std ≤ 0.0003), settles 0.06–0.23 s, overshoot ≤ 3% |
+| 0.020 | quiet at every kp (angle std 0.0003–0.0021, torque std ≤ 0.0011), settles 0.13–0.59 s, overshoot ≤ 2% |
+| **0.035 (the default)** | **chatters at every kp** (angle std 0.005–0.013, torque std 0.016–0.047, 4–11 zero crossings after a step), settles 0.24–1.49 s |
+
+So the default `kd` is too high for the free tail (velocity-noise amplification; kd_default is 87.5% of kd_max); `kp` up to 0.8 is fine. Best: **kp 0.8 with kd 0.02**
+(settle 0.14 s, overshoot 2%, torque jitter 0.0011 vs 0.0469 at the default) or kd 0.01 (settle 0.07 s). The edge between kd 0.02 and 0.035 was not mapped.
+The tail is the lightest joint; heavier joints may tolerate or need more kd and have not been swept. No defaults have been changed.
+
+Gain *units* remain unresolved: the "effective kp ≈ 1.8 (2.2x nominal)" regression from the chattering trace is withdrawn, and the step-onset torque (0.28x of kp·0.1)
+cannot decide it either, since the joint settles within 3-7 telemetry samples. A units check needs a held, non-moving error (e.g. a joint clamped by hand or a loaded joint).
+
