@@ -225,3 +225,11 @@ our units, which the code comments say do not map linearly to N·m; (3) the per-
 model-estimated, the robot only measures total bus current. Hardware validation (step the torque up while
 logging bus current against the model) is still to do before this is merged.
 
+### Hardware validation, first run (2026-11-03, servo 4, wall supply 14.55 V, `scripts/validate_power_allocation.py`)
+
+Open-loop `torque_ff` steps on one middle joint, others holding; abort limits 4.5 A bus / 52 °C / 0.4 rad window.
+- **Forwarded torque = requested** at 0.040, 0.080, 0.098 N·m; demand cap tracked the request (0.040, 0.081, 0.100). Nothing clipped at these levels, so the larger-than-old-cap region (> 0.105 N·m) is **not yet exercised**.
+- **Servo 4 is not clamped under sustained torque:** it moved 0.39 rad during the 1.5 s hold at 0.08 N·m (it did not move in the 60 ms pulses to 0.1). The run stopped at the 0.4 rad window on the third level, as designed. Max bus current 1.64 A, max motor temperature 48 °C (motors were already 45–48 °C; they were 36–40 °C at the start of the day).
+- **Current model vs measurement is NOT validated.** Steady bus-current rise over the idle 0.62 A: +0.02 A at 0.04 N·m, +0.10 A at 0.08, about +0.12 A at 0.10 (rising with speed), against 0.09, 0.38, 0.59 A predicted: the model over-predicts by about 4–5x in these moving, sustained holds. But a single transient, the return-to-hold after the abort (measured torque 0.139 N·m, moving), peaked at 1.64 A (+1.0 A), which matches the model (+1.15 A). The two disagree, so bus current is not a simple function of torque here (speed, direction, braking and the 26 Hz current sensor all plausible). A **clamped, non-moving** hold is needed for a clean answer; a hanging robot held against gravity provides one.
+- The model errs in the conservative direction in the steady case, so the allocation is not unsafe on this evidence, but its absolute numbers (2 A peak ≈ 0.164 N·m) are unconfirmed.
+
