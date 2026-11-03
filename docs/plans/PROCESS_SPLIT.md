@@ -144,7 +144,15 @@ Takeaway for SHAPE_LAYER 1.5: the bus itself costs ≈ 0.5–1 ms per hop (≈ 0
 
 ## Stage 7 — Bench (needs Nick's explicit go-ahead; the robot moves)
 
-- [ ] Real driver + brain over loopback: connect, stroke-curl, `--control ollama`, thermal/power reset, kill tests.
+- [~] Real driver + brain over loopback. Done (2026-11-03): connect, limp run, stroke-curl, sine on servo 4 and 7. Remaining: `--control ollama`, thermal/power reset, kill tests (need the safe-hold decision), in-process comparison of servo 4.
+
+Stage 7 results so far (real robot, wall supply 14.4 V, driver + brain on one Mac over Zenoh loopback):
+- First attempt hit the PowerManager low-voltage cutoff (bus steady at 7.2 V < 10 V, motors correctly disabled); after the supply was fixed the bus read 14.4 V and the cutoff cleared. Not a split artifact.
+- Limp brain (15 s), stroke-curl (20 s, needs touch, no visible motion): no warnings or errors.
+- `--control sine --servo-id 7` ±60° at 0.2 Hz, 15 s: commanded ±1.039 rad, measured −1.028..+1.031 rad; visibly moved (confirmed by Nick). 2674 command batches applied, 0 dropped.
+- `--control sine --servo-id 4`: positive side tracked (+1.044 rad), negative side reached only −0.533 rad vs −1.039 commanded. Servo-specific (cause unknown: mechanical stop / neighbour segment?). TODO compare against in-process `run --backend robot`.
+- Latency (one-way, real robot): command mean 0.20–0.22 ms, p99 ≈ 0.85 ms, max 1.8–4.2 ms; state mean 0.45 ms, p99 1.27 ms when the viewer does not stall the brain (up to 519 ms outliers at startup with Rerun on). Tick spacing 5.6–5.7 ms unchanged. Command→joint-motion delay not yet measured on hardware.
+- Watchdog on exit: gains ramped to zero over 1 s, "Safe hold reached", no abrupt cutoff.
 - [ ] Then resume SHAPE_LAYER 1.4a → 1.4 → 1.5 with the filter decision made inside the driver; then `MuJoCoBackend`.
 
 ## Out of scope
