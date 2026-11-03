@@ -273,3 +273,16 @@ bus 0.9–1.45 A). One hold completed, then the 0.45 rad/s mean-speed guard trip
   the hanging test is not informative for servo 7. Proceed to the loaded joints (servos 4, 3, 2, 1).
 - For the RL actuator model: the default PD gains limit-cycle on a light, free joint; the sim needs the feedback delay and 50 Hz sampling to reproduce it.
 
+#### CORRECTION (2026-11-03) to the two servo-7 hanging entries above
+
+- The statement that the 20-100 ms telemetry delay destabilises the tail's PD loop was **wrong**: the MIT-mode PD runs inside the motor driver
+  at a high rate; the 50 Hz stream only carries the target out and telemetry back, so that delay is not in the loop. The cause of the 6.5 Hz
+  limit cycle on the free-hanging tail is not established (backlash/stiction with a light output inertia, or wrong effective gains, are candidates).
+- The tail inertia "≈ 4.8e-4 kg·m² from the oscillation frequency" assumed kp is a true 0.8 N·m/rad and **is withdrawn**. A regression of the
+  measured torque on the tail's own trace gives `tau ≈ 1.8·(command - angle) + 0.032·(-velocity)` (R² 0.27): the effective kp looks ~2.2x the
+  nominal 0.8 while kd matches. If so, the same 6.5 Hz implies an inertia over twice as large. (The independent ~5e-4 estimate from the 70 ms rise to
+  0.3 rad/s used measured torque and does not depend on kp, but assumed negligible friction.)
+- Nick's view: the default kp/kd are off for this joint, and servo 7 (nothing downstream) is the right place to find usable ones.
+  `scripts/tune_tail_gains.py` sweeps (kp, kd) soft to stiff on a hanging tail, measures hold jitter, step response and the effective kp/kd the
+  motor applies (it recovers kp within 6% on the mock), and reports the stiffest stable pair. Not yet run on the robot.
+
