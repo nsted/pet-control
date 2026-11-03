@@ -394,3 +394,43 @@ joint 2 0.98 (0.84), joint 3 0.70 (0.96), joint 5 0.51, joint 6 0.35. The tested
 joint's angle, torque and velocity, the commands, bus current/voltage, temperatures, power-manager caps and every motor feedback frame at its true arrival time to one `.npz`. Offline analysis follows from the raw data. Dry-run on the mock
 (78 s at quick scale); the real run is ~8–9 min with cool-down waits and the usual stops (4.5 A bus, 52 °C, 0.6 rad per joint, power-manager intervention).
 
+
+## RESULT: one-run characterisation (capture_robot_20261103_142548, 2026-11-03)
+
+`scripts/capture_all.py` (commits 8fad9eb, + Capture-before-connect fix) then `scripts/analyze_capture.py`. Robot hanging from the
+head, 420 s, no abort, max bus 2.38 A, max temp 50 C. Raw data: `data/capture/capture_robot_20261103_142548.{npz,json}` (gitignored).
+
+Two startup bugs fixed on the way: group amplitudes could exceed the joint window (now capped at 0.6 x --max-angle), and the
+`Capture` constructor's model-based reach guess blocked the event loop ~58 s after connecting, tripping the backend's 5 s RX
+watchdog (first two robot attempts "disconnected in 0 s", nothing moved). Capture is now built before connecting.
+
+| servo | reach+ / - rad (to 0.12 N.m or 1.0 rad) | Coulomb N.m | tau slope N.m/rad | peak speed rad/s | delay chirp / step ms | kp_eff | kd_eff | bus A/(N.m)^2 fit |
+|---|---|---|---|---|---|---|---|---|
+| 1 | not measured (static torque 0.115-0.138 already at threshold) | - | - | 4.3 | - | 0.19* | ~0 | 5* |
+| 2 | 0.55 / 0.21 | 0.013 | 0.55 | 1.2 | 126 / n.a. | 0.62 | 0.014 | 1.9 |
+| 3 | 0.31 / 0.72 | 0.012 | 0.33 | 1.9 | 94 / n.a. | 0.50 | 0.020 | 7.9 |
+| 4 | 0.27 / 0.57 | 0.009 | 0.69 | 1.4 | 136 / 115 | 0.68 | 0.032 | 14.9 |
+| 5 | 1.00 / 0.87 | 0.006 | 0.14 | 4.7 | 115 / 136 | 0.43 | 0.026 | ~0 (no signal) |
+| 6 | 1.00 / 1.00 (hit max-angle) | 0.009 | 0.12 | 5.2 | 115 / 94 | 0.44 | 0.027 | ~0 (no signal) |
+| 7 | 1.00 / 1.00 (hit max-angle) | 0.025 | 0.01 | 5.2 | 94 / n.a. | 0.01 | 0.002 | ~0 (no signal) |
+
+`*` unreliable. Gain/current fits for 5-7 are weak because their torques are tiny.
+
+Static multi-motor poses (last third of each hold): zigzag measured 1.70 A vs model 5.78 A; zagzig 1.42 vs 4.48 A (model/measured
+above idle ~7-9x, torques up to 0.15 N.m). The other poses had torques < 0.05 N.m so current is within noise of idle (~0.7 A).
+Per-joint fits (joints 2-4, the only ones with real torque): 2-15 A/(N.m)^2 vs the model's 72.5, consistent with the earlier
+13 A/(N.m)^2 hanging-test result (model over-predicts, ~5x).
+
+Findings:
+- The per-motor torque cap from the demand-weighted allocator was only 0.002-0.055 N.m on idle motors at baseline. The tail step
+  to 0.8 rad reached only 0.39 rad with torque +-0.07: tail kp_eff ~0.01 is the CAP, not the motor, so rows 5-7 describe the
+  allocator's response lag, not the servo. Ramps on 6/7 hit the 1.0 rad limit at < 0.12 N.m (never reached the threshold).
+- Joint 1 carries the whole body: holding torque already 0.115-0.138 N.m. It was never driven (command stayed 0), but its angle
+  moved to 0.45 rad (pairs) and 0.9 rad (zigzag) as the lower joints moved. Group amplitudes for joint 1 were 0 (reach 0), and
+  groups were capped by the small measured reaches of joints 2-4 (0.17-0.24 rad), so the group poses are weak.
+- Coulomb friction 0.006-0.025 N.m, speeds up to 5 rad/s on 5-7, tracking delay ~95-135 ms (includes the 100 Hz tick and WS).
+- Max-speed steps were limited by the 6 rad/s ramp, not the motors.
+
+Open: joint 1 needs its own protocol (threshold above its static torque, or a relative threshold); capture the 5-7 reaches/gains with
+the allocator's caps raised or the joint alone commanded (no limit change made, ask first); group poses should use a floor
+amplitude rather than the min reach.
