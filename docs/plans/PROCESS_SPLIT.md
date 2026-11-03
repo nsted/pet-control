@@ -144,7 +144,7 @@ Takeaway for SHAPE_LAYER 1.5: the bus itself costs ≈ 0.5–1 ms per hop (≈ 0
 
 ## Stage 7 — Bench (needs Nick's explicit go-ahead; the robot moves)
 
-- [~] Real driver + brain over loopback. Done (2026-11-03): connect, limp run, stroke-curl, sine on servo 4 and 7. Remaining: `--control ollama`, thermal/power reset, kill tests (need the safe-hold decision), in-process comparison of servo 4.
+- [x] Real driver + brain over loopback (2026-11-03): connect, limp, stroke-curl, sine on servos 4 and 7, kill tests, ollama connect, power_reset. Gaps noted below (loaded-body limp, LLM-driven motion, real thermal fault).
 
 Stage 7 results so far (real robot, wall supply 14.4 V, driver + brain on one Mac over Zenoh loopback):
 - First attempt hit the PowerManager low-voltage cutoff (bus steady at 7.2 V < 10 V, motors correctly disabled); after the supply was fixed the bus read 14.4 V and the cutoff cleared. Not a split artifact.
@@ -153,6 +153,11 @@ Stage 7 results so far (real robot, wall supply 14.4 V, driver + brain on one Ma
 - `--control sine --servo-id 4`: positive side tracked (+1.044 rad), negative side reached only −0.533 rad vs −1.039 commanded. Servo-specific (cause unknown: mechanical stop / neighbour segment?). TODO compare against in-process `run --backend robot`.
 - Latency (one-way, real robot): command mean 0.20–0.22 ms, p99 ≈ 0.85 ms, max 1.8–4.2 ms; state mean 0.45 ms, p99 1.27 ms when the viewer does not stall the brain (up to 519 ms outliers at startup with Rerun on). Tick spacing 5.6–5.7 ms unchanged. Command→joint-motion delay not yet measured on hardware.
 - Watchdog on exit: gains ramped to zero over 1 s, "Safe hold reached", no abrupt cutoff.
+- **Kill test 1 (brain SIGKILL mid-sine, servo 7, real robot):** driver logged "No commands for 0.50s — ramping", then "Safe hold reached"; the joint decelerated and settled at −0.794 rad (no collapse), torque ≈ 0. Tail joint only: the limp end state has NOT been exercised on a loaded/curled body.
+- **Kill test 2 (driver SIGKILL, brain holding still):** brain reported disconnected after 1.0 s and kept running; a new driver reconnected to the robot (firmware boot POWER_ON, ~6 s) and the brain logged "Driver is back". Done with a stationary hold on purpose: the repo shows no firmware command timeout, so a SIGKILLed driver may leave the last command latched. Not verified either way.
+- **`--control ollama`:** gemma3:4b is not pulled (download needs permission); ran `qwen2.5:7b-instruct` via a scratchpad wrapper (model tag is hardcoded). Connected over the split, 60 s, no errors, state latency mean 0.49 ms. No touch-triggered LLM response was observed, so LLM-driven motion over the split is NOT verified.
+- **Power/thermal:** telemetry crosses the split (motor temps 36–39 °C, per-motor states, compliance scales, 14.4 V wall source). `power_reset` service returned True on a healthy robot and servo 7 still tracked ±1.029 rad afterwards. A real thermal disable / emergency stop was not induced (unsafe on hardware); that path is covered by the mock unit tests only.
+- Dropped by Nick: in-process comparison of servo 4's asymmetry.
 - [ ] Then resume SHAPE_LAYER 1.4a → 1.4 → 1.5 with the filter decision made inside the driver; then `MuJoCoBackend`.
 
 ## Out of scope
