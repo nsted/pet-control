@@ -5,7 +5,9 @@ With the robot held by one module and the rest hanging, each joint holds the cha
 gravity. Holding one joint at a series of angles (approached from both sides) gives, per joint:
 
 * the **gravity stiffness** ``K`` (N·m/rad): ``tau = K*theta`` for a chain of mass ``m`` whose centre of mass is
-  ``l`` from the joint, ``K = g_eff * m * l`` with ``g_eff = g * cos(axis tilt)``;
+  ``r`` along the chain from the joint axis. For a chain hanging straight down and a joint axis at angle ``beta`` to
+  the chain, ``K = m*g*r*sin(beta)^2`` (beta = 90 deg is the ordinary horizontal-axis pendulum, ``K = m*g*r``;
+  PET's axes are at 45 deg to the chain, so the factor is 0.5);
 * the **Coulomb friction** ``c`` (N·m) from the hysteresis between approaching an angle from below and from
   above: ``tau = K*theta + c*d + b0`` where ``d`` is the direction of the last motion;
 * and, because the joint is *not moving*, a clean check of the **bus-current model**:
@@ -56,32 +58,38 @@ def modules_below(servo_id: int, held_module: int, n_modules: int = 8) -> int:
     return n_modules - servo_id if held_module < servo_id else servo_id
 
 
+def axis_factor(axis_angle_deg: float) -> float:
+    """``sin(beta)^2``: fraction of ``m*g*r`` that acts as restoring stiffness for an axis at ``beta`` to the chain."""
+    return math.sin(math.radians(axis_angle_deg)) ** 2
+
+
 def predicted_stiffness(
-    n_below: int, total_mass_kg: float, pitch_m: float, *, n_modules: int = 8, tilt_deg: float = 45.0
+    n_below: int, total_mass_kg: float, pitch_m: float, *, n_modules: int = 8, axis_angle_deg: float = 45.0
 ) -> float:
     """Predicted gravity stiffness (N·m/rad) assuming uniform modules of equal mass and pitch.
 
-    ``K = g*cos(tilt) * m_module * pitch * n^2 / 2`` (centre of mass of n modules is n*pitch/2 below the joint).
+    ``K = g*sin(beta)^2 * m_module * pitch * n^2 / 2`` (centre of mass of n modules is n*pitch/2 below the joint).
     """
     m = total_mass_kg / n_modules
-    return GRAVITY_M_S2 * math.cos(math.radians(tilt_deg)) * m * pitch_m * n_below ** 2 / 2.0
+    return GRAVITY_M_S2 * axis_factor(axis_angle_deg) * m * pitch_m * n_below ** 2 / 2.0
 
 
 def predicted_stiffness_point_masses(
-    servo_id: int, held_module: int, module_masses_kg: Sequence[float], pitch_m: float, *, tilt_deg: float = 45.0
+    servo_id: int, held_module: int, module_masses_kg: Sequence[float], pitch_m: float, *, axis_angle_deg: float = 45.0
 ) -> float:
     """Predicted gravity stiffness (N·m/rad) with each module's mass concentrated at its motor axis.
 
     Bench information (Nick, 2026-11-03): the bulk of each module's mass is at the middle of its motor, and
-    servo k's motor axis is joint k's axis. So module j sits ``|j - k| * pitch_m`` from joint k's axis and a
-    module's own mass has no lever arm about its own joint. ``K = g*cos(tilt) * sum_j m_j * |j - k| * pitch``
+    servo k's motor axis is joint k's axis (confirmed in the CAD: each motor's centre of mass is on its axis,
+    adjacent motors 5.9 cm apart along the chain). So module j sits ``|j - k| * pitch_m`` from joint k's axis and a
+    module's own mass has no lever arm about its own joint. ``K = g*sin(beta)^2 * sum_j m_j * |j - k| * pitch``
     over the modules on the moving side of the joint (modules >= k if the robot is held by a module < k,
     otherwise modules < k). Servo 7 held by the head therefore has K = 0 (only its friction can be measured).
     """
     n = len(module_masses_kg)
     moving = range(servo_id, n) if held_module < servo_id else range(0, servo_id)
     lever = sum(module_masses_kg[j] * abs(j - servo_id) * pitch_m for j in moving)
-    return GRAVITY_M_S2 * math.cos(math.radians(tilt_deg)) * lever
+    return GRAVITY_M_S2 * axis_factor(axis_angle_deg) * lever
 
 
 def fit_gravity_friction(points: Sequence[HoldPoint], *, with_offset: bool = True) -> Optional[GravityFriction]:

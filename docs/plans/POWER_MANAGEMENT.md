@@ -235,12 +235,16 @@ Open-loop `torque_ff` steps on one middle joint, others holding; abort limits 4.
 
 ### Hanging-robot test (built 2026-11-03; not yet run on hardware)
 
-`scripts/hang_test.py` + `petctl/hang_analysis.py`. Robot held up by one module (default the head), servo k joins
-modules k-1 and k, joint axes tilted 45°/135° to the ground, 2.2 kg total, adjacent joints 5.1 cm apart (from
-`robot_assembly.json`). Each joint is stepped through small angles from both directions while the others hold; fits
-gravity stiffness K (predicted 0.049·n² N·m/rad for n modules below, assuming uniform 0.275 kg modules and
-g·cos45°), Coulomb friction from the hysteresis, and `delta_bus = a·tau²` over *static* holds, which is the clean
-check of the current model the torque cap is built on. The command is slewed at 0.2 rad/s so joint speed stays under
-the 0.45 rad/s guard. Refuses to start if a static torque exceeds 0.05 N·m (not hanging straight) or a motor is
-above 50 °C; stops at 4.5 A bus, 52 °C, 0.6 rad, or any power-manager intervention.
+`scripts/hang_test.py` + `petctl/hang_analysis.py`. Robot held by the head (module 0); servo k joins modules k-1 and k.
+Each joint is stepped through small angles from both directions while the others hold; fits gravity stiffness K,
+Coulomb friction from the hysteresis, and `delta_bus = a·tau²` over static holds (the clean check of the current model
+behind the torque cap). The command is slewed at 0.2 rad/s so joint speed stays under the 0.45 rad/s guard. Refuses to
+start if a static torque exceeds 0.05 N·m (not hanging straight) or a motor is above 50 °C; stops at 4.5 A bus, 52 °C,
+0.6 rad, or any power-manager intervention.
 
+Geometry (from Nick's Fusion export, 2026-11-03, `pet_mass_properties.json`): adjacent joint axes 5.86 cm apart, adjacent
+motor centres 5.9 cm apart along the chain; each motor's centre of mass lies on its joint axis; the axes alternate between
+world y and z, i.e. every axis is 45° to the chain. For a chain hanging straight down and an axis at β to it,
+`K = m·g·r·sin²β` (0.5·m·g·r at 45°). With the mass at the motor axes and 0.275 kg per module the predicted stiffness is
+`0.0796 · n(n-1)/2` N·m/rad for n modules below: servo 1: 1.67, 2: 1.19, 3: 0.80, 4: 0.48, 5: 0.24, 6: 0.08, 7: 0 (the tail
+joint measures friction only). The module masses are NOT known from the CAD (see below); they need weighing.

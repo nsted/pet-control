@@ -74,12 +74,12 @@ def test_predicted_stiffness_scales_with_the_square_of_the_chain() -> None:
     k7 = predicted_stiffness(7, 2.2, 0.051)
     k1 = predicted_stiffness(1, 2.2, 0.051)
     assert k7 / k1 == pytest.approx(49.0)
-    assert k7 == pytest.approx(9.81 * 0.7071 * 0.275 * 0.051 * 49 / 2, rel=1e-3)   # ~2.4 N·m/rad
+    assert k7 == pytest.approx(9.81 * 0.5 * 0.275 * 0.051 * 49 / 2, rel=1e-3)      # sin^2(45 deg) = 0.5
 
 
 def test_point_masses_at_motor_axes_give_n_choose_two_levers() -> None:
     masses = [0.275] * 8
-    g_eff = 9.81 * np.cos(np.radians(45.0))
+    g_eff = 9.81 * 0.5                                  # sin^2(45 deg)
     for n, expect_levers in ((7, 21), (6, 15), (5, 10), (4, 6), (3, 3), (2, 1), (1, 0)):
         k = 8 - n
         got = predicted_stiffness_point_masses(k, 0, masses, 0.1)
@@ -90,4 +90,13 @@ def test_tail_joint_held_by_the_head_has_no_gravity_lever_and_head_mass_counts_w
     masses = [0.5, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.3]
     assert predicted_stiffness_point_masses(7, 0, masses, 0.1) == 0.0
     # held by the tail: servo 1 swings the head (0.5 kg) a pitch away from its axis
-    assert predicted_stiffness_point_masses(1, 7, masses, 0.1) == pytest.approx(9.81 * np.cos(np.radians(45)) * 0.5 * 0.1)
+    assert predicted_stiffness_point_masses(1, 7, masses, 0.1) == pytest.approx(9.81 * 0.5 * 0.5 * 0.1)
+
+
+def test_axis_factor_is_the_horizontal_pendulum_at_ninety_degrees_and_half_at_forty_five() -> None:
+    from petctl.hang_analysis import axis_factor
+
+    assert axis_factor(90.0) == pytest.approx(1.0)
+    assert axis_factor(45.0) == pytest.approx(0.5)
+    assert axis_factor(135.0) == pytest.approx(0.5)                # the alternate joints
+    assert axis_factor(0.0) == pytest.approx(0.0, abs=1e-12)       # axis along the chain: no restoring torque
