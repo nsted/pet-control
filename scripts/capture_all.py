@@ -341,10 +341,10 @@ async def main_async(args: argparse.Namespace) -> int:
     backend = SafetyBackend(inner)
     out = Path(args.out or f"data/capture/capture_{args.backend}_{dt.datetime.now():%Y%m%d_%H%M%S}")
     out.parent.mkdir(parents=True, exist_ok=True)
-    if not await backend.connect():
+    cap = Capture(args, backend, inner)          # before connecting: its model-based reach guess blocks the event loop for ~1 min,
+    if not await backend.connect():              # which trips the backend's 5 s RX watchdog if the link is already up
         print("Connection failed.", file=sys.stderr)
         return 1
-    cap = Capture(args, backend, inner)
     rc = 0
     try:
         cap.state = await backend.get_state()
