@@ -233,3 +233,14 @@ Open-loop `torque_ff` steps on one middle joint, others holding; abort limits 4.
 - **Current model vs measurement is NOT validated.** Steady bus-current rise over the idle 0.62 A: +0.02 A at 0.04 N·m, +0.10 A at 0.08, about +0.12 A at 0.10 (rising with speed), against 0.09, 0.38, 0.59 A predicted: the model over-predicts by about 4–5x in these moving, sustained holds. But a single transient, the return-to-hold after the abort (measured torque 0.139 N·m, moving), peaked at 1.64 A (+1.0 A), which matches the model (+1.15 A). The two disagree, so bus current is not a simple function of torque here (speed, direction, braking and the 26 Hz current sensor all plausible). A **clamped, non-moving** hold is needed for a clean answer; a hanging robot held against gravity provides one.
 - The model errs in the conservative direction in the steady case, so the allocation is not unsafe on this evidence, but its absolute numbers (2 A peak ≈ 0.164 N·m) are unconfirmed.
 
+### Hanging-robot test (built 2026-11-03; not yet run on hardware)
+
+`scripts/hang_test.py` + `petctl/hang_analysis.py`. Robot held up by one module (default the head), servo k joins
+modules k-1 and k, joint axes tilted 45°/135° to the ground, 2.2 kg total, adjacent joints 5.1 cm apart (from
+`robot_assembly.json`). Each joint is stepped through small angles from both directions while the others hold; fits
+gravity stiffness K (predicted 0.049·n² N·m/rad for n modules below, assuming uniform 0.275 kg modules and
+g·cos45°), Coulomb friction from the hysteresis, and `delta_bus = a·tau²` over *static* holds, which is the clean
+check of the current model the torque cap is built on. The command is slewed at 0.2 rad/s so joint speed stays under
+the 0.45 rad/s guard. Refuses to start if a static torque exceeds 0.05 N·m (not hanging straight) or a motor is
+above 50 °C; stops at 4.5 A bus, 52 °C, 0.6 rad, or any power-manager intervention.
+
