@@ -248,3 +248,16 @@ world y and z, i.e. every axis is 45° to the chain. For a chain hanging straigh
 `K = m·g·r·sin²β` (0.5·m·g·r at 45°). With the mass at the motor axes and 0.275 kg per module the predicted stiffness is
 `0.0796 · n(n-1)/2` N·m/rad for n modules below: servo 1: 1.67, 2: 1.19, 3: 0.80, 4: 0.48, 5: 0.24, 6: 0.08, 7: 0 (the tail
 joint measures friction only). The module masses are NOT known from the CAD (see below); they need weighing.
+
+#### Hanging test, first robot attempts on servo 7 (2026-11-03; robot held by the head, no holds completed)
+
+The robot hung straight (all static torques ≤ 0.03 N·m; motors 33–38 °C; bus 1.4 A). No fit was possible:
+- **kp 0.8 / kd 0.035 (default):** the free-hanging tail **chatters** while holding still: angle ±0.02 rad, torque ±0.07 N·m, velocity
+  spikes to ±0.48 rad/s. It was damped by the floor in earlier tests. A light joint (J ~ 5e-4 kg·m²) under the default PD with
+  50 Hz bursty feedback and 20–100 ms delay is marginally unstable. The speed guard tripped on one spike.
+- **kp 0.15 / kd 0.015:** worse: with the command at zero the tail ran away from 0.016 to 0.248 rad within 0.5 s while the motor
+  pushed back (−0.02…−0.037 N·m, i.e. kp·angle), so an external torque larger than the weak spring acts on it, or the joint has
+  negative gravity stiffness (tail centre of mass not hanging below its axis), or the hanging chain was moving. Not resolved.
+- Script now has `--kp/--kd` for the joint under test, a windowed (0.1 s mean) speed guard, and reports the hold-still jitter.
+Next: a passive observation of servo 7 with zero gains (equilibrium angle, ring-down) to separate those causes.
+

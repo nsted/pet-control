@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import datetime as dt
 import json
 import logging
@@ -75,6 +76,10 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--step-rad", type=float, default=0.04, help="Command increment between holds")
     p.add_argument("--max-cmd-rad", type=float, default=0.30, help="Largest command offset from the hanging pose")
     p.add_argument("--stop-torque", type=float, default=0.10, help="Stop increasing a branch once |torque| reaches this (N·m)")
+    p.add_argument("--kp", type=float, default=None,
+                   help="kp for the joint under test (default: the standard gain). A light free-hanging joint "
+                        "chatters at the default 0.8; try 0.15 for servos 6-7")
+    p.add_argument("--kd", type=float, default=None, help="kd for the joint under test (default: the standard gain)")
     p.add_argument("--hold-s", type=float, default=1.5)
     p.add_argument("--ramp-rad-s", type=float, default=0.2,
                    help="Slew rate of the commanded angle between holds (keeps joint speed under the 0.45 rad/s guard)")
@@ -102,6 +107,7 @@ class Rig:
         self.max_bus = 0.0
         self.max_temp = 0.0
         self._over_since: Optional[float] = None
+        self._vel_hist: collections.deque[float] = collections.deque(maxlen=10)   # |velocity| over ~0.1 s
         self._cmd_now = 0.0          # commanded offset of the joint under test, slewed towards its target
 
     def _check(self, servo: Optional[int]) -> str:
@@ -125,8 +131,10 @@ class Rig:
         if pt is not None and (pt.system_state != "RUNNING" or pt.voltage_cutoff_active):
             return f"power manager state {pt.system_state}"
         if servo is not None:
-            if abs(s.motor_velocities.get(servo, 0.0)) > MAX_SPEED_RAD_S:
-                return f"servo {servo} speed {s.motor_velocities[servo]:+.2f} rad/s"
+            # Velocity feedback shows single-sample spikes (micro-vibration), so guard the ~0.1 s mean, not one sample.
+            self._vel_hist.append(abs(s.motor_velocities.get(servo, 0.0)))
+            if len(self._vel_hist) == self._vel_hist.maxlen and float(np.mean(self._vel_hist)) > MAX_SPEED_RAD_S:
+                return f"servo {servo} mean speed {float(np.mean(self._vel_hist)):.2f} rad/s"
             if abs(s.servo_positions.get(servo, self.p0[servo]) - self.p0[servo]) > a.window:
                 return f"servo {servo} left its window"
             if pt is not None and (pt.motor_states.get(servo, "NORMAL") != "NORMAL"
@@ -144,7 +152,15 @@ class Rig:
         max_step = self.args.ramp_rad_s * TICK_S
         self._cmd_now += max(-max_step, min(max_step, target - self._cmd_now))
         offset = self._cmd_now if servo is not None else 0.0
-        cmds = [ServoCommand(servo_id=i, position=self.p0[i] + (offset if i == servo else 0.0)) for i in self.ids]
+        gains: dict[str, float] = {}
+        if self.args.kp is not None:
+            gains["kp"] = self.args.kp
+        if self.args.kd is not None:
+            gains["kd"] = self.args.kd
+        cmds = [
+            ServoCommand(servo_id=i, position=self.p0[i] + (offset if i == servo else 0.0), **(gains if i == servo else {}))
+            for i in self.ids
+        ]
         await self.backend.send_commands(cmds)
         s = self.state
         row = {"t": t0, "tag": tag, "servo": servo, "cmd": offset,
@@ -183,6 +199,10 @@ async def sweep_joint(rig: Rig, servo: int) -> tuple[list[HoldPoint], dict[str, 
     await rig.hold(servo, 0.0, 2.0, f"s{servo}_base")
     base = rig.settled(f"s{servo}_base")
     base_bus = base.get("bus_a", 0.0)
+    br = [r for r in rig.rows if r["tag"] == f"s{servo}_base"]
+    jitter = (float(np.std([r["theta"] for r in br])) if br else 0.0, float(np.std([r["tau"] for r in br])) if br else 0.0)
+    print(f"  holding still at the hanging pose: angle jitter {jitter[0]:.4f} rad, torque jitter {jitter[1]:.4f} N·m "
+          f"(a stable joint shows ~0.0005 rad / ~0.002 N·m)", flush=True)
     points: list[HoldPoint] = []
     n = 0
     stats = {"max_tau": 0.0, "temp_start": base.get("temp", 0.0)}
