@@ -87,10 +87,11 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--skip", nargs="*", default=[], choices=["B", "C", "D"], help="Skip phases")
     p.add_argument("--stop-torque", type=float, default=0.12,
                    help="Stop a sweep branch at this |torque| (N·m); above the old 0.105 cap, inside the 2 A peak (~0.164)")
-    p.add_argument("--sweep-steps", type=int, default=6, help="Holds per branch, spread over each joint's reach")
+    p.add_argument("--ramp-rate", type=float, default=0.1, help="Rate (rad/s) at which a joint is turned slowly until its torque threshold")
+    p.add_argument("--max-angle", type=float, default=1.0, help="Never command a joint further than this from the hanging pose (rad)")
     p.add_argument("--hold-s", type=float, default=1.2)
     p.add_argument("--amp-frac", type=float, default=0.8, help="Group motions use this fraction of each joint's reach")
-    p.add_argument("--window-margin", type=float, default=0.25, help="Abort if a joint leaves 1.3x its reach + this many rad")
+    p.add_argument("--window-margin", type=float, default=0.3, help="Abort if a joint leaves --max-angle + this many rad")
     p.add_argument("--max-bus-a", type=float, default=4.5)
     p.add_argument("--max-temp-c", type=float, default=52.0)
     p.add_argument("--cool-c", type=float, default=49.0, help="Wait for motors to cool below this between phases")
@@ -105,8 +106,10 @@ class Capture:
         self.scale = 0.2 if args.quick else 1.0
         self.ids: list[int] = []
         self.p0 = np.zeros(N)
+        # Starting guess only (used if phase B is skipped); phase B replaces it with the MEASURED reach of each joint.
         self.reach = joint_reach(args.stop_torque)
-        self.window = np.minimum(1.3 * self.reach + args.window_margin, 1.4)
+        self.reach_measured = np.full(N, np.nan)
+        self.window = np.full(N, args.max_angle + args.window_margin)
         self.state: RobotState = RobotState.empty()
         self.cmd_now = np.zeros(N)
         self.abort = ""
@@ -208,31 +211,37 @@ class Capture:
         return v
 
     async def sweep(self, joint: int) -> None:
+        """Turn one joint slowly in each direction until its measured torque reaches --stop-torque (or --max-angle), hold
+        briefly at the top, then turn back. Continuous ramps trace the full hysteresis loop; the command offset reached is
+        recorded as this joint's measured reach."""
         a = self.a
-        settled_tau: list[float] = []
-
-        async def hold(offset: float, tag: str) -> float:
-            await self.run(f"sweep{joint}_{tag}", abs(offset - self.cmd_now[joint - 1]) / SLEW_RAD_S / self.scale + a.hold_s,
-                           lambda t, o=offset: self._vec(joint, o))
-            tail = self.rows[-max(5, int(0.4 * a.hold_s * self.scale / TICK_S)):]
-            return float(np.mean([r[3 + N + joint - 1] for r in tail]))
-
-        n = 0
-        step = max(0.02, self.reach[joint - 1] / a.sweep_steps)
+        j = joint - 1
+        tau_col = 3 + N + j
+        reached: dict[float, float] = {}
         for sign in (1.0, -1.0):
-            offs, off = [], step
-            while off <= 1.15 * self.reach[joint - 1] + 1e-9 and not self.abort:
-                tau = await hold(sign * off, f"h{n}")
-                n += 1
-                offs.append(off)
-                if abs(tau) >= a.stop_torque:
+            label = "pos" if sign > 0 else "neg"
+            self.marks.append({"name": f"ramp{joint}_{label}_up", "t0": time.monotonic()})
+            off = 0.0
+            while not self.abort:
+                off += a.ramp_rate * TICK_S
+                await self.tick(self._vec(joint, sign * off))
+                recent = [r[tau_col] for r in self.rows[-5:]]
+                if abs(float(np.mean(recent))) >= a.stop_torque or off >= a.max_angle:
                     break
-                off += step
-            for back in list(reversed(offs[:-1])) + [0.0]:
-                if self.abort:
-                    return
-                await hold(sign * back, f"h{n}")
-                n += 1
+            self.marks[-1]["t1"] = time.monotonic()
+            reached[sign] = off
+            top = off
+            await self.run(f"ramp{joint}_{label}_top", 1.0, lambda t, top=top, sign=sign: self._vec(joint, sign * top))
+            self.marks.append({"name": f"ramp{joint}_{label}_down", "t0": time.monotonic()})
+            while not self.abort and top > 0.0:
+                top = max(0.0, top - a.ramp_rate * TICK_S)
+                await self.tick(self._vec(joint, sign * top))
+            self.marks[-1]["t1"] = time.monotonic()
+        self.reach_measured[j] = min(reached.values()) if reached else np.nan
+        if not np.isnan(self.reach_measured[j]):
+            self.reach[j] = self.reach_measured[j]
+        print(f"  joint {joint}: torque stop reached at +{reached.get(1.0, float('nan')):.2f} / -{reached.get(-1.0, float('nan')):.2f} rad "
+              f"({math.degrees(self.reach[j]):.0f} deg)", flush=True)
 
     async def excite(self, joint: int) -> None:
         reach = float(self.reach[joint - 1])
@@ -348,8 +357,8 @@ async def main_async(args: argparse.Namespace) -> int:
                 calm = None
         cap.t.clear(); cap.rows.clear(); cap.frames.clear(); cap.marks.clear()
         s = cap.state
-        print("Reach per joint at the torque stop (rad / deg): "
-              + ", ".join(f"{i}: {cap.reach[i - 1]:.2f}/{math.degrees(cap.reach[i - 1]):.0f}" for i in cap.ids))
+        print("Model-based starting guess of each joint's reach (replaced by measured values after phase B), rad: "
+              + ", ".join(f"{i}: {cap.reach[i - 1]:.2f}" for i in cap.ids))
         print(f"Connected. {s.battery_voltage_v:.2f} V, idle bus {s.battery_current_amps:.2f} A, temps {s.motor_temperatures}. "
               f"Static torques: {[round(s.motor_torques.get(i, 0.0), 3) for i in cap.ids]}. Writing {out}.npz\n", flush=True)
         t_run = time.monotonic()
@@ -370,6 +379,7 @@ async def main_async(args: argparse.Namespace) -> int:
                                 cmd=arr[:, 3 + 3 * N:3 + 4 * N], cap=arr[:, 3 + 4 * N:3 + 5 * N],
                                 fr_t=fr[:, 0], fr_motor=fr[:, 1], fr_pos=fr[:, 2], fr_vel=fr[:, 3], fr_tau=fr[:, 4], p0=cap.p0)
             Path(f"{out}.json").write_text(json.dumps({"args": vars(args), "marks": cap.marks, "abort": cap.abort,
+                                                       "reach_measured": [None if np.isnan(x) else float(x) for x in cap.reach_measured],
                                                        "max_bus": cap.max_bus, "max_temp": cap.max_temp}, indent=1))
             print(f"Data: {out}.npz ({len(cap.t)} ticks, {len(cap.frames)} feedback frames)")
     return rc
