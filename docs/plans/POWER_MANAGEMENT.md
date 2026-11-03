@@ -315,3 +315,18 @@ chatter may be caused by that change, not by the hanging pose or the gains. To s
 demand vs equal vs raw. The earlier conclusion "the default kd is the culprit" is not established until that is done (the kd comparison in the sweep
 was within the demand mode only).
 
+#### Confound test result (hanging tail, kp 0.8 / kd 0.035 = gl40.py gains, 3 s hold-still, 2026-11-03, motors 43–45 °C)
+
+| power path | angle std (rad) | torque std (N·m) |
+|---|---|---|
+| demand (new allocation) | 0.0002 | 0.0003 |
+| equal (original behaviour) | 0.0002 | 0.0003 |
+| raw backend, no power manager | 0.0003 | 0.0005 |
+| demand, repeat | 0.0002 | 0.0003 |
+
+All quiet, ~50x below the chattering runs (0.0146 rad / 0.052 N·m, motors 33–42 °C). So: **the new demand allocation is not the cause, and the default gains are
+fine here**, matching Nick's experience. The earlier chatter (three hang runs and the kd 0.035 rows of the sweep) is **unexplained**. Candidates, none tested: motor
+temperature (all chatter runs were at 33–42 °C, all quiet runs at 43–45 °C; cold grease/friction), the preceding motion (the sweep stepped the tail before each hold),
+the chain swinging in Nick's hand, or where the tail happened to rest inside its backlash. The statement that "the default kd 0.035 is too high" is **not
+established**; the sweep's kd comparison was real for that session but did not reproduce.
+
