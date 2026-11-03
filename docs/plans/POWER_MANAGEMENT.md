@@ -372,3 +372,13 @@ The mock's 0.015 kg·m² is at least ~15x too large for the tail. A real inertia
   the bus current ~4.5x** (measured/model 0.22). This matches the earlier moving-joint result (0.19–0.24), so it is repeatable. So the torque cap and the 2 A "model peak" are far more
   conservative than the measured bus current. Heating depends on the phase current (tau/Kt), not bus current, so this does NOT show that higher torques are thermally safe. Nothing has been changed.
 
+#### RESULT: hanging test, servo 3 (5 modules below, default gains, 2026-11-03, data/hang/hang_s3_a.jsonl)
+
+28 static holds, motors 44–47 °C, bus peak 0.95 A, max |tau| 0.061 N·m (the 0.30 rad command range ended before the 0.10 N·m stop), no aborts. Quiet when still (angle 0.0008 rad, torque 0.0006 N·m).
+- **Current model: reproduced.** delta_bus = 13.4 A/(N·m)² · tau² (±18%) vs 60.1 in the model: measured/model = 0.22, the same as servo 4 (13.2, 0.22) and the earlier moving-joint run (0.19–0.24). Two joints, two loads, static and
+  moving agree: **the power manager's current model over-predicts bus current by ~4.5x in this setup.**
+- **Friction:** Coulomb c = 0.0082 ± 0.0005 N·m with a tight linear fit (residual 0.0025 N·m): clean, unlike servo 4 (c ≈ 0.020, residual 0.020, strong asymmetric hysteresis). Joint friction varies ~3.5x between joints: tail 0.0057, servo 3 0.0082, servo 4 0.020.
+- **Gravity stiffness does not behave like an isolated joint:** K(servo 3) = 0.268 ± 0.004 vs K(servo 4) = 0.645 ± 0.054 N·m/rad, i.e. measured/predicted 0.34 and 1.35. For a hanging chain the stiffness must grow toward the head (servo 3 has more
+  mass below it than servo 4), so a single mass scaling cannot explain both. Suspected (not verified): the other joints, held by kp 0.8 springs, deflect as the tested joint rotates the chain (axes alternate, so rotating one joint loads its
+  neighbours), so the measured stiffness is a coupled-system quantity. The masses therefore cannot be inferred from these sweeps; weigh the modules, or fit all seven joints together.
+
