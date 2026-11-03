@@ -358,3 +358,17 @@ runaway (angle leaves ±0.6 rad, then parks at soft gains and goes on).
 
 The mock's 0.015 kg·m² is at least ~15x too large for the tail. A real inertia estimate needs faster excitation than 50 Hz telemetry resolves (or a held-joint measurement), which this run cannot provide.
 
+#### RESULT: hanging test, servo 4 (robot hung from the head, 4 modules below, default gains, 2026-11-03, data/hang/hang_s4_a.jsonl)
+
+26 static holds, angle swept to about +0.09 / −0.17 rad from both directions. Motors 45–47 °C, bus peak 0.92 A, no aborts, max |tau| 0.111 N·m.
+- **Quiet:** holding still, angle jitter 0.0005 rad, torque jitter 0.0004 N·m at the gl40.py gains (kp 0.8, kd 0.035).
+- **Gravity stiffness:** the straight-line fit gives K = 0.645 ± 0.054 N·m/rad (predicted 0.478 with 0.275 kg per module, ratio 1.35); this is inflated by the hysteresis
+  (the secant τ/θ at the largest negative angle is 0.48). Whatever the exact value, the three modules below carry more weight at the far end than a uniform split: the fit implies
+  m5 + 2·m6 + 3·m7 ≈ 2.2 kg·modules (uniform 0.275 kg gives 1.65), e.g. a tail module of ~0.5 kg. Module masses still need weighing.
+- **Joint friction is large and asymmetric:** Coulomb c = 0.020 ± 0.004 N·m on average (the tail: 0.0057), but the up/down gap at the same angle is ~0.09 N·m on the positive side
+  and ~0.03 N·m on the negative side, and the angle at zero command differs by 0.03 rad between the start and end of the sweep. The residual 0.020 N·m shows a constant-c
+  model is a simplification (stick-slip/backlash).
+- **Current model, clean static test:** delta_bus = 13.2 A/(N·m)² · tau² (±6%; individual holds 11–15) against 60.1 in the power manager's model at 14.5 V: **the model over-predicts
+  the bus current ~4.5x** (measured/model 0.22). This matches the earlier moving-joint result (0.19–0.24), so it is repeatable. So the torque cap and the 2 A "model peak" are far more
+  conservative than the measured bus current. Heating depends on the phase current (tau/Kt), not bus current, so this does NOT show that higher torques are thermally safe. Nothing has been changed.
+
