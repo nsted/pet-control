@@ -50,7 +50,8 @@ class BuildParams:
     impratio: float = 10.0
     hanging: bool = False
     urdf_dir: str | None = None             # PET_description folder from the Fusion export: use its meshes/joints for the lying model
-    max_hull_verts: int = 48
+    self_collide: bool = True               # module-vs-module contact (parent/child pairs are excluded by MuJoCo)
+    max_hull_verts: int = 200
     extra: dict[str, float] = field(default_factory=dict)
 
 
@@ -205,7 +206,7 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
         m = p.masses[k]
         L.append(f'<inertial pos="{_vec(centres[k])}" mass="{m}" diaginertia="{_vec(_box_inertia(m))}"/>')
         if hulls:
-            L.append(f'<geom name="g{k}" type="mesh" mesh="h{k}" mass="0" contype="2" conaffinity="1" '
+            L.append(f'<geom name="g{k}" type="mesh" mesh="h{k}" mass="0" contype="{3 if p.self_collide else 2}" conaffinity="1" '
                      f'friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" condim="4"/>')
         elif not p.hanging:
             hx, hy, hz = BOX_HALF

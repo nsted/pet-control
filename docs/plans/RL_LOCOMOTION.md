@@ -33,7 +33,7 @@ Needed from the user (nothing has been run on hardware):
 
 
 ## RESULT 2026-11-04: Fusion URDF export (`/Users/nsted/Documents/PET/body/URDF/PET_description`) used for collision shape
-- `model_builder.load_urdf()` takes the module SHAPES from `meshes/*.stl` (convex hulls, <=48 vertices each, module-vs-module contact off, floor only).
+- `model_builder.load_urdf()` takes the module SHAPES from `meshes/*.stl` (convex hulls, <=200 vertices each (`BuildParams.max_hull_verts`, was 48; 400 is ~50% slower than 48, gait result unchanged), module-vs-module contact off, floor only).
   `BuildParams(urdf_dir=...)` switches it on; the box model remains the default. Needs scipy (added to the `sim` and `rl` extras).
 - The URDF's own JOINT frames are not usable: its joints form a straight chain along z (pitch 50.7 mm) while its meshes form the real staircase in
   the CAD world frame at q=0, so they disagree. Instead the validated `gravity_model` joint axes are rotated into the mesh frame (rigid fit of
