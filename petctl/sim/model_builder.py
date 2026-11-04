@@ -180,12 +180,14 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
         f'<mujoco model="pet"><compiler angle="radian"/>'
         f'<option timestep="{p.dt}" gravity="{_vec(gravity)}" integrator="implicitfast" cone="elliptic" impratio="{p.impratio}"/>'
         ]
+    L.append('<asset><texture name="grid" type="2d" builtin="checker" rgb1=".25 .3 .35" rgb2=".18 .22 .27" width="256" height="256"/>'
+             '<material name="floor" texture="grid" texrepeat="40 40" reflectance="0.05"/></asset>')
     if hulls:
         L.append("<asset>" + "".join(
             f'<mesh name="h{k}" maxhullvert="{p.max_hull_verts}" vertex="{_vec(h.reshape(-1))}"/>' for k, h in enumerate(hulls)) + "</asset>")
     L.append('<worldbody>')
     if not p.hanging:
-        L.append(f'<geom name="floor" type="plane" size="20 20 0.1" friction="{p.floor_friction} {p.torsional_friction} '
+        L.append(f'<geom name="floor" type="plane" size="20 20 0.1" material="floor" friction="{p.floor_friction} {p.torsional_friction} '
                  f'{p.rolling_friction}" condim="4" solref="{p.floor_solref[0]} {p.floor_solref[1]}"/>')
     root_pos = "" if p.hanging else f' pos="0 0 {z0:.6f}"'
     for k in range(N_MODULES):
