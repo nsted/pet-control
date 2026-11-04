@@ -33,6 +33,13 @@ app = typer.Typer(
     add_completion=False,
 )
 
+try:
+    from petctl.rl.cli import rl_app
+
+    app.add_typer(rl_app, name="rl")
+except ImportError:  # optional extra: pip install -e ".[rl]"
+    pass
+
 
 def _parse_motor_ids(s: Optional[str]) -> Optional[tuple[int, ...]]:
     """Parse --motors \"1\" or \"1,3\" into a tuple of ints; None if unset."""

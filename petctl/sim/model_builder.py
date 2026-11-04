@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
-import mujoco
+import mujoco  # type: ignore[import-untyped]
 import numpy as np
 
 from petctl.config import MOTOR_LIMITS

@@ -9,7 +9,12 @@ position-target actions at 20 Hz with fixed kp 0.8 / kd 0.035, MuJoCo native PD 
       in the bench posture, modules 0,2,4,6 on the floor and 1,3,5,7 raised 1.2 cm; cap limits actuator force).
 - [x] Phase 1.5 feasibility script: `scripts/feasibility.py`.
 - [ ] Phase 1.5 gate: NOT passed - see below.
-- [ ] Phase 2/3/4 (RL env, tasks, policy scheme, MuJoCoBackend, hardware): not started; needs gymnasium + stable-baselines3 installs (ask first).
+- [x] Phase 2 template (installed with user approval: gymnasium 1.4.0, stable-baselines3 2.9.2, tensorboard 2.21.0; extra `rl` in pyproject):
+      `petctl/rl/{config,obs,domain_rand,env,train,cli}.py`, `petctl/rl/tasks/{base,locomote}.py`; `petctl rl train|eval`; tests `tests/test_rl_env.py`
+      (Gymnasium env_checker, determinism, torque-cap respect, obs builder). Smoke run: 8k steps, 4 workers, ~6 s; env ~3.7k policy steps/s/core.
+      Still to do: asymmetric critic (privileged info is already in `info["privileged"]`), feedback-pipeline realism (48 Hz hold, dropped frames),
+      reward weights tuning (random-action terms are dominated by action-rate/joint-acc penalties), `RLPolicyMotion` + `MuJoCoBackend` + slew option, hardware stages.
+- [ ] Phase 3/4: blocked on the Phase 1.5 gate (collision geometry / friction).
 
 ## Phase 1.5 finding: joints 1-6 cannot move the lying body in the current model
 From the CAD axes: every joint axis lies in the forward/up plane at 45 deg to the chain, alternating sign, and the module centres zig-zag +-0.6 cm
