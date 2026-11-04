@@ -1,6 +1,8 @@
 """Free-body MuJoCo model: settles on the floor in the bench posture; hanging mode matches the analytic gravity model."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -36,3 +38,19 @@ def test_torque_cap_limits_actuator_force() -> None:
     sim = PetSim(BuildParams(cap_nm=(0.05,) * 7))
     sim.step(np.full(7, 1.0), 0.5)
     assert np.abs(sim.joint_torque()).max() <= 0.05 + 1e-9
+
+
+_URDF = "/Users/nsted/Documents/PET/body/URDF/PET_description"
+
+
+@pytest.mark.skipif(not os.path.isdir(_URDF), reason="Fusion URDF export not present")
+def test_mesh_model_settles_in_bench_posture_and_tail_moves() -> None:
+    sim = PetSim(BuildParams(urdf_dir=_URDF, delay_s=0.0))
+    sim.step(np.zeros(7), 1.5)
+    low = sorted({int(c.geom2) - 1 for c in sim.data.contact[: sim.data.ncon]})
+    assert low == [0, 2, 4, 6]                                   # modules 0,2,4,6 touch the floor
+    assert np.all(np.isfinite(sim.data.qpos))
+    t = np.zeros(7)
+    t[6] = 0.4
+    sim.step(t, 2.0)
+    assert sim.joint_pos()[6] > 0.3                              # the tail swings freely

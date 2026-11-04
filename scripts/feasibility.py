@@ -15,8 +15,11 @@ import numpy as np
 from petctl.sim.model_builder import BuildParams, PetSim
 
 
+URDF: str | None = None
+
+
 def run(cap: float, target: np.ndarray, seconds: float = 2.5) -> tuple[np.ndarray, np.ndarray, float, float]:
-    sim = PetSim(BuildParams(cap_nm=(cap,) * 7, delay_s=0.0))
+    sim = PetSim(BuildParams(cap_nm=(cap,) * 7, delay_s=0.0, urdf_dir=URDF))
     sim.step(np.zeros(7), 1.5)
     p0 = sim.head_pos().copy()
     sim.step(target, seconds)
@@ -27,7 +30,10 @@ def run(cap: float, target: np.ndarray, seconds: float = 2.5) -> tuple[np.ndarra
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--caps", type=float, nargs="+", default=[0.05, 0.164])
+    ap.add_argument("--urdf", default=None, help="PET_description folder from the Fusion export (mesh collision geometry)")
     a = ap.parse_args()
+    global URDF
+    URDF = a.urdf
     for cap in a.caps:
         print(f"\n== torque cap {cap} N.m (kp 0.8 saturates at {cap / 0.8:.2f} rad error)")
         print("| joint | cmd rad | reached rad | torque N.m | saturated | max box height cm |")

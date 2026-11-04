@@ -49,6 +49,8 @@ class BuildParams:
     floor_solref: tuple[float, float] = (0.004, 1.0)
     impratio: float = 10.0
     hanging: bool = False
+    urdf_dir: str | None = None             # PET_description folder from the Fusion export: use its meshes/joints for the lying model
+    max_hull_verts: int = 48
     extra: dict[str, float] = field(default_factory=dict)
 
 
@@ -82,18 +84,106 @@ def _box_inertia(m: float) -> np.ndarray:
     return m / 3.0 * np.array([hy ** 2 + hz ** 2, hx ** 2 + hz ** 2, hx ** 2 + hy ** 2])
 
 
+@dataclass
+class UrdfGeometry:
+    """Geometry read from the Fusion URDF export, in the CAD world frame (m) at q=0."""
+
+    centres: list[np.ndarray]                 # B_0..B_7 hull-volume centroids
+    anchors: dict[int, np.ndarray]            # joint k anchor
+    axes: dict[int, np.ndarray]               # joint k axis (unit)
+    hulls: list[np.ndarray]                   # B_0..B_7 convex-hull vertices (N, 3)
+
+
+def _read_stl(path: str) -> np.ndarray:
+    """Vertices (n_tri*3, 3) of a binary STL, in the file's units."""
+    import struct
+    b = open(path, "rb").read()
+    n = struct.unpack("<I", b[80:84])[0]
+    a = np.frombuffer(b[84:84 + 50 * n], dtype=np.dtype([("n", "<3f4"), ("v", "<9f4"), ("a", "<u2")]))
+    return a["v"].reshape(-1, 3).astype(float)
+
+
+def load_urdf(urdf_dir: str) -> UrdfGeometry:
+    """Module shapes from ``meshes/*.stl`` (mm, CAD world frame at q=0) and joints from the validated ``gravity_model``.
+
+    The URDF's own joint frames are not trusted: its joints form a straight chain while the meshes form the real staircase,
+    and its axes are 45 deg off the ones validated against the hanging tests. Instead the gravity-model joint axes are rotated
+    into the mesh frame (rigid fit of its mass centres to the mesh centroids) and each anchor is placed on its axis line
+    nearest the contact between the two neighbouring meshes.
+    """
+    from pathlib import Path
+
+    from scipy.spatial import ConvexHull, cKDTree  # type: ignore[import-untyped]
+
+    root = Path(urdf_dir)
+    names = ["base_link"] + [f"module_{i}_1" for i in range(1, N_MODULES)]
+    hulls, centres = [], []
+    for n in names:
+        v = _read_stl(str(root / "meshes" / f"{n}.stl")) * 1e-3
+        h = ConvexHull(v)
+        hulls.append(v[h.vertices])
+        o = v.mean(axis=0)                                       # volume centroid of the hull (tetrahedra fan from an interior point)
+        tet = v[h.simplices] - o
+        vol = np.abs(np.einsum("ij,ij->i", tet[:, 0], np.cross(tet[:, 1], tet[:, 2]))) / 6.0
+        centres.append((vol[:, None] * (tet.sum(axis=1) / 4.0)).sum(axis=0) / vol.sum() + o)
+    gm = np.array([P[k] for k in range(1, N_JOINTS + 1)])
+    mc = np.array(centres[:N_JOINTS])
+    cg, cm = gm.mean(0), mc.mean(0)
+    u, _, vt = np.linalg.svd((gm - cg).T @ (mc - cm))
+    rot = vt.T @ np.diag([1, 1, np.sign(np.linalg.det(vt.T @ u.T))]) @ u.T
+    axes, anchors = {}, {}
+    for k in range(1, N_JOINTS + 1):
+        ax = rot @ A[k]
+        ax /= np.linalg.norm(ax)
+        d, i = cKDTree(hulls[k]).query(hulls[k - 1])             # closest pair between B_{k-1} and B_k
+        j = int(np.argmin(d))
+        mid = 0.5 * (hulls[k - 1][j] + hulls[k][i[j]])
+        line0 = rot @ Q[k] + (cm - rot @ cg)                     # a point on the validated axis line, in the mesh frame
+        anchors[k] = line0 + ((mid - line0) @ ax) * ax           # axis point closest to the interface
+        axes[k] = ax
+    return UrdfGeometry(centres, anchors, axes, hulls)
+
+
+def _urdf_frame(g: UrdfGeometry) -> np.ndarray:
+    """CAD -> robot rotation for the URDF geometry: x forward (head -> tail reversed so +x = towards the head), z up, modules 0,2,4,6 low."""
+    fwd = g.centres[0] - g.centres[-1]
+    lat = np.array([1.0, 0.0, 0.0])
+    fwd = fwd - (fwd @ lat) * lat
+    x = fwd / np.linalg.norm(fwd)
+    u = np.cross(x, lat)
+    u /= np.linalg.norm(u)                                       # candidate up (+-), in the y-z plane, parallel to the joint axes
+    if np.mean([g.centres[k] @ u for k in (0, 2, 4, 6)]) > np.mean([g.centres[k] @ u for k in (1, 3, 5, 7)]):
+        u = -u
+    y = np.cross(u, x)
+    return np.vstack([x, y, u])
+
+
 def build_mjcf(p: BuildParams) -> tuple[str, float]:
     """Return ``(xml, z0)``: the MJCF and the root height (m) at which the lying robot just touches the floor."""
-    R = np.eye(3) if p.hanging else _frame()[0]
-    centres = [R @ c for c in module_centres()]
-    axes = {k: R @ A[k] for k in range(1, N_JOINTS + 1)}
-    anchors = {k: R @ Q[k] for k in range(1, N_JOINTS + 1)}
-    z0 = 0.0 if p.hanging else float(-min(c[2] - BOX_HALF[2] for c in centres) + 1e-3)
+    geo = load_urdf(p.urdf_dir) if (p.urdf_dir and not p.hanging) else None
+    if geo is not None:
+        R = _urdf_frame(geo)
+        centres = [R @ c for c in geo.centres]
+        axes = {k: R @ geo.axes[k] for k in range(1, N_JOINTS + 1)}
+        anchors = {k: R @ geo.anchors[k] for k in range(1, N_JOINTS + 1)}
+        hulls = [(R @ h.T).T for h in geo.hulls]
+        z0 = float(-min(h[:, 2].min() for h in hulls) + 1e-3)
+    else:
+        R = np.eye(3) if p.hanging else _frame()[0]
+        centres = [R @ c for c in module_centres()]
+        axes = {k: R @ A[k] for k in range(1, N_JOINTS + 1)}
+        anchors = {k: R @ Q[k] for k in range(1, N_JOINTS + 1)}
+        hulls = []
+        z0 = 0.0 if p.hanging else float(-min(c[2] - BOX_HALF[2] for c in centres) + 1e-3)
     gravity = G * ghat if p.hanging else np.array([0.0, 0.0, -G])
     L: list[str] = [
         f'<mujoco model="pet"><compiler angle="radian"/>'
         f'<option timestep="{p.dt}" gravity="{_vec(gravity)}" integrator="implicitfast" cone="elliptic" impratio="{p.impratio}"/>'
-        '<worldbody>']
+        ]
+    if hulls:
+        L.append("<asset>" + "".join(
+            f'<mesh name="h{k}" maxhullvert="{p.max_hull_verts}" vertex="{_vec(h.reshape(-1))}"/>' for k, h in enumerate(hulls)) + "</asset>")
+    L.append('<worldbody>')
     if not p.hanging:
         L.append(f'<geom name="floor" type="plane" size="20 20 0.1" friction="{p.floor_friction} {p.torsional_friction} '
                  f'{p.rolling_friction}" condim="4" solref="{p.floor_solref[0]} {p.floor_solref[1]}"/>')
@@ -110,7 +200,10 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
         L.append(f'<body name="m{k}"{pos}>{joint}')
         m = p.masses[k]
         L.append(f'<inertial pos="{_vec(centres[k])}" mass="{m}" diaginertia="{_vec(_box_inertia(m))}"/>')
-        if not p.hanging:
+        if hulls:
+            L.append(f'<geom name="g{k}" type="mesh" mesh="h{k}" mass="0" contype="2" conaffinity="1" '
+                     f'friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" condim="4"/>')
+        elif not p.hanging:
             hx, hy, hz = BOX_HALF
             L.append(f'<geom name="g{k}" type="box" pos="{_vec(centres[k])}" size="{hx} {hy} {hz}" mass="0" '
                      f'friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" condim="4"/>')
