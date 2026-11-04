@@ -198,3 +198,254 @@ Before the cutoffs are trusted in the gallery, run normal operation logs for 30+
 - The voltage spike behavior is poorly understood as of this writing. Implement the monitoring and the conservative emergency thresholds, but don't tune the per-minute spike rate threshold tightly until we have data on how often spikes occur during clean operation vs anomalous operation.
 - Component voltage ratings (≥25V for most, ≥32V for regulator and motors) mean we have real headroom. The voltage thresholds above are conservative — adjust only after the cause of spikes is understood.
 - All thresholds, including the per-motor temperature triers and all voltage levels, should live in a single configuration dataclass at the top of the module so they can be tuned without code changes elsewhere.
+
+## Per-motor torque cap: demand-weighted allocation (2026-11-03, Nick)
+
+Decision: the total stays at the effective budget (4 A battery, 6 A wall), but it need not be split
+equally between motors; it may be divided unequally and differently from tick to tick. Per motor, a hard
+**2 A peak** and a **sustained average below 1 A**.
+
+Implemented (`PowerBudgetConfig.per_motor_cap_mode`, default `"demand"`; `"equal"` is the old behaviour):
+- Each active motor's *demand* is the model current of the larger of its commanded torque
+  (`|torque_ff|`, `kp·|position error|`) and its measured torque, limited to its own allowance.
+- The budget (minus the idle base current of any pending motors) is split **max-min fair (water-filling)**
+  over those demands: a motor asking for little keeps what it asks for, the rest flows to the motors asking
+  for more, and when everything is demanded at once it reduces to the old equal share. The predicted total
+  can never exceed the budget.
+- Per-motor allowance: peak 2 A (≈0.164 N·m by the model) while that motor's running-average current is low,
+  eased linearly to 1 A as the average (time constant 3 s) goes from 0.8 A to 1 A, tighter above 1 A.
+- The cap is published each tick in `PowerTelemetry.per_motor_torque_cap_nm` and
+  `per_motor_sustained_current_a` (it reflects the *current* requests, so an idle motor shows ≈0).
+- Unchanged: the reactive measured-current backstop, the sustained-peak emergency stop, voltage cutoff,
+  thermal gating, and the cold-start staging of motors.
+
+Caveats: (1) the current model was calibrated only for tau_ff 0.02–0.12 N·m, so 2 A is an extrapolation and
+has **not been checked against measured bus current on the robot**; (2) the kp·error demand uses kp in
+our units, which the code comments say do not map linearly to N·m; (3) the per-motor current is
+model-estimated, the robot only measures total bus current. Hardware validation (step the torque up while
+logging bus current against the model) is still to do before this is merged.
+
+### Hardware validation, first run (2026-11-03, servo 4, wall supply 14.55 V, `scripts/validate_power_allocation.py`)
+
+Open-loop `torque_ff` steps on one middle joint, others holding; abort limits 4.5 A bus / 52 °C / 0.4 rad window.
+- **Forwarded torque = requested** at 0.040, 0.080, 0.098 N·m; demand cap tracked the request (0.040, 0.081, 0.100). Nothing clipped at these levels, so the larger-than-old-cap region (> 0.105 N·m) is **not yet exercised**.
+- **Servo 4 is not clamped under sustained torque:** it moved 0.39 rad during the 1.5 s hold at 0.08 N·m (it did not move in the 60 ms pulses to 0.1). The run stopped at the 0.4 rad window on the third level, as designed. Max bus current 1.64 A, max motor temperature 48 °C (motors were already 45–48 °C; they were 36–40 °C at the start of the day).
+- **Current model vs measurement is NOT validated.** Steady bus-current rise over the idle 0.62 A: +0.02 A at 0.04 N·m, +0.10 A at 0.08, about +0.12 A at 0.10 (rising with speed), against 0.09, 0.38, 0.59 A predicted: the model over-predicts by about 4–5x in these moving, sustained holds. But a single transient, the return-to-hold after the abort (measured torque 0.139 N·m, moving), peaked at 1.64 A (+1.0 A), which matches the model (+1.15 A). The two disagree, so bus current is not a simple function of torque here (speed, direction, braking and the 26 Hz current sensor all plausible). A **clamped, non-moving** hold is needed for a clean answer; a hanging robot held against gravity provides one.
+- The model errs in the conservative direction in the steady case, so the allocation is not unsafe on this evidence, but its absolute numbers (2 A peak ≈ 0.164 N·m) are unconfirmed.
+
+### Hanging-robot test (built 2026-11-03; not yet run on hardware)
+
+`scripts/hang_test.py` + `petctl/hang_analysis.py`. Robot held by the head (module 0); servo k joins modules k-1 and k.
+Each joint is stepped through small angles from both directions while the others hold; fits gravity stiffness K,
+Coulomb friction from the hysteresis, and `delta_bus = a·tau²` over static holds (the clean check of the current model
+behind the torque cap). The command is slewed at 0.2 rad/s so joint speed stays under the 0.45 rad/s guard. Refuses to
+start if a static torque exceeds 0.05 N·m (not hanging straight) or a motor is above 50 °C; stops at 4.5 A bus, 52 °C,
+0.6 rad, or any power-manager intervention.
+
+Geometry (from Nick's Fusion export, 2026-11-03, `pet_mass_properties.json`): adjacent joint axes 5.86 cm apart, adjacent
+motor centres 5.9 cm apart along the chain; each motor's centre of mass lies on its joint axis; the axes alternate between
+world y and z, i.e. every axis is 45° to the chain. For a chain hanging straight down and an axis at β to it,
+`K = m·g·r·sin²β` (0.5·m·g·r at 45°). With the mass at the motor axes and 0.275 kg per module the predicted stiffness is
+`0.0796 · n(n-1)/2` N·m/rad for n modules below: servo 1: 1.67, 2: 1.19, 3: 0.80, 4: 0.48, 5: 0.24, 6: 0.08, 7: 0 (the tail
+joint measures friction only). The module masses are NOT known from the CAD (see below); they need weighing.
+
+#### Hanging test, first robot attempts on servo 7 (2026-11-03; robot held by the head, no holds completed)
+
+The robot hung straight (all static torques ≤ 0.03 N·m; motors 33–38 °C; bus 1.4 A). No fit was possible:
+- **kp 0.8 / kd 0.035 (default):** the free-hanging tail **chatters** while holding still: angle ±0.02 rad, torque ±0.07 N·m, velocity
+  spikes to ±0.48 rad/s. It was damped by the floor in earlier tests. A light joint (J ~ 5e-4 kg·m²) under the default PD with
+  50 Hz bursty feedback and 20–100 ms delay is marginally unstable. The speed guard tripped on one spike.
+- **kp 0.15 / kd 0.015:** worse: with the command at zero the tail ran away from 0.016 to 0.248 rad within 0.5 s while the motor
+  pushed back (−0.02…−0.037 N·m, i.e. kp·angle), so an external torque larger than the weak spring acts on it, or the joint has
+  negative gravity stiffness (tail centre of mass not hanging below its axis), or the hanging chain was moving. Not resolved.
+- Script now has `--kp/--kd` for the joint under test, a windowed (0.1 s mean) speed guard, and reports the hold-still jitter.
+Next: a passive observation of servo 7 with zero gains (equilibrium angle, ring-down) to separate those causes.
+
+#### Hanging test, servo 7 at the default gains (kp 0.8, kd 0.035; Nick: these are the usable gains), 2026-11-03
+
+Connected by IP (192.168.18.33) because `pet-robot.local` briefly failed to resolve. Robot hung straight (static torques ≤ 0.007 N·m, motors 34 °C,
+bus 0.9–1.45 A). One hold completed, then the 0.45 rad/s mean-speed guard tripped on chatter; not a safety event.
+- **The free-hanging tail is in a sustained ~6.5 Hz limit cycle while holding still:** angle ±0.02 rad (std 0.0146), torque ±0.076 N·m
+  (std 0.052, ~25x a stable joint), mean |velocity| 0.21 rad/s. This is the PD loop oscillating at sqrt(kp/J) with the 20-100 ms feedback delay.
+- **Tail inertia from the oscillation frequency:** J ≈ kp/(2π·6.5)² ≈ 4.8e-4 kg·m² (approximate; delay lowers the frequency). Agrees with the
+  ~5e-4 estimated earlier from the 70 ms rise to 0.3 rad/s; the mock's 0.015 is ~30x too large for the tail.
+- Tail friction cannot be read through that chatter (torque jitter 0.05 vs friction 0.004-0.0075 N·m), and its predicted gravity lever is zero, so
+  the hanging test is not informative for servo 7. Proceed to the loaded joints (servos 4, 3, 2, 1).
+- For the RL actuator model: the default PD gains limit-cycle on a light, free joint; the sim needs the feedback delay and 50 Hz sampling to reproduce it.
+
+#### CORRECTION (2026-11-03) to the two servo-7 hanging entries above
+
+- The statement that the 20-100 ms telemetry delay destabilises the tail's PD loop was **wrong**: the MIT-mode PD runs inside the motor driver
+  at a high rate; the 50 Hz stream only carries the target out and telemetry back, so that delay is not in the loop. The cause of the 6.5 Hz
+  limit cycle on the free-hanging tail is not established (backlash/stiction with a light output inertia, or wrong effective gains, are candidates).
+- The tail inertia "≈ 4.8e-4 kg·m² from the oscillation frequency" assumed kp is a true 0.8 N·m/rad and **is withdrawn**. A regression of the
+  measured torque on the tail's own trace gives `tau ≈ 1.8·(command - angle) + 0.032·(-velocity)` (R² 0.27): the effective kp looks ~2.2x the
+  nominal 0.8 while kd matches. If so, the same 6.5 Hz implies an inertia over twice as large. (The independent ~5e-4 estimate from the 70 ms rise to
+  0.3 rad/s used measured torque and does not depend on kp, but assumed negligible friction.)
+- Nick's view: the default kp/kd are off for this joint, and servo 7 (nothing downstream) is the right place to find usable ones.
+  `scripts/tune_tail_gains.py` sweeps (kp, kd) soft to stiff on a hanging tail, measures hold jitter, step response and the effective kp/kd the
+  motor applies (it recovers kp within 6% on the mock), and reports the stiffest stable pair. Not yet run on the robot.
+
+#### Tail gain sweep (servo 7 hanging from the head, 2026-11-03, `scripts/tune_tail_gains.py`, data/tune/tune_s7_b.jsonl)
+
+First attempt (kp 0.1, kd 0.005) ran away: after 1.1 s at rest the angle grew ~10x in 0.19 s with only −0.004…−0.010 N·m of restoring torque, i.e. an unstable
+equilibrium (suspected small negative gravity stiffness of the tail at the hanging pose; unverified). Gains kp 0.15/kd 0.02 held the joint perfectly still
+(angle ±0.0004 rad, torque ≈ −0.0005 N·m). The sweep was then rerun from kp 0.15 up, as a per-pair pass/fail with no runaways:
+
+| kd | kp 0.15 … 0.8 behaviour |
+|---|---|
+| 0.010 | quiet at every kp (angle std 0.0002–0.0004, torque std ≤ 0.0003), settles 0.06–0.23 s, overshoot ≤ 3% |
+| 0.020 | quiet at every kp (angle std 0.0003–0.0021, torque std ≤ 0.0011), settles 0.13–0.59 s, overshoot ≤ 2% |
+| **0.035 (the default)** | **chatters at every kp** (angle std 0.005–0.013, torque std 0.016–0.047, 4–11 zero crossings after a step), settles 0.24–1.49 s |
+
+So the default `kd` is too high for the free tail (velocity-noise amplification; kd_default is 87.5% of kd_max); `kp` up to 0.8 is fine. Best: **kp 0.8 with kd 0.02**
+(settle 0.14 s, overshoot 2%, torque jitter 0.0011 vs 0.0469 at the default) or kd 0.01 (settle 0.07 s). The edge between kd 0.02 and 0.035 was not mapped.
+The tail is the lightest joint; heavier joints may tolerate or need more kd and have not been swept. No defaults have been changed.
+
+Gain *units* remain unresolved: the "effective kp ≈ 1.8 (2.2x nominal)" regression from the chattering trace is withdrawn, and the step-onset torque (0.28x of kp·0.1)
+cannot decide it either, since the joint settles within 3-7 telemetry samples. A units check needs a held, non-moving error (e.g. a joint clamped by hand or a loaded joint).
+
+#### CONFOUND in the tail-chatter evidence (2026-11-03)
+
+Nick: holding the robot vertical with the gl40.py gains (kp 0.8, kd 0.035) has always been smooth for him. The bench measurement that looked quiet
+(servo 7, default gains, angle std 0.00023 rad, torque std 0.0004 N·m) was taken on the **original power manager**; every hanging run that
+chattered (angle std 0.0146 rad, torque std 0.052 N·m) ran on `feat/power-allocation` with the **new demand-weighted torque cap** active. So the
+chatter may be caused by that change, not by the hanging pose or the gains. To separate them, `scripts/tune_tail_gains.py` now has
+`--cap-mode equal|demand`, `--raw` (no power manager, as the old `tune_kp_kd.py`) and `--still-only`. Planned test, hanging, kp 0.8 / kd 0.035:
+demand vs equal vs raw. The earlier conclusion "the default kd is the culprit" is not established until that is done (the kd comparison in the sweep
+was within the demand mode only).
+
+#### Confound test result (hanging tail, kp 0.8 / kd 0.035 = gl40.py gains, 3 s hold-still, 2026-11-03, motors 43–45 °C)
+
+| power path | angle std (rad) | torque std (N·m) |
+|---|---|---|
+| demand (new allocation) | 0.0002 | 0.0003 |
+| equal (original behaviour) | 0.0002 | 0.0003 |
+| raw backend, no power manager | 0.0003 | 0.0005 |
+| demand, repeat | 0.0002 | 0.0003 |
+
+All quiet, ~50x below the chattering runs (0.0146 rad / 0.052 N·m, motors 33–42 °C). So: **the new demand allocation is not the cause, and the default gains are
+fine here**, matching Nick's experience. The earlier chatter (three hang runs and the kd 0.035 rows of the sweep) is **unexplained**. Candidates, none tested: motor
+temperature (all chatter runs were at 33–42 °C, all quiet runs at 43–45 °C; cold grease/friction), the preceding motion (the sweep stepped the tail before each hold),
+the chain swinging in Nick's hand, or where the tail happened to rest inside its backlash. The statement that "the default kd 0.035 is too high" is **not
+established**; the sweep's kd comparison was real for that session but did not reproduce.
+
+#### Slow-excitation run for the tail (built 2026-11-03; not yet run on the robot)
+
+`scripts/excite_tail.py` + `petctl/tail_fit.py`. Smooth rate-limited steps (±0.3, ±0.4 rad at 3 rad/s) and gentle sweeps (0.2–1.4 Hz, ±0.15 rad) that the 50 Hz telemetry
+can resolve; every motor frame is logged at its true arrival time (`RobotBackend.set_feedback_listener`) with the commands as sent. The fit simulates the whole
+closed loop at 1 kHz and fits seven parameters at once to the measured **position and torque**: inertia J, viscous B and Coulomb C friction, a stiffness K of
+either sign, the *effective* kp and kd (so gain units are measured, not assumed) and the command delay. An earlier integral-regression fit was rejected: at 50 Hz it
+overestimated J by 20-40% in simulation. Validation: on simulated data it recovers kp/kd/J/C/delay (kp to 15%, J to 25%, delay to 15 ms) and detects a 2x kp-units
+discrepancy from a bad starting guess (ratio 2.4 vs 2.0); end-to-end on the mock it recovers J 0.0145 (true 0.015), B 0.032 (0.030), effective kp 0.298 (commanded 0.30),
+position error < 1% of travel. Runs at the gl40.py-quiet gains by default (kp 0.3, kd 0.02) and stops on bus current, temperature, power-manager intervention or a
+runaway (angle leaves ±0.6 rad, then parks at soft gains and goes on).
+
+#### RESULT: tail slow-excitation run (servo 7 hanging from the head, 2026-11-03, data/excite/excite_s7_a.json)
+
+6 trials (steps ±0.3, ±0.4 rad; sweeps 0.2–1.4 Hz), commanded kp 0.3 / kd 0.02, motors 43–46 °C, bus peak 0.80 A, no aborts. The tail reached 0.286 / 0.396 rad on the
+0.3 / 0.4 rad steps. Closed-loop simulation fit to measured position and torque (position rmse 0.017 rad = 3–8% of travel; torque rmse 0.003 N·m):
+
+| quantity | result | confidence |
+|---|---|---|
+| effective kp | 0.285 N·m/rad (commanded 0.3, ratio 0.95) | spread 36%: **the gain units are N·m/rad as assumed** (the earlier "2.2x" claim was wrong) |
+| effective kd | 0.0198 N·m·s/rad (commanded 0.02, ratio 0.99) | spread 27%: units confirmed |
+| Coulomb friction C | 0.0057 N·m | spread 34%; **agrees with the independent torque-pulse breakaway bracket 0.0037–0.0075** |
+| stiffness K | −0.008 N·m/rad (tiny, slightly negative) | consistent with the predicted ~0 gravity lever for the tail; too small to explain the runaway at kp 0.1 |
+| command delay | ~20 ms | poorly pinned (spread 83%) |
+| viscous friction B | ~0.0004–0.0007 N·m·s/rad (small) | weakly determined |
+| **inertia J** | **not identified; upper bound ≈ 1e-3 kg·m², most likely 1–5e-4** | profile of the fit loss at fixed J: ×1.00 (1e-4), ×1.02 (3e-4), ×1.07 (6e-4), ×1.23 (1.2e-3), ×1.64 (2.4e-3, which would also need kp 0.73 / kd 0.08) |
+
+The mock's 0.015 kg·m² is at least ~15x too large for the tail. A real inertia estimate needs faster excitation than 50 Hz telemetry resolves (or a held-joint measurement), which this run cannot provide.
+
+#### RESULT: hanging test, servo 4 (robot hung from the head, 4 modules below, default gains, 2026-11-03, data/hang/hang_s4_a.jsonl)
+
+26 static holds, angle swept to about +0.09 / −0.17 rad from both directions. Motors 45–47 °C, bus peak 0.92 A, no aborts, max |tau| 0.111 N·m.
+- **Quiet:** holding still, angle jitter 0.0005 rad, torque jitter 0.0004 N·m at the gl40.py gains (kp 0.8, kd 0.035).
+- **Gravity stiffness:** the straight-line fit gives K = 0.645 ± 0.054 N·m/rad (predicted 0.478 with 0.275 kg per module, ratio 1.35); this is inflated by the hysteresis
+  (the secant τ/θ at the largest negative angle is 0.48). Whatever the exact value, the three modules below carry more weight at the far end than a uniform split: the fit implies
+  m5 + 2·m6 + 3·m7 ≈ 2.2 kg·modules (uniform 0.275 kg gives 1.65), e.g. a tail module of ~0.5 kg. Module masses still need weighing.
+- **Joint friction is large and asymmetric:** Coulomb c = 0.020 ± 0.004 N·m on average (the tail: 0.0057), but the up/down gap at the same angle is ~0.09 N·m on the positive side
+  and ~0.03 N·m on the negative side, and the angle at zero command differs by 0.03 rad between the start and end of the sweep. The residual 0.020 N·m shows a constant-c
+  model is a simplification (stick-slip/backlash).
+- **Current model, clean static test:** delta_bus = 13.2 A/(N·m)² · tau² (±6%; individual holds 11–15) against 60.1 in the power manager's model at 14.5 V: **the model over-predicts
+  the bus current ~4.5x** (measured/model 0.22). This matches the earlier moving-joint result (0.19–0.24), so it is repeatable. So the torque cap and the 2 A "model peak" are far more
+  conservative than the measured bus current. Heating depends on the phase current (tau/Kt), not bus current, so this does NOT show that higher torques are thermally safe. Nothing has been changed.
+
+#### RESULT: hanging test, servo 3 (5 modules below, default gains, 2026-11-03, data/hang/hang_s3_a.jsonl)
+
+28 static holds, motors 44–47 °C, bus peak 0.95 A, max |tau| 0.061 N·m (the 0.30 rad command range ended before the 0.10 N·m stop), no aborts. Quiet when still (angle 0.0008 rad, torque 0.0006 N·m).
+- **Current model: reproduced.** delta_bus = 13.4 A/(N·m)² · tau² (±18%) vs 60.1 in the model: measured/model = 0.22, the same as servo 4 (13.2, 0.22) and the earlier moving-joint run (0.19–0.24). Two joints, two loads, static and
+  moving agree: **the power manager's current model over-predicts bus current by ~4.5x in this setup.**
+- **Friction:** Coulomb c = 0.0082 ± 0.0005 N·m with a tight linear fit (residual 0.0025 N·m): clean, unlike servo 4 (c ≈ 0.020, residual 0.020, strong asymmetric hysteresis). Joint friction varies ~3.5x between joints: tail 0.0057, servo 3 0.0082, servo 4 0.020.
+- **Gravity stiffness does not behave like an isolated joint:** K(servo 3) = 0.268 ± 0.004 vs K(servo 4) = 0.645 ± 0.054 N·m/rad, i.e. measured/predicted 0.34 and 1.35. For a hanging chain the stiffness must grow toward the head (servo 3 has more
+  mass below it than servo 4), so a single mass scaling cannot explain both. Suspected (not verified): the other joints, held by kp 0.8 springs, deflect as the tested joint rotates the chain (axes alternate, so rotating one joint loads its
+  neighbours), so the measured stiffness is a coupled-system quantity. The masses therefore cannot be inferred from these sweeps; weigh the modules, or fit all seven joints together.
+
+#### Coupled gravity model validated; one-run characterisation built (2026-11-03)
+
+`petctl/gravity_model.py`: exact static model of the hanging robot from the CAD geometry (joint axes and module positions), 0.275 kg per module with the centre of mass on the motor axis (Nick), every joint held by
+`tau = kp·(cmd − phi)` springs (kp 0.8, confirmed in N·m/rad). It reproduces the simple closed form for an isolated joint (1.70, 1.22, 0.81, 0.50, 0.25, 0.09, 0 N·m/rad) but shows that with the neighbours held
+the stiffness seen at a joint is lower and falls monotonically (servo 1…7: 0.86, 0.47, 0.36, 0.27, 0.18, 0.08, 0), which resolves the earlier "non-monotonic" servo 3 vs 4 puzzle (it was coupling through the held joints).
+With **no free parameters** it predicts the torques of the *other* joints in the existing runs: servo 3 test: joint 2 slope 0.91 (corr 0.99), joint 3 0.81 (0.98), joint 4 0.98 (0.99), joint 5 0.55, joint 6 0.32; servo 4 test:
+joint 2 0.98 (0.84), joint 3 0.70 (0.96), joint 5 0.51, joint 6 0.35. The tested joint's own torque is inflated by its friction (servo 4: 1.8x). So the 275 g / motor-axis model is right to about the accuracy of the friction.
+
+`scripts/capture_all.py`: one automated run that sweeps all seven joints in succession (hysteresis sweeps, then steps and a gentle chirp each) and then in groups (adjacent pairs, a travelling wave over all seven, six static whole-body poses), logging every
+joint's angle, torque and velocity, the commands, bus current/voltage, temperatures, power-manager caps and every motor feedback frame at its true arrival time to one `.npz`. Offline analysis follows from the raw data. Dry-run on the mock
+(78 s at quick scale); the real run is ~8–9 min with cool-down waits and the usual stops (4.5 A bus, 52 °C, 0.6 rad per joint, power-manager intervention).
+
+
+## RESULT: one-run characterisation (capture_robot_20261103_142548, 2026-11-03)
+
+`scripts/capture_all.py` (commits 8fad9eb, + Capture-before-connect fix) then `scripts/analyze_capture.py`. Robot hanging from the
+head, 420 s, no abort, max bus 2.38 A, max temp 50 C. Raw data: `data/capture/capture_robot_20261103_142548.{npz,json}` (gitignored).
+
+Two startup bugs fixed on the way: group amplitudes could exceed the joint window (now capped at 0.6 x --max-angle), and the
+`Capture` constructor's model-based reach guess blocked the event loop ~58 s after connecting, tripping the backend's 5 s RX
+watchdog (first two robot attempts "disconnected in 0 s", nothing moved). Capture is now built before connecting.
+
+| servo | reach+ / - rad (to 0.12 N.m or 1.0 rad) | Coulomb N.m | tau slope N.m/rad | peak speed rad/s | delay chirp / step ms | kp_eff | kd_eff | bus A/(N.m)^2 fit |
+|---|---|---|---|---|---|---|---|---|
+| 1 | not measured (static torque 0.115-0.138 already at threshold) | - | - | 4.3 | - | 0.19* | ~0 | 5* |
+| 2 | 0.55 / 0.21 | 0.013 | 0.55 | 1.2 | 126 / n.a. | 0.62 | 0.014 | 1.9 |
+| 3 | 0.31 / 0.72 | 0.012 | 0.33 | 1.9 | 94 / n.a. | 0.50 | 0.020 | 7.9 |
+| 4 | 0.27 / 0.57 | 0.009 | 0.69 | 1.4 | 136 / 115 | 0.68 | 0.032 | 14.9 |
+| 5 | 1.00 / 0.87 | 0.006 | 0.14 | 4.7 | 115 / 136 | 0.43 | 0.026 | ~0 (no signal) |
+| 6 | 1.00 / 1.00 (hit max-angle) | 0.009 | 0.12 | 5.2 | 115 / 94 | 0.44 | 0.027 | ~0 (no signal) |
+| 7 | 1.00 / 1.00 (hit max-angle) | 0.025 | 0.01 | 5.2 | 94 / n.a. | 0.01 | 0.002 | ~0 (no signal) |
+
+`*` unreliable. Gain/current fits for 5-7 are weak because their torques are tiny.
+
+Static multi-motor poses (last third of each hold): zigzag measured 1.70 A vs model 5.78 A; zagzig 1.42 vs 4.48 A (model/measured
+above idle ~7-9x, torques up to 0.15 N.m). The other poses had torques < 0.05 N.m so current is within noise of idle (~0.7 A).
+Per-joint fits (joints 2-4, the only ones with real torque): 2-15 A/(N.m)^2 vs the model's 72.5, consistent with the earlier
+13 A/(N.m)^2 hanging-test result (model over-predicts, ~5x).
+
+Findings:
+- The per-motor torque cap from the demand-weighted allocator was only 0.002-0.055 N.m on idle motors at baseline. The tail step
+  to 0.8 rad reached only 0.39 rad with torque +-0.07: tail kp_eff ~0.01 is the CAP, not the motor, so rows 5-7 describe the
+  allocator's response lag, not the servo. Ramps on 6/7 hit the 1.0 rad limit at < 0.12 N.m (never reached the threshold).
+- Joint 1 carries the whole body: holding torque already 0.115-0.138 N.m. It was never driven (command stayed 0), but its angle
+  moved to 0.45 rad (pairs) and 0.9 rad (zigzag) as the lower joints moved. Group amplitudes for joint 1 were 0 (reach 0), and
+  groups were capped by the small measured reaches of joints 2-4 (0.17-0.24 rad), so the group poses are weak.
+- Coulomb friction 0.006-0.025 N.m, speeds up to 5 rad/s on 5-7, tracking delay ~95-135 ms (includes the 100 Hz tick and WS).
+- Max-speed steps were limited by the 6 rad/s ramp, not the motors.
+
+Open: joint 1 needs its own protocol (threshold above its static torque, or a relative threshold); capture the 5-7 reaches/gains with
+the allocator's caps raised or the joint alone commanded (no limit change made, ask first); group poses should use a floor
+amplitude rather than the min reach.
+
+## RESULT: MuJoCo model + replay of the capture (2026-11-03)
+
+`petctl/sim/mujoco_model.py` (CAD chain, 7 x 0.275 kg on the motor axes, MIT PD law applied in Python with delay and torque cap,
+`frictionloss` from the capture, armature as rotor inertia) and `scripts/replay_mujoco.py` (replays the logged commands, compares
+angle/torque). Statics agree with `gravity_model.equilibrium` (test: angles 0.01 rad, torques 0.01 N.m). `pip install mujoco`
+(optional extra `sim`).
+
+Replay (kp 0.8, kd 0.035, logged commands): joints 2-7 angle corr 0.77-0.99, RMS 0.04-0.09 rad, real-vs-sim angle slope 0.9-1.1;
+torque corr 0.76-0.97 for joints 2-6. Phase RMS: baseline 0.015, ramps 0.05, steps/pairs 0.10, waves 0.14 rad.
+- The sweep over delay 0-0.16 s, armature 1e-4..1e-3 and logged-vs-constant cap barely changes the score (0.086-0.096 rad mean RMS):
+  this capture does NOT constrain delay, armature or the cap mode -> randomise them in the sim.
+- Joint 1 does not match (angle corr 0.07): real moved -0.9..+0.23 rad with a mean +0.08 N.m torque; sim -0.15..+0.13. A rigid head
+  mount is wrong - the hand hold is compliant/yawing. Needs a compliant head support (or a measured one) in the sim.
+- Tail torque (joint 7) corr ~0: the measured tail torque is dominated by the chatter noted above, which isn't modelled.

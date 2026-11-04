@@ -9,12 +9,12 @@ import logging
 import os
 import socket
 import time
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import websockets
 
 from petctl.config import ACTIVE_MOTOR_PROFILE, LOOP_LIMITS, NUM_MODULES, SENSOR_LIMITS
-from petctl.motors.base import MotorProfile
+from petctl.motors.base import MotorFeedback, MotorProfile
 from petctl.motors.base import byte_to_int8 as _byte_to_int8
 from petctl.motors.base import uint_to_float as _uint_to_float
 from petctl.protocols import Backend as _BackendBase
@@ -97,6 +97,8 @@ class RobotBackend(_BackendBase):
         self._discovered_motors: list[int] = []
 
         self._motor_state: dict[int, dict[str, float]] = {}
+        # Optional tap on every decoded motor feedback frame (system identification).
+        self._feedback_listener: Optional[Callable[[float, MotorFeedback], None]] = None
         self._angle_offsets: dict[int, float] = {}
         # Last MIT absolute position / wall time for velocity feedforward.
         self._last_mit_abs_pos: dict[int, float] = {}
@@ -1255,6 +1257,17 @@ class RobotBackend(_BackendBase):
             "pos": fb.pos, "vel": fb.vel, "torque": fb.torque,
             "drive_temp": fb.drive_temp, "motor_temp": fb.motor_temp, "err_code": fb.err_code,
         }
+        if self._feedback_listener is not None:
+            self._feedback_listener(time.monotonic(), fb)
+
+    def set_feedback_listener(self, listener: Optional[Callable[[float, MotorFeedback], None]]) -> None:
+        """Register (or clear with None) a callback run on every decoded motor feedback frame.
+
+        Called on the event loop with ``(time.monotonic(), frame)`` as each frame arrives,
+        so it must be fast and must not block. Used by ``scripts/identify_joints.py`` to
+        record feedback at its true arrival times and rate.
+        """
+        self._feedback_listener = listener
 
 
 def _normalize_pressure(value: int) -> float:

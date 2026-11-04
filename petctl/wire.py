@@ -143,8 +143,9 @@ def _sensors_from_dict(module_id: int, d: dict[str, Any]) -> ModuleSensors:
 def _telemetry_from_dict(d: dict[str, Any]) -> PowerTelemetry:
     d = dict(d)
     for key in ("motor_states", "motor_disable_reasons", "motor_compliance_scales",
-                "per_motor_estimated_current"):
-        d[key] = {int(k): v for k, v in d[key].items()}
+                "per_motor_estimated_current", "per_motor_torque_cap_nm",
+                "per_motor_sustained_current_a"):
+        d[key] = {int(k): v for k, v in d.get(key, {}).items()}   # .get: older senders lack the newer keys
     return PowerTelemetry(**d)
 
 

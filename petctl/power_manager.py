@@ -195,6 +195,8 @@ class PowerManager:
         self._budget_scale: float = 1.0
         self._budget_total_est: float = 0.0
         self._budget_per_motor_est: dict[int, float] = {}
+        self._motor_current_ema: dict[int, float] = {}      # running-average estimated current per motor
+        self._last_torque_caps: dict[int, float] = {}       # |torque_ff| cap applied last tick, per active motor
         self._last_motor_torques: dict[int, float] = {}  # snapshot for status log
 
         # Bin-pack state: active bin + pending queue
@@ -564,6 +566,7 @@ class PowerManager:
 
         # 1. Estimate per-motor bus current (feedback + worst-case floor).
         estimates: dict[int, float] = {}
+        measured_a: dict[int, float] = {}       # model current from measured torque, without the worst-case floor
         for cmd in commands:
             tau_fb = abs(state.motor_torques.get(cmd.servo_id, 0.0))
             omega_fb = abs(state.motor_velocities.get(cmd.servo_id, 0.0))
@@ -573,6 +576,7 @@ class PowerManager:
                 + b.per_motor_mech_coeff * tau_fb * omega_fb / V
             )
             estimates[cmd.servo_id] = max(i_fb, worst_case_a)
+            measured_a[cmd.servo_id] = i_fb
 
         self._budget_per_motor_est = dict(estimates)
         commanded_ids = set(estimates)
@@ -647,14 +651,14 @@ class PowerManager:
         # truly applying — including fight-back against clamps or user-induced forces.
         # kp is scaled down proportionally so the motor becomes compliant when over budget.
         if b.enable_per_motor_torque_cap and self._active_motor_set:
-            n_active = len(self._active_motor_set)
-            budget_per_motor = budget / max(1, n_active)
-            headroom = max(0.0, budget_per_motor - b.per_motor_base_a)
-            tau_max = math.sqrt(headroom / b.per_motor_torque_coeff) if b.per_motor_torque_coeff > 0 else float("inf")
+            dt = max(0.0, min(0.1, state.dt))
+            caps = self._torque_caps(cmd_map, state, budget, dt)
+            self._last_torque_caps = dict(caps)
             for mid in list(self._active_motor_set):
                 cmd = cmd_map.get(mid)
                 if cmd is None:
                     continue
+                tau_max = caps[mid]
                 tau_actual = abs(state.motor_torques.get(mid, 0.0))
                 tau_ff_capped = math.copysign(min(abs(cmd.torque_ff), tau_max), cmd.torque_ff) if cmd.torque_ff != 0.0 else 0.0
                 if tau_actual > tau_max:
@@ -664,6 +668,15 @@ class PowerManager:
                     cmd_map[mid] = replace(cmd, kp=cmd.kp * kp_scale, torque_ff=tau_ff_capped)
                 elif abs(cmd.torque_ff) > tau_max:
                     cmd_map[mid] = replace(cmd, torque_ff=tau_ff_capped)
+        else:
+            self._last_torque_caps = {}
+
+        # Running average of each motor's estimated current (the sustained per-motor limit).
+        dt_ema = max(0.0, min(0.1, state.dt))
+        alpha = min(1.0, dt_ema / b.per_motor_sustained_window_s) if b.per_motor_sustained_window_s > 0 else 1.0
+        for mid, i_now in measured_a.items():
+            prev = self._motor_current_ema.get(mid, b.per_motor_base_a)
+            self._motor_current_ema[mid] = prev + alpha * (i_now - prev)
 
         active_commands: list[ServoCommand] = []
         for mid in self._active_motor_set:
@@ -686,6 +699,80 @@ class PowerManager:
             active_commands.append(cmd)
 
         return active_commands, list(self._pending_queue)
+
+    def _tau_for_current(self, current_a: float) -> float:
+        """Torque (N·m) at which the per-motor current model reaches ``current_a``."""
+        b = POWER_BUDGET
+        if b.per_motor_torque_coeff <= 0:
+            return math.inf
+        return math.sqrt(max(0.0, current_a - b.per_motor_base_a) / b.per_motor_torque_coeff)
+
+    def _current_for_tau(self, tau_nm: float) -> float:
+        """Model current (A) a motor draws at torque ``tau_nm`` (copper-loss term, nominal voltage)."""
+        b = POWER_BUDGET
+        return b.per_motor_base_a + b.per_motor_torque_coeff * tau_nm ** 2
+
+    def _allowed_current(self, motor_id: int) -> float:
+        """Most current this motor may draw now: the peak limit, eased down as its running
+        average approaches the sustained limit (linear knee from 80% of the limit up to it, then
+        steeper), never below idle."""
+        b = POWER_BUDGET
+        ema = self._motor_current_ema.get(motor_id, b.per_motor_base_a)
+        sustained, peak = b.per_motor_sustained_current_a, b.per_motor_peak_current_a
+        knee = 0.8 * sustained
+        if ema <= knee:
+            allowed = peak
+        elif ema <= sustained:
+            allowed = peak - (peak - sustained) * (ema - knee) / (sustained - knee)
+        else:
+            allowed = sustained - 2.0 * (ema - sustained)
+        return max(b.per_motor_base_a, min(peak, allowed))
+
+    def _torque_caps(
+        self, cmd_map: dict[int, ServoCommand], state: RobotState, budget: float, dt: float
+    ) -> dict[int, float]:
+        """Per-motor ``|torque_ff|`` caps for the active motors (see ``per_motor_cap_mode``).
+
+        ``"equal"``: budget / n_active each. ``"demand"``: water-fill the budget over what each
+        motor is asking for (its commanded torque, or the torque it is actually producing if
+        higher), after limiting each to its own peak/sustained allowance, so the total predicted
+        current never exceeds the budget but motors that need more can use what others leave.
+        """
+        b = POWER_BUDGET
+        active = sorted(self._active_motor_set)
+        if not active:
+            return {}
+        if b.per_motor_cap_mode == "equal":
+            tau = self._tau_for_current(budget / len(active))
+            return {mid: tau for mid in active}
+        if b.per_motor_cap_mode != "demand":
+            raise ValueError(f"per_motor_cap_mode must be 'equal' or 'demand', not {b.per_motor_cap_mode!r}")
+
+        tau_peak = self._tau_for_current(b.per_motor_peak_current_a)
+        demand: dict[int, float] = {}
+        for mid in active:
+            cmd = cmd_map.get(mid)
+            tau_req = 0.0
+            if cmd is not None:
+                tau_req = abs(cmd.torque_ff)
+                if cmd.position is not None:
+                    p = state.servo_positions.get(mid, cmd.position)
+                    tau_req = max(tau_req, cmd.kp * abs(cmd.position - p))
+            tau_dem = min(tau_peak, max(tau_req, abs(state.motor_torques.get(mid, 0.0))))
+            demand[mid] = min(self._current_for_tau(tau_dem), self._allowed_current(mid))
+
+        # Motors waiting in the pending queue are idle but still draw their base current.
+        available = max(0.0, budget - len(self._pending_queue) * b.per_motor_base_a)
+        remaining, level = available, math.inf
+        ordered = sorted(demand.values())
+        for i, d in enumerate(ordered):
+            share = remaining / (len(ordered) - i)
+            if d <= share:
+                remaining -= d
+            else:
+                level = share
+                break
+        return {mid: self._tau_for_current(min(d, level)) for mid, d in demand.items()}
 
     def _effective_budget(self) -> float:
         """Current budget ceiling based on detected power source."""
@@ -857,4 +944,6 @@ class PowerManager:
             voltage_cutoff_active=self._voltage_cutoff_active,
             active_motor_ids=sorted(self._active_motor_set),
             pending_motor_ids=list(self._pending_queue),
+            per_motor_torque_cap_nm=dict(self._last_torque_caps),
+            per_motor_sustained_current_a=dict(self._motor_current_ema),
         )
