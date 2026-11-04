@@ -34,3 +34,9 @@ config/imu_tare.json
 
 # Script output data (logs, calibration runs, sweeps)
 data/
+
+# Recorded videos
+*.mp4
+*.mov
+*.gif
+docs/media/
