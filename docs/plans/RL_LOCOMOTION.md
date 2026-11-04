@@ -66,3 +66,11 @@ A test of the pipeline, not a result to rely on. Artefacts: `models/rl/walk_urdf
 - 15 s episodes, mesh model. Nominal plant: 44 cm, cross-track 0.6 cm, 1.63 energy/m. Full domain randomisation: median 33 cm (IQR 23-41). Hand-built serpenoid wave on the same model: 17.8 cm, 2.94 energy/m.
 - Lessons: (1) training on the default box model learns to stand still (the same wave moves 0.7 cm there vs 17.8 cm on the mesh model), so `EnvConfig.urdf_dir` / `petctl rl train --urdf` now defaults to the mesh model; (2) reward `progress` is a velocity (~1 cm/s), so its weight is 50 and the penalties are scaled down; (3) `sim_dt=0.004` is 1.75x faster with the same gait; (4) pin BLAS/OpenMP threads to 1 in workers (3.7x faster, done in `train()`).
 - Not validated: joint signs on the real robot, weighed module masses, floor friction. Reward plateaued at ~250 after ~600k steps; the next iteration should change the reward/curriculum rather than just train longer.
+
+## `walk_sideways` — translate perpendicular to the body's length (2026-11-04)
+
+Same pipeline, task `walk_sideways` (`petctl rl train --task walk_sideways`). Artefacts: `models/rl/walk_sideways_1/`, video `docs/media/side_1.mp4`.
+
+- Reward gotcha: a windowed |speed| progress term was hacked (rocking side to side: reward +327, only 4 cm net in 15 s). `progress` is now the growth of net |sideways| displacement from the start, which telescopes to the final net distance, so rocking earns nothing and either side counts.
+- Result (15 s, mesh model, one 2M-step PPO run): nominal plant 82 cm sideways, straightness 0.94, 0.98 energy/m, 16 cm drift along the body (~11 deg off pure side-step). Full randomisation: median 44 cm (IQR 0.9-68), 1.05 energy/m. The weak quarter of randomised plants (probably low torque caps) is the obvious next target.
+- Compared with `walk_straight` (44 cm, 1.63 energy/m), sideways is faster and cheaper on this body. The open-loop serpenoid sweep found almost no sideways motion (<=4.4 cm), so this gait is not a simple travelling wave.

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from petctl.rl.tasks.base import Task
 from petctl.rl.tasks.locomote import Locomote
+from petctl.rl.tasks.walk_sideways import WalkSideways
 from petctl.rl.tasks.walk_straight import WalkStraight
 
-TASKS: dict[str, type[Task]] = {"locomote": Locomote, "walk_straight": WalkStraight}
+TASKS: dict[str, type[Task]] = {"locomote": Locomote, "walk_straight": WalkStraight, "walk_sideways": WalkSideways}
 
-__all__ = ["TASKS", "Task", "Locomote", "WalkStraight"]
+__all__ = ["TASKS", "Task", "Locomote", "WalkStraight", "WalkSideways"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import mujoco
 import numpy as np
 import pytest
 
@@ -64,3 +65,19 @@ def test_gait_policy_matches_env_targets(tmp_path: Path) -> None:
         sm = c.action_ema * pol._tgt + (1 - c.action_ema) * c.action_scale_rad * a
         pol._tgt = pol._tgt + np.clip(sm - pol._tgt, -c.max_target_step_rad, c.max_target_step_rad)
         assert np.allclose(pol._tgt, env._tgt)
+
+
+def test_walk_sideways_axis_and_sign() -> None:
+    """Progress axis is perpendicular to the body's length; distance is |net sideways| so either side counts."""
+    env = PetEnv(EnvConfig(task="walk_sideways", episode_s=1.0))
+    env.reset(seed=0)
+    t = env.task
+    assert abs(float(t.axis @ t.length_dir)) < 1e-9 and abs(t.axis[2]) < 1e-9
+    for sgn in (1.0, -1.0):                                  # shove the CoM both ways along the axis
+        env.sim.data.qpos[:3] += sgn * 0.1 * t.axis
+        mujoco.mj_forward(env.sim.model, env.sim.data)
+        assert abs(t.distance(env.sim) - 0.1) < 1e-6
+        env.sim.data.qpos[:3] -= sgn * 0.1 * t.axis
+        mujoco.mj_forward(env.sim.model, env.sim.data)
+    _, r, *_ , info = env.step(np.zeros(7))
+    assert np.isfinite(r) and "metrics" in info
