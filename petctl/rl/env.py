@@ -32,6 +32,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
     def __init__(self, cfg: EnvConfig | None = None, base: BuildParams | None = None) -> None:
         """Create the env; ``base`` overrides nominal plant parameters (e.g. weighed masses)."""
         self.cfg = cfg or EnvConfig()
+        if base is None:
+            base = BuildParams(urdf_dir=self.cfg.urdf_dir, dt=self.cfg.sim_dt)
         self.base = base
         self.dt = 1.0 / self.cfg.control_hz
         self.obs_builder = ObsBuilder(self.cfg)
@@ -94,4 +96,6 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         terminated = self._up_dot() < c.flip_up_dot or self.task.terminated(self.sim)
         truncated = self._t >= self.max_steps
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}
+        if hasattr(self.task, "metrics"):
+            info["metrics"] = self.task.metrics(self.sim)
         return self.obs_builder.build(self._snapshot()), reward, terminated, truncated, info

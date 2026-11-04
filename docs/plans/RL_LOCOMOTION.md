@@ -57,3 +57,12 @@ Needed from the user (nothing has been run on hardware):
 ## FIX 2026-11-04: lying-model joint axes were 90 deg off about x
 `load_urdf` rotated the gravity-model axes into the mesh frame by a rigid fit that came out 90 deg wrong: the sim joints turned about z where the mating-face normal (motor cylinder axis) is y, and vice versa, so they bent perpendicular to the real revolute axis. Axes are now the SVD normal of the contact patch between B_{k-1} and B_k (alternating +y / -z in the robot-CAD frame), sign kept from the old convention rotated 90 deg about x (agrees with the URDF axis signs), anchor = patch centroid.
 After the fix: single-joint 0.5 rad commands still do not move joints 1-6 at cap 0.164 (same 45-deg-to-chain argument); serpenoid A 0.5, 0.5 Hz, phi 2.1 plain now gives +13.6 cm forward in 10 s (was +3.8). Re-run the full sweep before trusting earlier baselines. Joint sign vs the real robot (curl right: odd +, even -) is not yet checked against the new axes.
+
+## First end-to-end training test (2026-11-04) — `walk_straight`, PPO, 2M steps
+
+A test of the pipeline, not a result to rely on. Artefacts: `models/rl/walk_urdf_2/` (inference-only `policy.npz`), video `docs/media/walk_urdf_2.mp4`.
+
+- Run it with no training: `petctl rl run models/rl/walk_urdf_2` (or `mjpython scripts/view_policy.py models/rl/walk_urdf_2`; record with `scripts/record_policy.py`).
+- 15 s episodes, mesh model. Nominal plant: 44 cm, cross-track 0.6 cm, 1.63 energy/m. Full domain randomisation: median 33 cm (IQR 23-41). Hand-built serpenoid wave on the same model: 17.8 cm, 2.94 energy/m.
+- Lessons: (1) training on the default box model learns to stand still (the same wave moves 0.7 cm there vs 17.8 cm on the mesh model), so `EnvConfig.urdf_dir` / `petctl rl train --urdf` now defaults to the mesh model; (2) reward `progress` is a velocity (~1 cm/s), so its weight is 50 and the penalties are scaled down; (3) `sim_dt=0.004` is 1.75x faster with the same gait; (4) pin BLAS/OpenMP threads to 1 in workers (3.7x faster, done in `train()`).
+- Not validated: joint signs on the real robot, weighed module masses, floor friction. Reward plateaued at ~250 after ~600k steps; the next iteration should change the reward/curriculum rather than just train longer.
