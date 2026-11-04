@@ -133,13 +133,15 @@ def load_urdf(urdf_dir: str) -> UrdfGeometry:
     rot = vt.T @ np.diag([1, 1, np.sign(np.linalg.det(vt.T @ u.T))]) @ u.T
     axes, anchors = {}, {}
     for k in range(1, N_JOINTS + 1):
-        ax = rot @ A[k]
-        ax /= np.linalg.norm(ax)
-        d, i = cKDTree(hulls[k]).query(hulls[k - 1])             # closest pair between B_{k-1} and B_k
-        j = int(np.argmin(d))
-        mid = 0.5 * (hulls[k - 1][j] + hulls[k][i[j]])
-        line0 = rot @ Q[k] + (cm - rot @ cg)                     # a point on the validated axis line, in the mesh frame
-        anchors[k] = line0 + ((mid - line0) @ ax) * ax           # axis point closest to the interface
+        ax_fit = rot @ A[k]                                      # old fitted axis: right line family but 90 deg off about x
+        ax_fit /= np.linalg.norm(ax_fit)
+        touch = cKDTree(hulls[k]).query(hulls[k - 1])[0] < 4e-3  # patch of B_{k-1} touching B_k (the mating face of the joint)
+        patch = np.vstack([hulls[k - 1][touch], hulls[k][cKDTree(hulls[k - 1]).query(hulls[k])[0] < 4e-3]])
+        ax = np.linalg.svd(patch - patch.mean(0))[2][-1]         # the joint turns about the mating-face normal (the motor cylinder axis)
+        # sign: keep the validated direction convention, i.e. that of the fitted axis rotated 90 deg about x (matches the URDF signs)
+        ref = np.array([ax_fit[0], -ax_fit[2], ax_fit[1]])
+        ax = ax if ax @ ref >= 0 else -ax
+        anchors[k] = patch.mean(0)
         axes[k] = ax
     return UrdfGeometry(centres, anchors, axes, hulls)
 

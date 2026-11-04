@@ -53,3 +53,7 @@ Needed from the user (nothing has been run on hardware):
     direction (or a chosen heading) rather than strictly "forward" if the policy discovers it.
 - Remaining unknowns, all needing the user: module weights, carpet and bench friction (drag test), and one supervised floor test of whether the real robot
   moves joints 1-6 as the model says (zig-zag pose reaches ~0.4 rad on joints 1-2, single joints do not). That test is the real validation of this model.
+
+## FIX 2026-11-04: lying-model joint axes were 90 deg off about x
+`load_urdf` rotated the gravity-model axes into the mesh frame by a rigid fit that came out 90 deg wrong: the sim joints turned about z where the mating-face normal (motor cylinder axis) is y, and vice versa, so they bent perpendicular to the real revolute axis. Axes are now the SVD normal of the contact patch between B_{k-1} and B_k (alternating +y / -z in the robot-CAD frame), sign kept from the old convention rotated 90 deg about x (agrees with the URDF axis signs), anchor = patch centroid.
+After the fix: single-joint 0.5 rad commands still do not move joints 1-6 at cap 0.164 (same 45-deg-to-chain argument); serpenoid A 0.5, 0.5 Hz, phi 2.1 plain now gives +13.6 cm forward in 10 s (was +3.8). Re-run the full sweep before trusting earlier baselines. Joint sign vs the real robot (curl right: odd +, even -) is not yet checked against the new axes.
