@@ -27,6 +27,10 @@ class Locomote(Task):
         self._hist: deque[np.ndarray] = deque([self.p0.copy()] * (n + 1), maxlen=n + 1)
         self._prev_qd = np.zeros(7)
 
+    def tracked_pos(self, sim: PetSim) -> np.ndarray:
+        """World position whose motion is rewarded (head here; subclasses may use the centre of mass)."""
+        return sim.head_pos()
+
     def distance(self, sim: PetSim) -> float:
         """Total displacement along the initial heading (m); used for evaluation."""
         return float((sim.head_pos() - self.p0) @ self.heading)
@@ -35,7 +39,7 @@ class Locomote(Task):
         """See class docstring. Terms are returned unweighted-signed (already multiplied by their weights)."""
         w = self.cfg.reward
         dt = 1.0 / self.cfg.control_hz
-        pos = sim.head_pos()
+        pos = self.tracked_pos(sim)
         self._hist.append(pos.copy())
         window = (len(self._hist) - 1) * dt
         d = self._hist[-1] - self._hist[0]

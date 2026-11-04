@@ -32,16 +32,17 @@ class DomainRand:
 class RewardWeights:
     """Fixed reward weights (not ramped). Every term is logged separately by the env."""
 
-    progress: float = 1.0
-    energy: float = 0.5
+    progress: float = 50.0            # reward is velocity in m/s; this body moves ~1 cm/s, so it must be scaled up
+    energy: float = 0.05
     action_rate: float = 0.05
-    joint_acc: float = 0.0005
-    saturation: float = 0.05
+    joint_acc: float = 0.00005
+    saturation: float = 0.005
     lateral: float = 0.3
-    yaw: float = 0.1
-    tilt: float = 0.5
+    yaw: float = 0.02
+    tilt: float = 0.05
     current: float = 1.0
     alive: float = 0.0
+    drift: float = 0.2                # walk_straight: cumulative cross-track offset (m, clipped at 1)
 
 
 @dataclass
@@ -61,7 +62,17 @@ class EnvConfig:
     dr: DomainRand = field(default_factory=DomainRand)
     reward: RewardWeights = field(default_factory=RewardWeights)
     task: str = "locomote"
+    sim_dt: float = 0.004             # MuJoCo timestep (s); 0.004 is 1.75x faster than 0.002 with the same gait (17.6 vs 17.8 cm in 15 s)
+    urdf_dir: str | None = None       # PET_description folder: use the mesh collision model (the box model barely locomotes)
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form (JSON-serialisable) for saving with checkpoints."""
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> EnvConfig:
+        """Rebuild a config saved by ``to_dict`` (unknown keys ignored, so older runs still load)."""
+        def pick(klass: type, src: dict[str, Any]) -> dict[str, Any]:
+            return {k: (tuple(v) if isinstance(v, list) else v) for k, v in src.items() if k in klass.__dataclass_fields__}
+        top = {k: v for k, v in d.items() if k in cls.__dataclass_fields__ and k not in ("dr", "reward")}
+        return cls(dr=DomainRand(**pick(DomainRand, d.get("dr", {}))), reward=RewardWeights(**pick(RewardWeights, d.get("reward", {}))), **top)

@@ -1,0 +1,63 @@
+{
+ "control_hz": 20.0,
+ "episode_s": 15.0,
+ "history": 4,
+ "action_scale_rad": 0.5,
+ "action_ema": 0.6,
+ "max_target_step_rad": 0.35,
+ "pos_window": 3,
+ "flip_up_dot": 0.2,
+ "progress_window_s": 1.0,
+ "seed": 0,
+ "dr": {
+  "scale": 1.0,
+  "delay_s": [
+   0.04,
+   0.14
+  ],
+  "armature": [
+   0.0001,
+   0.001
+  ],
+  "kp_scale": [
+   0.65,
+   1.35
+  ],
+  "coulomb_scale": [
+   0.5,
+   2.0
+  ],
+  "cap_nm": [
+   0.05,
+   0.164
+  ],
+  "mass_scale": [
+   0.9,
+   1.1
+  ],
+  "floor_friction": [
+   0.4,
+   1.5
+  ],
+  "joint_offset_rad": 0.03,
+  "pos_noise_rad": 0.002,
+  "gyro_noise": 0.02,
+  "imu_tilt_rad": 0.05
+ },
+ "reward": {
+  "progress": 50.0,
+  "energy": 0.05,
+  "action_rate": 0.05,
+  "joint_acc": 5e-05,
+  "saturation": 0.005,
+  "lateral": 0.3,
+  "yaw": 0.02,
+  "tilt": 0.05,
+  "current": 1.0,
+  "alive": 0.0,
+  "drift": 0.2
+ },
+ "task": "walk_straight",
+ "sim_dt": 0.004,
+ "urdf_dir": "/Users/nsted/Documents/PET/body/URDF/PET_description"
+}

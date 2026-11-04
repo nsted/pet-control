@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -33,6 +34,9 @@ def make_env_fn(cfg: EnvConfig, rank: int, seed: int) -> Callable[[], Any]:
 
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo") -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``."""
+    # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(var, "1")
     import mujoco  # type: ignore[import-untyped]
     import stable_baselines3 as sb3
     import torch
@@ -58,6 +62,9 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     (out / "meta.json").write_text(json.dumps({"git": _git_hash(), "mujoco": mujoco.__version__, "sb3": sb3.__version__, "torch": torch.__version__,
                                                "steps": steps, "n_envs": n_envs, "seed": seed, "algo": algo, "wall_s": time.time() - t0}, indent=1))
     venv.close()
+    if algo == "ppo":
+        from petctl.rl.policy import export_policy
+        export_policy(out)                                  # inference-only artefact: policy.npz
     return out
 
 
@@ -66,17 +73,14 @@ def evaluate(out: Path, episodes: int = 20, dr_scale: float | None = None) -> di
     import stable_baselines3 as sb3
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-    cfgd = json.loads((out / "config.json").read_text())
-    cfg = EnvConfig()
-    cfg.control_hz, cfg.episode_s, cfg.history = cfgd["control_hz"], cfgd["episode_s"], cfgd["history"]
-    cfg.action_scale_rad, cfg.action_ema = cfgd["action_scale_rad"], cfgd["action_ema"]
+    cfg = EnvConfig.from_dict(json.loads((out / "config.json").read_text()))
     if dr_scale is not None:
         cfg.dr.scale = dr_scale
     env = PetEnv(cfg)
     venv: Any = VecNormalize.load(str(out / "vecnormalize.pkl"), DummyVecEnv([lambda: env]))
     venv.training, venv.norm_reward = False, False
     model = sb3.PPO.load(str(out / "model"))
-    dist, sat = [], []
+    dist, sat, mets = [], [], []
     for ep in range(episodes):
         first, _ = env.reset(seed=10_000 + ep)  # fixed held-out seeds
         obs = venv.normalize_obs(first)[None]
@@ -88,6 +92,13 @@ def evaluate(out: Path, episodes: int = 20, dr_scale: float | None = None) -> di
             done = term or trunc
             d, s, n = info["distance"], s + -info["terms"]["saturation"], n + 1
         dist.append(d)
+        if "metrics" in info:
+            mets.append(info["metrics"])
         sat.append(s / max(n, 1))
     q = np.percentile(dist, [25, 50, 75])
-    return {"distance_median": float(q[1]), "distance_q1": float(q[0]), "distance_q3": float(q[2]), "saturation_cost_mean": float(np.mean(sat))}
+    res = {"distance_median": float(q[1]), "distance_q1": float(q[0]), "distance_q3": float(q[2]), "saturation_cost_mean": float(np.mean(sat))}
+    if mets:
+        for k in ("straightness", "cross_track", "energy_per_m"):
+            vals = [m[k] for m in mets if np.isfinite(m[k])]
+            res[f"{k}_median"] = float(np.median(vals)) if vals else float("nan")
+    return res
