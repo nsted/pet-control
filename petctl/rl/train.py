@@ -32,7 +32,8 @@ def make_env_fn(cfg: EnvConfig, rank: int, seed: int) -> Callable[[], Any]:
     return _f
 
 
-def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None) -> Path:
+def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
+          ent_coef: float = 0.0) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``."""
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
@@ -51,7 +52,7 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     model: Any
     if algo == "ppo":
         model = sb3.PPO("MlpPolicy", venv, n_steps=256, batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=0.99, gae_lambda=0.95,
-                        clip_range=0.2, ent_coef=0.0, learning_rate=lambda f: 3e-4 * f, seed=seed, verbose=1,
+                        clip_range=0.2, ent_coef=ent_coef, learning_rate=lambda f: 3e-4 * f, seed=seed, verbose=1,
                         policy_kwargs={"net_arch": [256, 256], "log_std_init": -1.0}, tensorboard_log=str(out / "tb"))
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
@@ -70,6 +71,8 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     if algo == "ppo":
         from petctl.rl.policy import export_policy
         export_policy(out)                                  # inference-only artefact: policy.npz
+    from petctl.rl.video import record_best_video
+    record_best_video(out)                                  # always leave a video of the best policy in docs/media
     return out
 
 

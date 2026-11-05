@@ -21,6 +21,7 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
           action_scale: float = typer.Option(None, help="Joint-target range in rad for action=+-1 (default 0.5; reach_up needs ~2)"),
           episode_s: float = typer.Option(None, help="Episode length in seconds"),
           cap_nm: float = typer.Option(None, help="Fix the per-joint torque cap (N.m) instead of randomising it"),
+          ent_coef: float = typer.Option(0.0, help="PPO entropy bonus (keeps exploration alive)"),
           hours: float = typer.Option(None, help="Stop after this many wall-clock hours (steps is then an upper bound)"),
           urdf: str = typer.Option(DEFAULT_URDF, help="PET_description folder (mesh collision model); '' for the simple box model")) -> None:
     """Train a policy with SB3 and save model, normalisation stats, config and metadata."""
@@ -35,7 +36,7 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
         cfg.episode_s = episode_s
     if cap_nm is not None:
         cfg.dr.cap_nm = (cap_nm, cap_nm)
-    path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo, hours)
+    path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo, hours, ent_coef)
     typer.echo(f"Saved to {path}")
 
 
