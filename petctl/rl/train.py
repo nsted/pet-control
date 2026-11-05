@@ -72,7 +72,8 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
         from petctl.rl.policy import export_policy
         export_policy(out)                                  # inference-only artefact: policy.npz
     from petctl.rl.video import record_best_video
-    record_best_video(out)                                  # always leave a video of the best policy in docs/media
+    if callback is None:
+        record_best_video(out)                              # record runs write a whole session of videos instead (see records.py)
     return out
 
 

@@ -123,3 +123,18 @@ def test_reach_still_counts_sustained_height_not_stillness() -> None:
     for _ in range(200):
         _, _, _, _, info = env.step(rng.choice([-1.0, 1.0], 7))
     assert info["metrics"]["peak_still_m"] < 0.01
+
+
+def test_finalize_session_marks_best_and_writes_index(tmp_path: Path) -> None:
+    """The session index lists videos in discovery order and renames the highest replayed one BEST_."""
+    from petctl.rl.video import finalize_session
+    entries = []
+    for n, (rec, rep) in enumerate([(0.03, 0.025), (0.06, 0.055), (0.08, 0.04)], start=1):
+        name = f"{n:02d}_rec{100 * rec:.1f}cm.mp4"
+        (tmp_path / name).write_bytes(b"x")
+        (tmp_path / (name + ".json")).write_text(json.dumps({"distance": rep}))
+        entries.append({"n": n, "video": name, "record_cm": 100 * rec, "episode_return": 10.0 * n, "episode": n, "timesteps": n, "wall_min": n})
+    (tmp_path / "index.json").write_text(json.dumps(entries))
+    best = finalize_session(tmp_path)
+    assert best is not None and best.name == "BEST_02_rec6.0cm.mp4" and best.exists()
+    assert "BEST_02_rec6.0cm.mp4" in (tmp_path / "index.md").read_text()

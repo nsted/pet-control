@@ -1,0 +1,40 @@
+[
+ {
+  "n": 1,
+  "video": "01_rec3.2cm_R22_ep1573_t2m.mp4",
+  "policy": "policies/01_rec3.2cm_R22_ep1573_t2m.npz",
+  "record_cm": 3.234448318708061,
+  "episode_return": 22.318139,
+  "episode": 1573,
+  "timesteps": 315200,
+  "wall_min": 1.9541450023651123,
+  "replay": {
+   "distance": 0.0,
+   "peak_still_m": 0.0,
+   "peak_any_m": 0.03853009425217428,
+   "current_m": 0.03459766462587467,
+   "best_t_s": 0.0,
+   "best_module": -1.0
+  },
+  "best": false
+ },
+ {
+  "n": 2,
+  "video": "BEST_02_rec6.8cm_R28_ep2234_t3m.mp4",
+  "policy": "policies/02_rec6.8cm_R28_ep2234_t3m.npz",
+  "record_cm": 6.7658808190699515,
+  "episode_return": 27.947857,
+  "episode": 2234,
+  "timesteps": 448000,
+  "wall_min": 3.260124166806539,
+  "replay": {
+   "distance": 0.04799120374425882,
+   "peak_still_m": 0.04799120374425882,
+   "peak_any_m": 0.050172082572204915,
+   "current_m": 0.04866461998071257,
+   "best_t_s": 9.85,
+   "best_module": 1.0
+  },
+  "best": true
+ }
+]
