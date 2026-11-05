@@ -81,3 +81,19 @@ def test_walk_sideways_axis_and_sign() -> None:
         mujoco.mj_forward(env.sim.model, env.sim.data)
     _, r, *_ , info = env.step(np.zeros(7))
     assert np.isfinite(r) and "metrics" in info
+
+
+def test_reach_up_peak_reward_telescopes_and_guards_clipping() -> None:
+    """Rewards peak growth only: zero at the flat start, total peak_gain ~ 10*height_w*peak, no peak while clipping the floor."""
+    cfg = EnvConfig(task="reach_up", episode_s=5.0, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg.dr.scale = 0.0
+    env = PetEnv(cfg)
+    env.reset(seed=0)
+    assert abs(env.task.gain(env.sim)) < 1e-6
+    total = 0.0
+    for _ in range(60):
+        _, r, _, _, info = env.step(np.ones(7))
+        total += info["terms"]["peak_gain"]
+        assert np.isfinite(r)
+    assert np.isclose(total, 10.0 * cfg.reward.height * env.task.peak, rtol=1e-6)
+    assert set(info["metrics"]) == {"distance", "peak_m", "current_m"}

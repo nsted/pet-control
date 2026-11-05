@@ -42,6 +42,8 @@ class RewardWeights:
     tilt: float = 0.05
     current: float = 1.0
     alive: float = 0.0
+    height: float = 400.0             # reach_up: held head-height gain (m); a 5 cm hold earns ~20 per step
+    validity: float = 300.0           # reach_up: floor-clipping penalty (per m)
     drift: float = 0.2                # walk_straight: cumulative cross-track offset (m, clipped at 1)
 
 

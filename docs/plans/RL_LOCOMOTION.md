@@ -74,3 +74,12 @@ Same pipeline, task `walk_sideways` (`petctl rl train --task walk_sideways`). Ar
 - Reward gotcha: a windowed |speed| progress term was hacked (rocking side to side: reward +327, only 4 cm net in 15 s). `progress` is now the growth of net |sideways| displacement from the start, which telescopes to the final net distance, so rocking earns nothing and either side counts.
 - Result (15 s, mesh model, one 2M-step PPO run): nominal plant 82 cm sideways, straightness 0.94, 0.98 energy/m, 16 cm drift along the body (~11 deg off pure side-step). Full randomisation: median 44 cm (IQR 0.9-68), 1.05 energy/m. The weak quarter of randomised plants (probably low torque caps) is the obvious next target.
 - Compared with `walk_straight` (44 cm, 1.63 energy/m), sideways is faster and cheaper on this body. The open-loop serpenoid sweep found almost no sideways motion (<=4.4 cm), so this gait is not a simple travelling wave.
+
+## `reach_up` — raise the highest point of the body as high as possible (2026-11-04)
+
+Task `reach_up`; artefacts `models/rl/reach_2/`, video `docs/media/reach_2.mp4`. Train: `petctl rl train --task reach_up --steps 5000000 --action-scale 3.1416 --episode-s 10 --dr-scale 0.3 --cap-nm 0.5`.
+
+- Reward = growth of the running-max height of the highest collision-mesh vertex over all 8 modules (telescopes to the episode peak; no hold requirement). A peak only counts while no module origin is below 5 cm and contact penetration is under 5 mm (a naive height score was exploited by clipping the tail through the floor, and a head-site score by rolling the head).
+- Result at cap 0.5 N.m, targets +-pi rad, no flip termination: peak 19.7 cm above the flat start (highest point ~27 cm above the floor), head end upright, rear modules on the floor; it cycles (reach ~16 cm at 2 s, relax, reach ~19 cm at 9 s). Brief airborne frames (20/200) during transitions, not at the peak: not checked for plausibility.
+- Correction: an earlier static pose search found only ~5 cm and I concluded standing was infeasible. That was wrong: it bounded joints at +-2 rad, used a lower cap and a weak search. The geometry allows standing; the limits were in the setup (action range +-0.5 rad in the default env, randomised cap 0.05-0.164 N.m, tail-IMU flip termination).
+- 0.5 N.m is far above the power-limited 0.164 N.m (2 A peak/motor); several saturated joints would exceed the 4 A bus budget. Treat as an upper bound, not a hardware gait. Next: find the lowest cap that still stands, and decide whether to require a hold.

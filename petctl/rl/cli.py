@@ -18,6 +18,9 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
           out: Path = typer.Option(None, help="Output directory (default data/rl/<task>_<seed>)"),
           dr_scale: float = typer.Option(1.0, help="Domain-randomisation scale in [0,1]"),
           algo: str = typer.Option("ppo"),
+          action_scale: float = typer.Option(None, help="Joint-target range in rad for action=+-1 (default 0.5; reach_up needs ~2)"),
+          episode_s: float = typer.Option(None, help="Episode length in seconds"),
+          cap_nm: float = typer.Option(None, help="Fix the per-joint torque cap (N.m) instead of randomising it"),
           urdf: str = typer.Option(DEFAULT_URDF, help="PET_description folder (mesh collision model); '' for the simple box model")) -> None:
     """Train a policy with SB3 and save model, normalisation stats, config and metadata."""
     from petctl.rl.config import EnvConfig
@@ -25,6 +28,12 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
 
     cfg = EnvConfig(task=task, seed=seed, urdf_dir=urdf or None)
     cfg.dr.scale = dr_scale
+    if action_scale is not None:
+        cfg.action_scale_rad = action_scale
+    if episode_s is not None:
+        cfg.episode_s = episode_s
+    if cap_nm is not None:
+        cfg.dr.cap_nm = (cap_nm, cap_nm)
     path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo)
     typer.echo(f"Saved to {path}")
 

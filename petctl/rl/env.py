@@ -93,7 +93,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         reward, terms = self.task.reward(self.sim, a, self._prev_action)
         self._prev_action = a
         self._t += 1
-        terminated = self._up_dot() < c.flip_up_dot or self.task.terminated(self.sim)
+        terminated = (self.task.terminate_on_flip and self._up_dot() < c.flip_up_dot) or self.task.terminated(self.sim)
         truncated = self._t >= self.max_steps
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}
         if hasattr(self.task, "metrics"):

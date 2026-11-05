@@ -90,7 +90,7 @@ def evaluate(out: Path, episodes: int = 20, dr_scale: float | None = None) -> di
             o, _, term, trunc, info = env.step(act[0])
             obs = venv.normalize_obs(o)[None]
             done = term or trunc
-            d, s, n = info["distance"], s + -info["terms"]["saturation"], n + 1
+            d, s, n = info["distance"], s + -info["terms"].get("saturation", 0.0), n + 1
         dist.append(d)
         if "metrics" in info:
             mets.append(info["metrics"])
@@ -98,7 +98,7 @@ def evaluate(out: Path, episodes: int = 20, dr_scale: float | None = None) -> di
     q = np.percentile(dist, [25, 50, 75])
     res = {"distance_median": float(q[1]), "distance_q1": float(q[0]), "distance_q3": float(q[2]), "saturation_cost_mean": float(np.mean(sat))}
     if mets:
-        for k in ("straightness", "cross_track", "energy_per_m"):
+        for k in mets[0]:
             vals = [m[k] for m in mets if np.isfinite(m[k])]
             res[f"{k}_median"] = float(np.median(vals)) if vals else float("nan")
     return res

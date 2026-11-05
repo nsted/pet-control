@@ -14,6 +14,7 @@ class Task(ABC):
     """One experiment. ``reward`` returns the total and a dict of separately logged terms."""
 
     name = "task"
+    terminate_on_flip = True      # end the episode when the tail IMU is tipped past EnvConfig.flip_up_dot (off for reaching poses)
 
     def __init__(self, cfg: EnvConfig) -> None:
         """Store the env config (reward weights, control rate)."""
