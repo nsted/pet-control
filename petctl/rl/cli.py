@@ -21,6 +21,7 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
           action_scale: float = typer.Option(None, help="Joint-target range in rad for action=+-1 (default 0.5; reach_up needs ~2)"),
           episode_s: float = typer.Option(None, help="Episode length in seconds"),
           cap_nm: float = typer.Option(None, help="Fix the per-joint torque cap (N.m) instead of randomising it"),
+          hours: float = typer.Option(None, help="Stop after this many wall-clock hours (steps is then an upper bound)"),
           urdf: str = typer.Option(DEFAULT_URDF, help="PET_description folder (mesh collision model); '' for the simple box model")) -> None:
     """Train a policy with SB3 and save model, normalisation stats, config and metadata."""
     from petctl.rl.config import EnvConfig
@@ -34,7 +35,7 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
         cfg.episode_s = episode_s
     if cap_nm is not None:
         cfg.dr.cap_nm = (cap_nm, cap_nm)
-    path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo)
+    path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo, hours)
     typer.echo(f"Saved to {path}")
 
 
@@ -59,9 +60,27 @@ def export(run: Path = typer.Argument(..., help="Run directory")) -> None:
 @rl_app.command("run")
 def run_(run: Path = typer.Argument(..., help="Run directory containing policy.npz"), seconds: float = typer.Option(15.0),
          seed: int = typer.Option(0), dr_scale: float = typer.Option(0.0, help="0 = nominal plant"),
-         view: bool = typer.Option(False, help="Open the MuJoCo viewer (launch via mjpython)")) -> None:
+         view: bool = typer.Option(False, help="Open the MuJoCo viewer (launch via mjpython)"),
+         policy_file: str = typer.Option("policy.npz", help="e.g. best_policy.npz for the policy saved at the best record")) -> None:
     """Enact a trained gait in the sim with no training: loads policy.npz only."""
     from petctl.rl.play import play
 
-    for k, v in play(run, seconds, seed, dr_scale, view).items():
+    for k, v in play(run, seconds, seed, dr_scale, view, policy_file).items():
         typer.echo(f"{k}: {v:.4f}")
+
+
+@rl_app.command("best")
+def best(runs: list[Path] = typer.Argument(None, help="Run directories (default: every data/rl/*/best.json)")) -> None:
+    """Print the best height reached so far in each run, highest first."""
+    import json
+
+    files = [r / "best.json" for r in runs] if runs else sorted(Path("data/rl").glob("*/best.json"))
+    rows = []
+    for f in files:
+        if f.exists():
+            b = json.loads(f.read_text())
+            rows.append((b["height_gain_cm"], b["highest_point_above_floor_cm"], f.parent.name, b["timesteps"], b["wall_s"] / 60, b.get("saved", "")))
+    for gain, top, name, steps, mins, saved in sorted(rows, reverse=True):
+        typer.echo(f"{name}: +{gain:.1f} cm (highest point {top:.1f} cm above floor) at {steps} steps, {mins:.0f} min, {saved}")
+    if not rows:
+        typer.echo("no best.json found")

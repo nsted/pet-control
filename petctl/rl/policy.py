@@ -18,14 +18,14 @@ from petctl.rl.obs import ObsBuilder, Snapshot
 POLICY_FILE = "policy.npz"
 
 
-def export_policy(run: Path) -> Path:
-    """Write ``policy.npz`` for the PPO run in ``run`` (needs torch + SB3; run once after training)."""
+def export_policy(run: Path, model_file: str = "model", norm_file: str = "vecnormalize.pkl", out_file: str = POLICY_FILE) -> Path:
+    """Write ``out_file`` for the PPO checkpoint ``model_file``/``norm_file`` in ``run`` (needs torch + SB3)."""
     import stable_baselines3 as sb3
     from stable_baselines3.common.vec_env import VecNormalize
     import pickle
 
-    model = sb3.PPO.load(str(run / "model"), device="cpu")
-    with open(run / "vecnormalize.pkl", "rb") as f:
+    model = sb3.PPO.load(str(run / model_file), device="cpu")
+    with open(run / norm_file, "rb") as f:
         vn: VecNormalize = pickle.load(f)
     pol = model.policy
     layers = [m for m in pol.mlp_extractor.policy_net if hasattr(m, "weight")] + [pol.action_net]
@@ -34,7 +34,7 @@ def export_policy(run: Path) -> Path:
     for i, lin in enumerate(layers):
         arrays[f"w{i}"] = lin.weight.detach().numpy().astype(np.float64)
         arrays[f"b{i}"] = lin.bias.detach().numpy().astype(np.float64)
-    out = run / POLICY_FILE
+    out = run / out_file
     np.savez(out, **arrays)
     return out
 
@@ -42,10 +42,10 @@ def export_policy(run: Path) -> Path:
 class GaitPolicy:
     """Deterministic trained gait. ``reset`` once with the first snapshot, then call ``step`` every 1/control_hz seconds."""
 
-    def __init__(self, run: Path) -> None:
-        """Load ``policy.npz`` and ``config.json`` from a run directory."""
+    def __init__(self, run: Path, policy_file: str = POLICY_FILE) -> None:
+        """Load ``policy_file`` (default ``policy.npz``) and ``config.json`` from a run directory."""
         self.cfg = EnvConfig.from_dict(json.loads((run / "config.json").read_text()))
-        z = np.load(run / POLICY_FILE)
+        z = np.load(run / policy_file)
         n = int(z["n_layers"])
         self._w = [z[f"w{i}"] for i in range(n)]
         self._b = [z[f"b{i}"] for i in range(n)]

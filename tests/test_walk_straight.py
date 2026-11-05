@@ -97,3 +97,26 @@ def test_reach_up_peak_reward_telescopes_and_guards_clipping() -> None:
         assert np.isfinite(r)
     assert np.isclose(total, 10.0 * cfg.reward.height * env.task.peak, rtol=1e-6)
     assert set(info["metrics"]) == {"distance", "peak_m", "current_m"}
+
+
+def _still_env():
+    cfg = EnvConfig(task="reach_still", episode_s=20.0, action_scale_rad=np.pi, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg.dr.scale, cfg.dr.cap_nm = 0.0, (0.5, 0.5)
+    return PetEnv(cfg)
+
+
+def test_reach_still_counts_only_held_poses() -> None:
+    """A static raised pose registers a still record (with pose); the same height reached while moving fast does not."""
+    q = np.array([1.42, -1.93, -1.02, 1.86, 1.06, 1.58, 0.45])   # a valid raised pose from the constrained static search
+    env = _still_env()
+    env.reset(seed=0)
+    for _ in range(400):                                      # command the pose and keep it
+        _, _, _, trunc, info = env.step(q / np.pi)
+    m = info["metrics"]
+    assert m["peak_still_m"] > 0.03 and m["peak_still_m"] <= m["peak_any_m"] + 1e-9
+    assert len(info["pose"]["joint_pos_rad"]) == 7 and info["pose"]["top_module"] >= 0
+    env.reset(seed=0)                                         # now thrash: any-instant height may rise, still record must stay ~0
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        _, _, _, _, info = env.step(rng.choice([-1.0, 1.0], 7))
+    assert info["metrics"]["peak_still_m"] < 1e-9

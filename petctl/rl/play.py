@@ -9,9 +9,9 @@ from petctl.rl.env import PetEnv
 from petctl.rl.policy import GaitPolicy
 
 
-def play(run: Path, seconds: float = 15.0, seed: int = 0, dr_scale: float = 0.0, view: bool = False) -> dict[str, float]:
+def play(run: Path, seconds: float = 15.0, seed: int = 0, dr_scale: float = 0.0, view: bool = False, policy_file: str = "policy.npz") -> dict[str, float]:
     """Drive the sim with the exported policy only (no SB3/torch); returns the task metrics at the end."""
-    pol = GaitPolicy(run)
+    pol = GaitPolicy(run, policy_file)
     cfg = pol.cfg
     cfg.dr.scale = dr_scale
     cfg.episode_s = seconds

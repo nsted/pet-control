@@ -23,16 +23,20 @@ class ReachUp(Task):
     name = "reach_up"
     terminate_on_flip = False                     # reaching poses may tilt the tail IMU arbitrarily
 
-    def _top_z(self, sim: PetSim) -> float:
-        """Highest world-z collision-mesh vertex over ALL eight modules (orientation-independent 'how high is any part')."""
+    def _tops(self, sim: PetSim) -> np.ndarray:
+        """Highest world-z collision-mesh vertex of each of the eight modules (m)."""
         m, d = sim.model, sim.data
-        top = -np.inf
+        out = np.empty(m.nbody - 1)
         for body in range(1, m.nbody):
             g = int(m.body_geomadr[body])
             adr, num = int(m.mesh_vertadr[m.geom_dataid[g]]), int(m.mesh_vertnum[m.geom_dataid[g]])
             v = m.mesh_vert[adr:adr + num]
-            top = max(top, float(d.geom_xpos[g][2] + (v @ d.geom_xmat[g].reshape(3, 3).T)[:, 2].max()))
-        return top
+            out[body - 1] = float(d.geom_xpos[g][2] + (v @ d.geom_xmat[g].reshape(3, 3).T)[:, 2].max())
+        return out
+
+    def _top_z(self, sim: PetSim) -> float:
+        """Highest world-z collision-mesh vertex over ALL eight modules (orientation-independent 'how high is any part')."""
+        return float(self._tops(sim).max())
 
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Record the flat-start height of the highest point."""

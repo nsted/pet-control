@@ -98,4 +98,6 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}
         if hasattr(self.task, "metrics"):
             info["metrics"] = self.task.metrics(self.sim)
+        if (terminated or truncated) and hasattr(self.task, "pose"):
+            info["pose"] = self.task.pose()
         return self.obs_builder.build(self._snapshot()), reward, terminated, truncated, info

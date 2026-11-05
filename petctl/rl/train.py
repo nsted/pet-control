@@ -32,7 +32,7 @@ def make_env_fn(cfg: EnvConfig, rank: int, seed: int) -> Callable[[], Any]:
     return _f
 
 
-def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo") -> Path:
+def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``."""
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
@@ -44,6 +44,7 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
 
     torch.set_num_threads(1)
     out.mkdir(parents=True, exist_ok=True)
+    (out / "config.json").write_text(json.dumps(cfg.to_dict(), indent=1))   # written first so best/checkpoint policies are replayable mid-run
     fns = [make_env_fn(cfg, i, seed) for i in range(n_envs)]
     venv: Any = SubprocVecEnv(fns) if n_envs > 1 else DummyVecEnv(fns)
     venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0)
@@ -55,7 +56,11 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
     t0 = time.time()
-    model.learn(total_timesteps=steps, progress_bar=False)
+    callback = None
+    if hours is not None or cfg.task == "reach_still":
+        from petctl.rl.records import RecordCallback
+        callback = RecordCallback(out, hours)
+    model.learn(total_timesteps=steps, progress_bar=False, callback=callback)
     model.save(str(out / "model"))
     venv.save(str(out / "vecnormalize.pkl"))
     (out / "config.json").write_text(json.dumps(cfg.to_dict(), indent=1))
