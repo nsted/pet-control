@@ -1,0 +1,42 @@
+{
+ "id": "reach_up/reach_2",
+ "task": "reach_up",
+ "name": "reach_2",
+ "note": "Highest point of any module at any instant (no hold), 5M steps",
+ "created": "2026-11-09 11:29:02",
+ "score_label": "m peak height gain",
+ "score": {
+  "nominal_median": 0.19353674082579359,
+  "nominal_best": 0.19353674082579359,
+  "robust_median": 0.19399505575692386,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.5,
+   0.5
+  ],
+  "action_scale_rad": 3.1416,
+  "action_ema": 0.6,
+  "max_target_step_rad": 0.35,
+  "episode_s": 10.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "models/rl/reach_2",
+  "policy_file": "policy.npz",
+  "steps": 5000000,
+  "wall_s": 2472.66454911232,
+  "git": "f4a745f"
+ },
+ "caveats": [
+  "trained at a 0.5 N.m torque cap, above the real 0.164 N.m: sim only until retrained at the real cap"
+ ]
+}

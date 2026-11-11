@@ -1,0 +1,42 @@
+{
+ "id": "jump/jump_20m_v1",
+ "task": "jump",
+ "name": "jump_20m_v1",
+ "note": "jump, flight-apex + predicted-apex reward, glitch guard v1 (ordering bug: training record was a glitch), snappier action filter",
+ "created": "2026-11-09 11:40:03",
+ "score_label": "m clearance",
+ "score": {
+  "nominal_median": 0.18695271347032255,
+  "nominal_best": 0.18695271347032255,
+  "robust_median": 0.12501947579859435,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.5,
+   0.5
+  ],
+  "action_scale_rad": 3.1416,
+  "action_ema": 0.2,
+  "max_target_step_rad": 1.0,
+  "episode_s": 10.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "data/rl/jump_20m",
+  "policy_file": "best_policy.npz",
+  "steps": 100000000,
+  "wall_s": 1200.3575110435486,
+  "git": "f4a745f"
+ },
+ "caveats": [
+  "trained at a 0.5 N.m torque cap, above the real 0.164 N.m: sim only until retrained at the real cap"
+ ]
+}

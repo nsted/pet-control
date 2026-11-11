@@ -1,0 +1,40 @@
+{
+ "id": "walk_straight/walk_urdf_2",
+ "task": "walk_straight",
+ "name": "walk_urdf_2",
+ "note": "First walk_straight policy (box-to-URDF mesh model pipeline test); trained 15 s episodes, real-cap randomisation",
+ "created": "2026-11-09 11:28:52",
+ "score_label": "m walked",
+ "score": {
+  "nominal_median": 0.44238455283633576,
+  "nominal_best": 0.44238455283633576,
+  "robust_median": 0.4448132759500697,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.05,
+   0.164
+  ],
+  "action_scale_rad": 0.5,
+  "action_ema": 0.6,
+  "max_target_step_rad": 0.35,
+  "episode_s": 15.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "models/rl/walk_urdf_2",
+  "policy_file": "policy.npz",
+  "steps": 2000000,
+  "wall_s": 740.5226399898529,
+  "git": "f4a745f"
+ },
+ "caveats": []
+}

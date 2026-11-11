@@ -57,11 +57,13 @@ class RecordCallback(BaseCallback):
         self._log = open(self.out / "episodes.jsonl", "a", buffering=1)
 
     def _write_best(self, m: dict[str, float], pose: dict[str, Any] | None, env: int) -> None:
-        rec = {"height_gain_m": m["distance"], "height_gain_cm": 100 * m["distance"], "highest_point_above_floor_cm": 100 * (FLAT_TOP_M + m["distance"]),
+        clr = "record_clearance_m" in m                      # jump task: the score IS the height of the lowest point above the floor
+        top = 100 * (m["distance"] if clr else FLAT_TOP_M + m["distance"])
+        rec = {"kind": "clearance" if clr else "height", "height_gain_m": m["distance"], "height_gain_cm": 100 * m["distance"], "highest_point_above_floor_cm": top,
                "timesteps": int(self.num_timesteps), "wall_s": time.time() - self.t0, "episode": self.episodes, "env": env,
                "metrics": m, "pose": pose, "saved": time.strftime("%Y-%m-%d %H:%M:%S")}
         (self.out / "best.json").write_text(json.dumps(rec, indent=1))
-        print(f"[record] NEW BEST height gain {100 * m['distance']:.1f} cm (highest point {100 * (FLAT_TOP_M + m['distance']):.1f} cm above floor) "
+        print(f"[record] NEW BEST {'clearance' if clr else 'height gain'} {100 * m['distance']:.1f} cm" + ("" if clr else f" (highest point {top:.1f} cm above floor)") + " "
               f"at {self.num_timesteps} steps, {(time.time() - self.t0) / 60:.0f} min", flush=True)
 
     def _checkpoint(self, final: bool = False) -> None:

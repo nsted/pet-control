@@ -1,0 +1,40 @@
+{
+ "id": "walk_sideways/walk_sideways_1",
+ "task": "walk_sideways",
+ "name": "walk_sideways_1",
+ "note": "Sideways walk, either direction counts",
+ "created": "2026-11-09 11:28:58",
+ "score_label": "m sideways",
+ "score": {
+  "nominal_median": 0.817115823616524,
+  "nominal_best": 0.817115823616524,
+  "robust_median": 0.8730820398785196,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.05,
+   0.164
+  ],
+  "action_scale_rad": 0.5,
+  "action_ema": 0.6,
+  "max_target_step_rad": 0.35,
+  "episode_s": 15.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "models/rl/walk_sideways_1",
+  "policy_file": "policy.npz",
+  "steps": 2000000,
+  "wall_s": 1370.7013719081879,
+  "git": "f4a745f"
+ },
+ "caveats": []
+}

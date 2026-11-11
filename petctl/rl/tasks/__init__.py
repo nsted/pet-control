@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from petctl.rl.tasks.base import Task
+from petctl.rl.tasks.jump import Jump
 from petctl.rl.tasks.locomote import Locomote
 from petctl.rl.tasks.reach_still import ReachStill
 from petctl.rl.tasks.reach_up import ReachUp
 from petctl.rl.tasks.walk_sideways import WalkSideways
 from petctl.rl.tasks.walk_straight import WalkStraight
 
-TASKS: dict[str, type[Task]] = {"locomote": Locomote, "walk_straight": WalkStraight, "walk_sideways": WalkSideways, "reach_up": ReachUp, "reach_still": ReachStill}
+TASKS: dict[str, type[Task]] = {"locomote": Locomote, "walk_straight": WalkStraight, "walk_sideways": WalkSideways, "reach_up": ReachUp, "reach_still": ReachStill, "jump": Jump}
 
-__all__ = ["TASKS", "Task", "Locomote", "WalkStraight", "WalkSideways", "ReachUp", "ReachStill"]
+__all__ = ["TASKS", "Task", "Locomote", "WalkStraight", "WalkSideways", "ReachUp", "ReachStill", "Jump"]

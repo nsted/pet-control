@@ -17,6 +17,7 @@ class WalkSideways(WalkStraight):
     """
 
     name = "walk_sideways"
+    score_label = "m sideways"
 
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Take the lateral axis as the progress axis and the body's length as the off-axis direction."""

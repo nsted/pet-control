@@ -58,7 +58,7 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
     t0 = time.time()
     callback = None
-    if hours is not None or cfg.task == "reach_still":
+    if hours is not None or cfg.task in ("reach_still", "jump"):
         from petctl.rl.records import RecordCallback
         callback = RecordCallback(out, hours)
     model.learn(total_timesteps=steps, progress_bar=False, callback=callback)

@@ -18,6 +18,7 @@ class WalkStraight(Locomote):
     """
 
     name = "walk_straight"
+    score_label = "m walked"
 
     @staticmethod
     def _com(sim: PetSim) -> np.ndarray:

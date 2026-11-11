@@ -15,6 +15,7 @@ class Locomote(Task):
     """Reward = progress along the initial heading over a window (not instantaneous speed), minus energy/smoothness/drift/tilt terms."""
 
     name = "locomote"
+    score_label = "m moved"
 
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Record the heading (head forward axis projected on the floor) and the position window."""

@@ -26,6 +26,7 @@ class ReachStill(ReachUp):
     """
 
     name = "reach_still"
+    score_label = "m sustained height gain"
 
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Record the flat-start height and clear the stillness windows and record."""

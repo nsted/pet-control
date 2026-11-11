@@ -138,3 +138,60 @@ def test_finalize_session_marks_best_and_writes_index(tmp_path: Path) -> None:
     best = finalize_session(tmp_path)
     assert best is not None and best.name == "BEST_02_rec6.0cm.mp4" and best.exists()
     assert "BEST_02_rec6.0cm.mp4" in (tmp_path / "index.md").read_text()
+
+
+def test_jump_scores_only_airborne_clearance() -> None:
+    """Standing/lying scores 0 (floor contact); lifting the whole body off the floor is scored by lowest-point height."""
+    cfg = EnvConfig(task="jump", episode_s=5.0, action_scale_rad=np.pi, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg.dr.scale, cfg.dr.cap_nm = 0.0, (0.5, 0.5)
+    env = PetEnv(cfg)
+    env.reset(seed=0)
+    t = env.task
+    assert t._floor_contact(env.sim) and abs(t.clearance(env.sim)) < 2e-3
+    for _ in range(40):                                       # hold still: nothing airborne, nothing scored
+        _, r, _, _, info = env.step(np.zeros(7))
+    assert info["metrics"]["record_clearance_m"] == 0.0 and info["metrics"]["jumps"] == 0.0
+    env.sim.data.qpos[2] += 0.05                              # teleport 5 cm up: fully airborne for the next scored step
+    env.sim.data.qvel[:] = 0.0
+    mujoco.mj_forward(env.sim.model, env.sim.data)
+    assert not t._floor_contact(env.sim) and t.clearance(env.sim) > 0.04
+    _, _, _, _, info = env.step(np.zeros(7))
+    m = info["metrics"]
+    assert m["jumps"] == 1.0 and 0.0 < m["record_clearance_m"] < 0.06
+    assert np.isclose(info["terms"]["clearance_record"], 1000.0 * m["record_clearance_m"])
+
+
+def test_jump_rejects_blown_up_physics_without_recording_it() -> None:
+    """A teleport to 16 m with huge velocity must not set a record, and must end the episode with a penalty."""
+    cfg = EnvConfig(task="jump", episode_s=5.0, action_scale_rad=np.pi, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg.dr.scale, cfg.dr.cap_nm = 0.0, (0.5, 0.5)
+    env = PetEnv(cfg)
+    env.reset(seed=0)
+    env.sim.data.qpos[2] += 16.0
+    env.sim.data.qvel[2] = 18.0
+    mujoco.mj_forward(env.sim.model, env.sim.data)
+    _, _, term, _, info = env.step(np.zeros(7))
+    assert term and info["metrics"]["record_clearance_m"] == 0.0 and info["terms"]["glitch"] < 0.0
+
+
+def test_skill_library_add_resolve_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """add_skill verifies by replay and copies the files; resolve accepts id, bare name and run dir; list marks the best per task."""
+    from petctl.rl import skills
+
+    monkeypatch.setattr(skills, "SKILLS_ROOT", tmp_path / "lib")
+    cfg = EnvConfig(task="walk_straight", episode_s=1.0)
+    cfg.dr.cap_nm = (0.5, 0.5)
+    run = _fake_run(tmp_path, cfg)
+    monkeypatch.setattr(skills, "VERIFY_SEEDS", (0, 1))
+    dest = skills.add_skill(run, "fake_a", note="test", render=False)
+    assert (dest / "policy.npz").exists() and (dest / "config.json").exists()
+    info = json.loads((dest / "skill.json").read_text())
+    assert info["id"] == "walk_straight/fake_a" and info["score"]["seeds"] == [0, 1] and info["caveats"]   # 0.5 N.m > real cap
+    with pytest.raises(FileExistsError):
+        skills.add_skill(run, "fake_a", render=False)
+    skills.add_skill(run, "fake_b", render=False)
+    assert skills.resolve("walk_straight/fake_a") == dest and skills.resolve("fake_a") == dest and skills.resolve(str(run)) == run
+    with pytest.raises(FileNotFoundError):
+        skills.resolve("nope")
+    rows = skills.list_skills()
+    assert len(rows) == 2 and sum(r["best"] for r in rows) == 1

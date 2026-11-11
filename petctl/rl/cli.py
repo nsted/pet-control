@@ -21,6 +21,8 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
           action_scale: float = typer.Option(None, help="Joint-target range in rad for action=+-1 (default 0.5; reach_up needs ~2)"),
           episode_s: float = typer.Option(None, help="Episode length in seconds"),
           cap_nm: float = typer.Option(None, help="Fix the per-joint torque cap (N.m) instead of randomising it"),
+          action_ema: float = typer.Option(None, help="Action smoothing: target = ema*prev + (1-ema)*new (default 0.6; lower = snappier)"),
+          max_step_rad: float = typer.Option(None, help="Per-step target slew limit in rad (default 0.35; raise for explosive motion)"),
           ent_coef: float = typer.Option(0.0, help="PPO entropy bonus (keeps exploration alive)"),
           hours: float = typer.Option(None, help="Stop after this many wall-clock hours (steps is then an upper bound)"),
           urdf: str = typer.Option(DEFAULT_URDF, help="PET_description folder (mesh collision model); '' for the simple box model")) -> None:
@@ -34,6 +36,10 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
         cfg.action_scale_rad = action_scale
     if episode_s is not None:
         cfg.episode_s = episode_s
+    if action_ema is not None:
+        cfg.action_ema = action_ema
+    if max_step_rad is not None:
+        cfg.max_target_step_rad = max_step_rad
     if cap_nm is not None:
         cfg.dr.cap_nm = (cap_nm, cap_nm)
     path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo, hours, ent_coef)
@@ -59,15 +65,64 @@ def export(run: Path = typer.Argument(..., help="Run directory")) -> None:
 
 
 @rl_app.command("run")
-def run_(run: Path = typer.Argument(..., help="Run directory containing policy.npz"), seconds: float = typer.Option(15.0),
+def run_(run: str = typer.Argument(..., help="Skill id/name (see `petctl rl skills`) or a run directory containing policy.npz"), seconds: float = typer.Option(15.0),
          seed: int = typer.Option(0), dr_scale: float = typer.Option(0.0, help="0 = nominal plant"),
          view: bool = typer.Option(False, help="Open the MuJoCo viewer (launch via mjpython)"),
          policy_file: str = typer.Option("policy.npz", help="e.g. best_policy.npz for the policy saved at the best record")) -> None:
     """Enact a trained gait in the sim with no training: loads policy.npz only."""
     from petctl.rl.play import play
+    from petctl.rl.skills import resolve
 
+    run = resolve(run)
     for k, v in play(run, seconds, seed, dr_scale, view, policy_file).items():
         typer.echo(f"{k}: {v:.4f}")
+
+
+rl_app.command("play")(run_)
+
+
+@rl_app.command("skills")
+def skills(task: str = typer.Option(None, help="Only this task")) -> None:
+    """List the skill library: verified score per skill, best per task marked."""
+    from petctl.rl.skills import list_skills
+
+    rows = list_skills(task)
+    for r in rows:
+        sc, c = r["score"], r["conditions"]
+        typer.echo(f"{'*' if r['best'] else ' '} {r['id']:<34} {100 * sc['nominal_median']:7.1f} cm {r['score_label'].removeprefix('m ')} (best {100 * sc['nominal_best']:.1f}, "
+                   f"with randomisation {100 * sc['robust_median']:.1f})  cap {max(c['torque_cap_nm']):g} N.m  {r['created'][:10]}")
+        for cav in r["caveats"]:
+            typer.echo(f"      ! {cav}")
+    if not rows:
+        typer.echo("no skills yet (add one with: petctl rl skill-add RUN --name NAME)")
+
+
+@rl_app.command("skill-add")
+def skill_add(run: Path = typer.Argument(..., help="Run directory"), name: str = typer.Option(..., help="Skill name, e.g. jump_20m_v1"),
+              policy_file: str = typer.Option("policy.npz", help="e.g. best_policy.npz"), note: str = typer.Option("", help="Free-text description"),
+              no_video: bool = typer.Option(False, help="Skip the demo video")) -> None:
+    """Verify a trained policy by replay and add it to the skill library (models/skills/<task>/<name>)."""
+    from petctl.rl.skills import add_skill
+
+    dest = add_skill(run, name, policy_file, note, render=not no_video)
+    typer.echo(f"Added {dest}")
+
+
+@rl_app.command("skill-video")
+def skill_video(name: str = typer.Argument(..., help="Skill id or name"), seed: int = typer.Option(0)) -> None:
+    """Re-record a skill's demo.mp4."""
+    from petctl.rl.skills import render_demo, resolve
+
+    typer.echo(f"Wrote {render_demo(resolve(name), seed)}")
+
+
+@rl_app.command("finalize")
+def finalize(session: Path = typer.Argument(..., help="Session folder under docs/media/sessions (after an aborted run)")) -> None:
+    """Mark the best video and write index.md/json for a session whose training was stopped early."""
+    from petctl.rl.video import finalize_session
+
+    best_video = finalize_session(session)
+    typer.echo(f"best: {best_video}" if best_video else "no videos in this session")
 
 
 @rl_app.command("best")
@@ -80,8 +135,9 @@ def best(runs: list[Path] = typer.Argument(None, help="Run directories (default:
     for f in files:
         if f.exists():
             b = json.loads(f.read_text())
-            rows.append((b["height_gain_cm"], b["highest_point_above_floor_cm"], f.parent.name, b["timesteps"], b["wall_s"] / 60, b.get("saved", "")))
-    for gain, top, name, steps, mins, saved in sorted(rows, reverse=True):
-        typer.echo(f"{name}: +{gain:.1f} cm (highest point {top:.1f} cm above floor) at {steps} steps, {mins:.0f} min, {saved}")
+            rows.append((b["height_gain_cm"], b["highest_point_above_floor_cm"], f.parent.name, b["timesteps"], b["wall_s"] / 60, b.get("saved", ""), b.get("kind", "height")))
+    for gain, top, name, steps, mins, saved, kind in sorted(rows, reverse=True):
+        what = f"clearance {gain:.1f} cm (lowest point off the floor)" if kind == "clearance" else f"+{gain:.1f} cm (highest point {top:.1f} cm above floor)"
+        typer.echo(f"{name}: {what} at {steps} steps, {mins:.0f} min, {saved}")
     if not rows:
         typer.echo("no best.json found")

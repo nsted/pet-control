@@ -21,6 +21,7 @@ class ReachUp(Task):
     """
 
     name = "reach_up"
+    score_label = "m peak height gain"
     terminate_on_flip = False                     # reaching poses may tilt the tail IMU arbitrarily
 
     def _tops(self, sim: PetSim) -> np.ndarray:
