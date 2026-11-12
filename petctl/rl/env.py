@@ -24,6 +24,15 @@ def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
                      w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2, w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2])
 
 
+REPLY_TORQUE_NOISE_NM = 0.02          # assumed noise on the torque in the motor reply (to be checked against real frames)
+REPLY_TORQUE_Q_NM = 24.0 / 4096        # assumed 12-bit torque field over +-12 N.m
+
+
+def quantise(x: np.ndarray, q: float) -> np.ndarray:
+    """Round ``x`` to the nearest multiple of ``q``."""
+    return np.round(x / q) * q
+
+
 class PetEnv(gym.Env):  # type: ignore[type-arg]
     """Action: 7 values in [-1, 1] -> joint-angle targets (rad) about the zero pose, EMA-filtered and slew-limited like the deployed path."""
 
@@ -50,7 +59,17 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         pos = self.sim.joint_pos() + self._joint_off + rng.normal(0, dr.pos_noise_rad * dr.scale, N_JOINTS)
         quat = _qmul(self._tilt, d.sensor("quat").data.copy())
         gyro = d.sensor("gyro").data + rng.normal(0, dr.gyro_noise * dr.scale, 3)
-        return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy())
+        trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM, N_JOINTS), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
+        return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy())
+
+    def _nominal_head(self) -> tuple[np.ndarray, np.ndarray]:
+        """Head position and forward direction (floor plane) of the robot lying at the zero pose; where tasks lay out world geometry."""
+        if getattr(self, "_nom", None) is None:
+            s = PetSim(self.base)
+            fwd = s.data.site_xmat[s.model.site("head").id].reshape(3, 3)[:, 0].copy()
+            fwd[2] = 0.0
+            self._nom = (s.head_pos().copy(), fwd / max(np.linalg.norm(fwd), 1e-9))
+        return self._nom
 
     def _up_dot(self) -> float:
         assert self.sim is not None
@@ -62,16 +81,33 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         super().reset(seed=seed)
         self._rng = self.np_random
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
+        self.task = TASKS[self.cfg.task](self.cfg)
+        walls, goal_xy = self.task.layout(*self._nominal_head(), self._rng)           # static geometry (walls) must exist before the sim is built
+        if walls:
+            params = BuildParams(**{**params.__dict__, "walls": walls})
         self.sim = PetSim(params)
         dr = self.cfg.dr
         self._joint_off = self._rng.uniform(-dr.joint_offset_rad, dr.joint_offset_rad, N_JOINTS) * dr.scale
         ax = self._rng.normal(size=3)
         ang = self._rng.uniform(0, dr.imu_tilt_rad * dr.scale)
         self._tilt = np.concatenate([[np.cos(ang / 2)], np.sin(ang / 2) * ax / np.linalg.norm(ax)])
-        self.sim.step(np.zeros(N_JOINTS), SETTLE_S)
-        self.task = TASKS[self.cfg.task](self.cfg)
+        amp = float(self.cfg.task_params.get("start_pose_rad", 0.0))          # random start pose: each joint uniform in +-amp (rad)
+        q0 = np.zeros(N_JOINTS)
+        for _ in range(8 if amp > 0 else 1):                                  # resample start poses that topple while settling (episode would end at once)
+            if amp > 0:
+                q0 = self._rng.uniform(-amp, amp, N_JOINTS)
+                self.sim.reset(q0)
+            self.sim.step(q0, SETTLE_S)                                       # hold the start pose while the body settles on the floor
+            if self._up_dot() >= self.cfg.flip_up_dot or amp <= 0:
+                break
+        else:
+            q0 = np.zeros(N_JOINTS)
+            self.sim.reset()
+            self.sim.step(q0, SETTLE_S)
+        self.task.preset_goal = goal_xy
         self.task.reset(self.sim, self._rng)
-        self._tgt = np.zeros(N_JOINTS)
+        # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
+        self._tgt = self.sim.joint_pos().copy() if amp > 0 else np.zeros(N_JOINTS)
         self._prev_action = np.zeros(N_JOINTS)
         self._t = 0
         snap = self._snapshot()

@@ -5,11 +5,13 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import mujoco
 import numpy as np
 
 from petctl.rl.env import PetEnv
+from petctl.rl.markers import draw_markers
 from petctl.rl.policy import GaitPolicy
 
 MEDIA_DIR = Path("docs/media")
@@ -17,19 +19,24 @@ SESSIONS_DIR = MEDIA_DIR / "sessions"
 
 
 def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds: float | None = None, seed: int = 0,
-                 dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (960, 540)) -> dict[str, float]:
-    """Roll out ``run/policy_file`` deterministically for one episode, write an MP4 to ``out``, return the episode metrics."""
+                 dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (960, 540), task_params: dict[str, float] | None = None, base: Any = None,
+                 distance: float = 0.9, azimuth: float = 130.0) -> dict[str, float]:
+    """Roll out ``run/policy_file`` deterministically for one episode, write an MP4 to ``out``, return the episode metrics.
+
+    ``task_params`` overrides entries of the run's ``EnvConfig.task_params`` (e.g. force a mid-route goal change for a demo).
+    """
     pol = GaitPolicy(run, policy_file)
     pol.cfg.dr.scale = dr_scale
+    pol.cfg.task_params = {**pol.cfg.task_params, **(task_params or {})}
     if seconds is not None:
         pol.cfg.episode_s = seconds
-    env = PetEnv(pol.cfg)
+    env = PetEnv(pol.cfg, base)
     obs, _ = env.reset(seed=seed)
     w, h = size
     env.sim.model.vis.global_.offwidth, env.sim.model.vis.global_.offheight = max(w, 640), max(h, 480)
     rend = mujoco.Renderer(env.sim.model, height=h, width=w)
     cam = mujoco.MjvCamera()
-    cam.distance, cam.elevation, cam.azimuth = 0.9, -35, 130
+    cam.distance, cam.elevation, cam.azimuth = distance, -35, azimuth
     out.parent.mkdir(parents=True, exist_ok=True)
     ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps),
                            "-i", "-", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out)], stdin=subprocess.PIPE)
@@ -43,6 +50,7 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
         while next_frame <= t:                                   # real-time playback at the video frame rate
             cam.lookat[:] = env.sim.data.subtree_com[1]
             rend.update_scene(env.sim.data, camera=cam)
+            draw_markers(rend.scene, env.task.markers(env.sim))
             ff.stdin.write(np.ascontiguousarray(rend.render()).tobytes())
             next_frame += frame_dt
     ff.stdin.close()

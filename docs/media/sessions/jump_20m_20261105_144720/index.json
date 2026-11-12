@@ -1,0 +1,59 @@
+[
+ {
+  "n": 1,
+  "video": "01_rec63.3cm_R951_ep1049_t2m.mp4",
+  "policy": "policies/01_rec63.3cm_R951_ep1049_t2m.npz",
+  "record_cm": 63.34966595995911,
+  "episode_return": 950.506191,
+  "episode": 1049,
+  "timesteps": 209968,
+  "wall_min": 1.8310134331385295,
+  "replay": {
+   "distance": 0.05755383615511591,
+   "record_clearance_m": 0.05755383615511591,
+   "current_clearance_m": 0.0,
+   "best_air_s": 0.35,
+   "jumps": 48.0,
+   "best_t_s": 4.1000000000000005
+  },
+  "best": false
+ },
+ {
+  "n": 2,
+  "video": "02_rec77.3cm_R858_ep2361_t5m.mp4",
+  "policy": "policies/02_rec77.3cm_R858_ep2361_t5m.npz",
+  "record_cm": 77.34292028639544,
+  "episode_return": 857.948494,
+  "episode": 2361,
+  "timesteps": 468344,
+  "wall_min": 5.425603850682577,
+  "replay": {
+   "distance": 0.028135138551349873,
+   "record_clearance_m": 0.028135138551349873,
+   "current_clearance_m": 0.0,
+   "best_air_s": 0.39999999999999997,
+   "jumps": 44.0,
+   "best_t_s": 5.550000000000001
+  },
+  "best": false
+ },
+ {
+  "n": 3,
+  "video": "BEST_03_rec1655.2cm_R18233_ep5320_t14m.mp4",
+  "policy": "policies/03_rec1655.2cm_R18233_ep5320_t14m.npz",
+  "record_cm": 1655.2089483736697,
+  "episode_return": 18232.871133,
+  "episode": 5320,
+  "timesteps": 1046096,
+  "wall_min": 13.800072399775187,
+  "replay": {
+   "distance": 0.18695271347032255,
+   "record_clearance_m": 0.18695271347032255,
+   "current_clearance_m": 0.0,
+   "best_air_s": 0.44999999999999996,
+   "jumps": 36.0,
+   "best_t_s": 8.700000000000001
+  },
+  "best": true
+ }
+]

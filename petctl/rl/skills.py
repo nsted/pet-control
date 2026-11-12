@@ -17,7 +17,7 @@ from typing import Any
 
 from petctl.rl.config import DomainRand
 
-REAL_CAP_NM = DomainRand().cap_nm[1]   # the real motors' usable torque (N.m): the upper end of the default randomised cap range
+REAL_CAP_NM = 0.5                     # the real per-joint torque cap (N.m), per Nick 2026-11-11; older skills trained at 0.164 were conservative
 SKILLS_ROOT = Path("models/skills")
 POLICY_FILE = "policy.npz"
 VERIFY_SEEDS = tuple(range(5))        # fixed replay seeds

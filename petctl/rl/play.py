@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from petctl.rl.env import PetEnv
+from petctl.rl.markers import draw_markers
 from petctl.rl.policy import GaitPolicy
 
 
@@ -27,6 +28,7 @@ def play(run: Path, seconds: float = 15.0, seed: int = 0, dr_scale: float = 0.0,
         obs, _, term, trunc, info = env.step(pol.action(obs))
         done = term or trunc
         if viewer is not None:
+            draw_markers(viewer.user_scn, env.task.markers(env.sim), reset=True)
             viewer.sync()
             time.sleep(env.dt)
             done = done or not viewer.is_running()

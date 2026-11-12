@@ -131,3 +131,49 @@ class RecordCallback(BaseCallback):
                 p.kill()
         best = finalize_session(self.session)
         print(f"[video] session {self.session}  best: {best}", flush=True)
+
+
+
+class EpisodeLogCallback(BaseCallback):
+    """Minimal always-on run log for tasks without a height record: ``episodes.jsonl`` (every episode's metrics) and ``status.json``.
+
+    Same file formats as ``RecordCallback`` so ``petctl rl watch`` and the curriculum gate read any run the same way. Also checkpoints
+    the model periodically so a run can be gated or inspected while it is still training, and honours an optional wall-clock stop.
+    """
+
+    def __init__(self, out: Path, hours: float | None = None, ckpt_s: float = 300.0) -> None:
+        """``ckpt_s``: seconds between ``model.zip``/``policy.npz``/``status.json`` refreshes; ``hours``: optional wall-clock stop."""
+        super().__init__()
+        self.out, self.hours, self.ckpt_s = out, hours, ckpt_s
+        self.episodes = 0
+
+    def _on_training_start(self) -> None:
+        self.t0 = self._last_ckpt = time.time()
+        self._log = open(self.out / "episodes.jsonl", "a", buffering=1)
+
+    def _write_status(self, final: bool) -> None:
+        (self.out / "status.json").write_text(json.dumps({"timesteps": int(self.num_timesteps), "wall_min": (time.time() - self.t0) / 60,
+                                                          "episodes": self.episodes, "updated": time.time(), "final": final}, indent=1))
+
+    def _checkpoint(self) -> None:
+        self.model.save(str(self.out / "model"))
+        self.training_env.save(str(self.out / "vecnormalize.pkl"))
+        export_policy(self.out)
+        self._last_ckpt = time.time()
+        self._write_status(False)
+
+    def _on_step(self) -> bool:
+        for i, (done, info) in enumerate(zip(self.locals["dones"], self.locals["infos"])):
+            m = info.get("metrics")
+            if not done or m is None:
+                continue
+            self.episodes += 1
+            ret = float(info.get("episode", {}).get("r", float("nan")))
+            self._log.write(json.dumps({"timesteps": int(self.num_timesteps), "wall_s": round(time.time() - self.t0, 1), "env": i, "return": ret, **m}) + "\n")
+        if time.time() - self._last_ckpt > self.ckpt_s:
+            self._checkpoint()
+        return not (self.hours is not None and time.time() - self.t0 > self.hours * 3600)
+
+    def _on_training_end(self) -> None:
+        self._log.close()
+        self._write_status(True)

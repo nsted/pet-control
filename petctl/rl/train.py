@@ -32,9 +32,50 @@ def make_env_fn(cfg: EnvConfig, rank: int, seed: int) -> Callable[[], Any]:
     return _f
 
 
+def warm_start(model: Any, venv: Any, src: Path) -> dict[str, int]:
+    """Initialise ``model``/``venv`` from the PPO run ``src`` (``model.zip`` + ``vecnormalize.pkl``), tolerating a larger observation.
+
+    Tensors whose shape matches are copied as-is. For a first-layer weight with more input columns than the source, the overlapping
+    leading columns are copied and the new ones start at zero (new observation entries are appended at the end, see ``ObsBuilder``), so the
+    policy initially behaves exactly like the source and learns to use the new inputs. Observation normalisation is copied likewise.
+    Returns counts of copied / adapted / skipped tensors.
+    """
+    import pickle
+
+    import stable_baselines3 as sb3
+    import torch
+
+    old = sb3.PPO.load(str(src / "model"), device="cpu").policy.state_dict()
+    new = model.policy.state_dict()
+    n = {"copied": 0, "adapted": 0, "skipped": 0}
+    for k, v in new.items():
+        o = old.get(k)
+        if o is None:
+            n["skipped"] += 1
+        elif o.shape == v.shape:
+            new[k] = o.clone()
+            n["copied"] += 1
+        elif o.ndim == 2 and o.shape[0] == v.shape[0] and o.shape[1] < v.shape[1]:
+            z = torch.zeros_like(v)
+            z[:, :o.shape[1]] = o
+            new[k] = z
+            n["adapted"] += 1
+        else:
+            n["skipped"] += 1
+    model.policy.load_state_dict(new)
+    with open(src / "vecnormalize.pkl", "rb") as f:
+        vn = pickle.load(f)
+    m = min(len(vn.obs_rms.mean), len(venv.obs_rms.mean))
+    venv.obs_rms.mean[:m], venv.obs_rms.var[:m], venv.obs_rms.count = vn.obs_rms.mean[:m], vn.obs_rms.var[:m], vn.obs_rms.count
+    return n
+
+
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
-          ent_coef: float = 0.0) -> Path:
-    """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``."""
+          ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None) -> Path:
+    """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``.
+
+    ``init_from``: a PPO run directory to warm-start from (see ``warm_start``). ``video=False`` skips the end-of-run video in docs/media. ``stop_when_gate_passes``: a curriculum ``Stage``; training stops as soon as its gate passes.
+    """
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
         os.environ.setdefault(var, "1")
@@ -56,11 +97,21 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
                         policy_kwargs={"net_arch": [256, 256], "log_std_init": -1.0}, tensorboard_log=str(out / "tb"))
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
+    if init_from is not None:
+        print(f"[warm-start] from {init_from}: {warm_start(model, venv, init_from)}", flush=True)
     t0 = time.time()
-    callback = None
-    if hours is not None or cfg.task in ("reach_still", "jump"):
+    callback: Any
+    if cfg.task in ("reach_still", "jump"):
         from petctl.rl.records import RecordCallback
         callback = RecordCallback(out, hours)
+    else:
+        from petctl.rl.records import EpisodeLogCallback
+        callback = EpisodeLogCallback(out, hours)
+        if stop_when_gate_passes is not None:
+            from stable_baselines3.common.callbacks import CallbackList
+
+            from petctl.rl.curriculum.early_stop import GateStopCallback
+            callback = CallbackList([callback, GateStopCallback(out, stop_when_gate_passes)])
     model.learn(total_timesteps=steps, progress_bar=False, callback=callback)
     model.save(str(out / "model"))
     venv.save(str(out / "vecnormalize.pkl"))
@@ -71,8 +122,8 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     if algo == "ppo":
         from petctl.rl.policy import export_policy
         export_policy(out)                                  # inference-only artefact: policy.npz
-    from petctl.rl.video import record_best_video
-    if callback is None:
+    if video and cfg.task not in ("reach_still", "jump"):
+        from petctl.rl.video import record_best_video
         record_best_video(out)                              # record runs write a whole session of videos instead (see records.py)
     return out
 

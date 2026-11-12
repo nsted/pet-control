@@ -1,4 +1,4 @@
-"""Record a trained gait to MP4 (offscreen render, inference only). Run: python scripts/record_policy.py data/rl/<run> out.mp4."""
+"""Record a trained gait to MP4 (offscreen render, inference only). Run: python scripts/rl/record_policy.py data/rl/<run> out.mp4."""
 from __future__ import annotations
 
 import argparse

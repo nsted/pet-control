@@ -1,4 +1,4 @@
-"""Watch a trained gait in the MuJoCo viewer (inference only, loads policy.npz). Run: mjpython scripts/view_policy.py data/rl/<run>."""
+"""Watch a trained gait in the MuJoCo viewer (inference only, loads policy.npz). Run: mjpython scripts/rl/view_policy.py data/rl/<run>."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ from pathlib import Path
 import mujoco.viewer  # type: ignore[import-untyped]
 
 from petctl.rl.env import PetEnv
+from petctl.rl.markers import draw_markers
 from petctl.rl.policy import GaitPolicy
 
 
@@ -31,6 +32,7 @@ def main() -> int:
             obs, _, term, trunc, info = env.step(pol.action(obs))
             done = term or trunc
             v.cam.lookat[:] = env.sim.data.subtree_com[1]
+            draw_markers(v.user_scn, env.task.markers(env.sim), reset=True)
             v.sync()
             time.sleep(env.dt / a.speed)
     print("  ".join(f"{k}={x:.3f}" for k, x in info.get("metrics", {}).items()))

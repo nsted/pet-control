@@ -1,4 +1,4 @@
-"""Interactive MuJoCo viewer of the lying PET model running a serpenoid gait. Run with `mjpython scripts/view_gait.py --urdf PATH`."""
+"""Interactive MuJoCo viewer of the lying PET model running a serpenoid gait. Run with `mjpython scripts/rl/view_gait.py --urdf PATH`."""
 from __future__ import annotations
 
 import argparse

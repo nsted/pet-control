@@ -7,7 +7,7 @@ position-target actions at 20 Hz with fixed kp 0.8 / kd 0.035, MuJoCo native PD 
 - [x] Phase 1: `petctl/sim/model_builder.py` - free-body (and hanging) model, ground plane, `PetSim` with delayed targets and native PD actuators.
       Tests: `tests/test_model_builder.py` (hanging mode matches `gravity_model.equilibrium` to 0.004 rad / 0.0035 N.m; free body settles
       in the bench posture, modules 0,2,4,6 on the floor and 1,3,5,7 raised 1.2 cm; cap limits actuator force).
-- [x] Phase 1.5 feasibility script: `scripts/feasibility.py`.
+- [x] Phase 1.5 feasibility script: `scripts/rl/feasibility.py`.
 - [~] Phase 1.5 gate: PARTIALLY passed with the Fusion URDF meshes (2026-11-04) - see the RESULT section at the end.
 - [x] Phase 2 template (installed with user approval: gymnasium 1.4.0, stable-baselines3 2.9.2, tensorboard 2.21.0; extra `rl` in pyproject):
       `petctl/rl/{config,obs,domain_rand,env,train,cli}.py`, `petctl/rl/tasks/{base,locomote}.py`; `petctl rl train|eval`; tests `tests/test_rl_env.py`
@@ -45,7 +45,7 @@ Needed from the user (nothing has been run on hardware):
 - Single-joint commands still do NOT move joints 1-6 (+-0.3 rad, either cap), so the box shape was not the only cause. Physically expected: each axis is 45 degrees to
   the chain, so one joint alone must lift everything downstream (about 1 N.m for the full chain against a 0.164 N.m cap). Adjacent joints in opposition can bend the body
   in plane: the zig-zag pose 0.5 rad reaches 0.42/-0.46 rad on joints 1,2 at cap 0.164.
-- `scripts/serpenoid_baseline.py` (travelling wave q_k = +-A sin(2 pi f t - k phi), 10 s, mu 1.0), 80 runs:
+- `scripts/rl/serpenoid_baseline.py` (travelling wave q_k = +-A sin(2 pi f t - k phi), 10 s, mu 1.0), 80 runs:
   * cap 0.164 N.m: the body moves, best forward +3.8 cm (A 0.5, 0.5 Hz, phi +2.1, plain signs), best sideways +20.6 cm (A 0.5, 1.0 Hz, phi +2.1). Torque saturates 12-40 % of the time.
   * cap 0.05 N.m: nothing moves (< 0.1 cm).
   * Verdict: locomotion is mechanically possible only near the peak cap and the hand-tuned open-loop gaits are slow (~0.4 cm/s forward, 2 cm/s sideways).
@@ -62,7 +62,7 @@ After the fix: single-joint 0.5 rad commands still do not move joints 1-6 at cap
 
 A test of the pipeline, not a result to rely on. Artefacts: `models/skills/walk_straight/walk_urdf_2/` (inference-only `policy.npz`), video `docs/media/walk_urdf_2.mp4`.
 
-- Run it with no training: `petctl rl run models/skills/walk_straight/walk_urdf_2` (or `mjpython scripts/view_policy.py models/skills/walk_straight/walk_urdf_2`; record with `scripts/record_policy.py`).
+- Run it with no training: `petctl rl run models/skills/walk_straight/walk_urdf_2` (or `mjpython scripts/rl/view_policy.py models/skills/walk_straight/walk_urdf_2`; record with `scripts/rl/record_policy.py`).
 - 15 s episodes, mesh model. Nominal plant: 44 cm, cross-track 0.6 cm, 1.63 energy/m. Full domain randomisation: median 33 cm (IQR 23-41). Hand-built serpenoid wave on the same model: 17.8 cm, 2.94 energy/m.
 - Lessons: (1) training on the default box model learns to stand still (the same wave moves 0.7 cm there vs 17.8 cm on the mesh model), so `EnvConfig.urdf_dir` / `petctl rl train --urdf` now defaults to the mesh model; (2) reward `progress` is a velocity (~1 cm/s), so its weight is 50 and the penalties are scaled down; (3) `sim_dt=0.004` is 1.75x faster with the same gait; (4) pin BLAS/OpenMP threads to 1 in workers (3.7x faster, done in `train()`).
 - Not validated: joint signs on the real robot, weighed module masses, floor friction. Reward plateaued at ~250 after ~600k steps; the next iteration should change the reward/curriculum rather than just train longer.
@@ -89,3 +89,22 @@ Verified policies are banked in `models/skills/<task>/<name>/` (policy, config, 
 `petctl rl skills`, `petctl rl play <task>/<name>`, `petctl rl skill-add RUN --name N --policy-file best_policy.npz`. See
 `models/skills/README.md`. Training runs in `data/rl/` are scratch; bank anything worth keeping. Skills trained at a cap above the real
 0.164 N.m are flagged as sim-only.
+
+## Autonomous curriculum: "locomote to a destination" (started 2026-11-11)
+
+Driven by Claude Code in a train -> monitor -> gate -> adjust loop. **Real torque cap is 0.5 N.m** (Nick, 2026-11-11); earlier 0.164 N.m runs are archived in `data/rl/curriculum/`, the 0.5 N.m runs live in `data/rl/curriculum_cap0p5/`. Tools: `petctl rl stages | stage-train | watch | gate` (`petctl/rl/curriculum/`). Gates are frozen in `stages.py`; the loop may only change declared knobs within their ranges. Training stops early when a stage's gate passes. Monitoring is a deterministic script (no LLM); a stronger model is only needed for stage design / reward changes.
+
+Stages (task `goal_reach`; the policy observes the goal direction in the IMU frame + distance; goal bearing needs an external localiser on hardware):
+- [x] **S1 goal ahead** - 40-80 cm straight ahead, 30 s. Passed from scratch in 272k steps (gate: 97.5% robust, 68 cm median, ~19 s). Lesson: the progress window must be anchored on the CoM (a head-anchored window made the cold start learn nothing).
+- [ ] **S1b random start** - every episode starts from random joint angles (+-0.6 rad), so the body begins curled at a random orientation relative to the target (`start_pose_rad`; poses that topple are resampled).
+- [ ] **S2 any bearing** - goals at +-180 deg from a random start pose.
+- [ ] **S3 retarget (click-to-navigate behaviour)** - sequences of 3 goals and mid-route goal changes (`n_goals`, `redirect_prob`): the policy must change course toward an updated target.
+- [ ] **S4 goal sequence** (task `goal_sequence`) - a fresh random layout of 4 targets each pass (placed at reset, each relative to the previous target); the head visits t1 -> t2 -> t3 -> t4 in order; the policy also observes the next target. 150 s episodes.
+- [ ] **S5 far / robust** - 80-120 cm legs, 2 targets, heavier randomisation.
+- [ ] **Interactive click-to-navigate tool** - top-down map (matplotlib) where clicking sets the goal live (`GoalReach.set_goal`, task param `n_goals=0` = never ends on arrival), plus a scripted-waypoint video renderer for demos. Build after S3 trains.
+- [ ] **Dynamic terrain** (earthquakes, rolling waves) as a disturbance axis (see the curriculum design notes), then tactile obstacle sensing (contact model in sim), navigation around obstacles, mazes.
+- [ ] Speed sweep (running): `action_scale` x `action_ema` at 0.5 N.m / 30 s on `walk_straight`, results in `data/rl/sweeps2/`.
+
+Findings so far: a training/gate distribution mismatch makes the watcher's "passing" optimistic (always confirm with the gate); S2 trained on +-30 deg bearings saturated at 99% but failed the +-180 deg gate (35%); keep training ranges a superset of the gate's.
+
+**2026-11-11 (later):** success is now judged at the HEAD reaching the target (progress shaping stays on the CoM); the head-definition runs live in `data/rl/curriculum_cap0p5_head/` and earlier CoM-definition passes no longer count.

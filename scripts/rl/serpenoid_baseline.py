@@ -5,7 +5,7 @@ Reports displacement of the head along its initial heading and sideways, peak to
 baseline the RL policy must beat, and the Phase 1.5 go/no-go gate (single-joint commands cannot move the body: the axes are at
 45 deg to the chain, so one joint must lift everything downstream; adjacent joints in opposition do not).
 
-Usage: python scripts/serpenoid_baseline.py --urdf PATH/PET_description [--caps 0.164 0.05] [--seconds 10]
+Usage: python scripts/rl/serpenoid_baseline.py --urdf PATH/PET_description [--caps 0.164 0.05] [--seconds 10]
 """
 from __future__ import annotations
 

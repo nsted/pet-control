@@ -4,7 +4,7 @@ For each joint and each torque cap, command a single-joint offset (+-0.3, +-0.6 
 torque saturation, and how far the body lifts or moves; then a zig-zag and a travelling-wave pose with every joint. Uses PetSim
 (free body on the floor), no robot motion.
 
-Usage: python scripts/feasibility.py [--caps 0.05 0.164]
+Usage: python scripts/rl/feasibility.py [--caps 0.05 0.164]
 """
 from __future__ import annotations
 

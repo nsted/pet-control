@@ -8,11 +8,14 @@ Velocity comes from a window of positions because MIT velocity feedback clips at
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from petctl.rl.config import N_JOINTS, EnvConfig
+
+
+TOUCH_ERR_SCALE = 3.0            # rad -> observation units for the commanded-minus-measured position error
 
 
 @dataclass
@@ -23,6 +26,9 @@ class Snapshot:
     quat: np.ndarray                 # (4,)
     gyro: np.ndarray                 # (3,) rad/s
     cap_nm: np.ndarray               # (7,) current per-joint torque cap, N.m
+    extra: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))   # task-specific entries (goal direction ...), supplied by the caller
+    torque: np.ndarray = field(default_factory=lambda: np.zeros(N_JOINTS))     # (7,) N.m, from the MIT reply frame (used by tasks with touch_obs)
+    target: np.ndarray = field(default_factory=lambda: np.zeros(N_JOINTS))     # (7,) rad, the position target last commanded
 
 
 def gravity_in_body(quat: np.ndarray) -> np.ndarray:
@@ -40,12 +46,19 @@ class ObsBuilder:
         """Create a builder for ``cfg`` (history length, velocity window, control rate)."""
         self.cfg = cfg
         self.dt = 1.0 / cfg.control_hz
-        self.size = 3 + 3 + N_JOINTS + N_JOINTS + N_JOINTS + cfg.history * N_JOINTS
+        from petctl.rl.tasks import TASKS            # local import: tasks import the sim, which obs consumers may not need
+
+        self.extra_dim = TASKS[cfg.task].extra_obs_dim
+        self.touch = TASKS[cfg.task].touch_obs
+        self.touch_off = float(cfg.task_params.get("touch_off", 0.0)) > 0.0          # ablation: zero the contact channels
+        self.size = 3 + 3 + N_JOINTS + N_JOINTS + N_JOINTS + cfg.history * N_JOINTS + self.extra_dim + (4 * N_JOINTS if self.touch else 0)
+        self._touch_prev = np.zeros(2 * N_JOINTS)
         self._pos: deque[np.ndarray] = deque(maxlen=cfg.pos_window + 1)
         self._act: deque[np.ndarray] = deque(maxlen=cfg.history)
 
     def reset(self, first: Snapshot) -> None:
         """Clear the histories using the first snapshot."""
+        self._touch_prev = np.zeros(2 * N_JOINTS)
         self._pos.clear()
         self._act.clear()
         for _ in range(self.cfg.pos_window + 1):
@@ -62,5 +75,11 @@ class ObsBuilder:
         self._pos.append(snap.joint_pos.copy())
         w = len(self._pos) - 1
         vel = (self._pos[-1] - self._pos[0]) / (w * self.dt)
-        return np.concatenate([gravity_in_body(snap.quat), snap.gyro, snap.joint_pos, np.clip(vel, -10, 10), snap.cap_nm / 0.164,
-                               np.concatenate(list(self._act))]).astype(np.float32)
+        parts = [gravity_in_body(snap.quat), snap.gyro, snap.joint_pos, np.clip(vel, -10, 10), snap.cap_nm / 0.164,
+                 np.concatenate(list(self._act)), np.asarray(snap.extra, float).reshape(-1)[:self.extra_dim]]
+        if self.touch:                                       # contact is inferred from the MIT reply: torque and tracking error, this tick and the previous one
+            cur = np.concatenate([np.clip(snap.torque / np.maximum(snap.cap_nm, 1e-6), -1.5, 1.5), np.clip((snap.target - snap.joint_pos) * TOUCH_ERR_SCALE, -3.0, 3.0)])
+            cur = np.zeros_like(cur) if self.touch_off else cur
+            parts.append(np.concatenate([cur, self._touch_prev]))
+            self._touch_prev = cur
+        return np.concatenate(parts).astype(np.float32)

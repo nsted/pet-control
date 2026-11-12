@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 N_JOINTS = 7
+# PET_description folder from the Fusion export (mesh collision model). Override with the PET_URDF_DIR environment variable;
+# the default is body/URDF/PET_description next to the code/ folder (PET/code/petctl -> PET/body).
+DEFAULT_URDF_DIR = os.environ.get("PET_URDF_DIR", str(Path(__file__).resolve().parents[4] / "body" / "URDF" / "PET_description"))
 BUS_A_PER_NM2 = 13.3      # measured bus current per (N.m)^2 per motor (hanging tests, docs/plans/POWER_MANAGEMENT.md); NOT the manager's 72.5
 BUS_LIMIT_A = 4.0         # battery budget (config.POWER_BUDGET), used as a soft penalty threshold in the reward
 
@@ -66,6 +71,7 @@ class EnvConfig:
     task: str = "locomote"
     sim_dt: float = 0.004             # MuJoCo timestep (s); 0.004 is 1.75x faster than 0.002 with the same gait (17.6 vs 17.8 cm in 15 s)
     urdf_dir: str | None = None       # PET_description folder: use the mesh collision model (the box model barely locomotes)
+    task_params: dict[str, float] = field(default_factory=dict)   # per-task knobs (e.g. goal_reach goal distance/bearing); curriculum stages set these
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form (JSON-serialisable) for saving with checkpoints."""

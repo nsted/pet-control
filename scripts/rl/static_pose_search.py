@@ -1,4 +1,4 @@
-"""Search for the tallest static pose PET can hold from the flat start (sim only). Run: python scripts/static_pose_search.py --out data/rl/static_poses.json
+"""Search for the tallest static pose PET can hold from the flat start (sim only). Run: python scripts/rl/static_pose_search.py --out data/rl/static_poses.json
 
 Black-box optimisation (differential evolution, parallel) over the 7 joint angles. A pose scores the lowest valid height of the highest
 module point over the last HOLD_S seconds of commanding it, so only poses that are reached and sustained count. Invalid poses (module
@@ -14,10 +14,10 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import differential_evolution
 
-from petctl.rl.config import EnvConfig
+from petctl.rl.config import DEFAULT_URDF_DIR, EnvConfig
 from petctl.rl.env import PetEnv
 
-URDF = "/Users/nsted/Documents/PET/body/URDF/PET_description"
+URDF = DEFAULT_URDF_DIR
 HOLD_S = 2.0
 _ENV: PetEnv | None = None
 _CFG: dict = {}

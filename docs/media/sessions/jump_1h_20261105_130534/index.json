@@ -1,0 +1,78 @@
+[
+ {
+  "n": 1,
+  "video": "01_rec1.6cm_R13_ep1551_t2m.mp4",
+  "policy": "policies/01_rec1.6cm_R13_ep1551_t2m.npz",
+  "record_cm": 1.5646010179804417,
+  "episode_return": 12.642722,
+  "episode": 1551,
+  "timesteps": 310400,
+  "wall_min": 1.7361512184143066,
+  "replay": {
+   "distance": 0.0009185703061372341,
+   "record_clearance_m": 0.0009185703061372341,
+   "current_clearance_m": 0.0,
+   "best_air_s": 0.05,
+   "jumps": 2.0,
+   "best_t_s": 2.95
+  },
+  "best": false
+ },
+ {
+  "n": 2,
+  "video": "02_rec7.2cm_R70_ep3094_t4m.mp4",
+  "policy": "policies/02_rec7.2cm_R70_ep3094_t4m.npz",
+  "record_cm": 7.206479153523286,
+  "episode_return": 69.617752,
+  "episode": 3094,
+  "timesteps": 619200,
+  "wall_min": 3.9736451665560404,
+  "replay": {
+   "distance": 0.00019054280714354138,
+   "record_clearance_m": 0.00019054280714354138,
+   "current_clearance_m": 0.00019054280714354138,
+   "best_air_s": 0.1,
+   "jumps": 5.0,
+   "best_t_s": 10.0
+  },
+  "best": false
+ },
+ {
+  "n": 3,
+  "video": "03_rec7.7cm_R74_ep4776_t7m.mp4",
+  "policy": "policies/03_rec7.7cm_R74_ep4776_t7m.npz",
+  "record_cm": 7.70782768141461,
+  "episode_return": 73.622385,
+  "episode": 4776,
+  "timesteps": 955200,
+  "wall_min": 6.605043347676595,
+  "replay": {
+   "distance": 0.004793367811429465,
+   "record_clearance_m": 0.004793367811429465,
+   "current_clearance_m": 0.0,
+   "best_air_s": 0.1,
+   "jumps": 14.0,
+   "best_t_s": 8.700000000000001
+  },
+  "best": false
+ },
+ {
+  "n": 4,
+  "video": "BEST_04_rec112.1cm_R1105_ep5341_t8m.mp4",
+  "policy": "policies/04_rec112.1cm_R1105_ep5341_t8m.npz",
+  "record_cm": 112.05058923978655,
+  "episode_return": 1105.020637,
+  "episode": 5341,
+  "timesteps": 1068800,
+  "wall_min": 7.542613999048869,
+  "replay": {
+   "distance": 0.01915277293109846,
+   "record_clearance_m": 0.01915277293109846,
+   "current_clearance_m": 0.0,
+   "best_air_s": 0.15000000000000002,
+   "jumps": 17.0,
+   "best_t_s": 1.0
+  },
+  "best": true
+ }
+]

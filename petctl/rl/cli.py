@@ -6,7 +6,8 @@ from pathlib import Path
 
 import typer
 
-DEFAULT_URDF = "/Users/nsted/Documents/PET/body/URDF/PET_description"
+from petctl.rl.config import DEFAULT_URDF_DIR
+
 
 rl_app = typer.Typer(help="Reinforcement-learning experiments (needs: pip install -e '.[rl]')", no_args_is_help=True)
 
@@ -25,7 +26,10 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
           max_step_rad: float = typer.Option(None, help="Per-step target slew limit in rad (default 0.35; raise for explosive motion)"),
           ent_coef: float = typer.Option(0.0, help="PPO entropy bonus (keeps exploration alive)"),
           hours: float = typer.Option(None, help="Stop after this many wall-clock hours (steps is then an upper bound)"),
-          urdf: str = typer.Option(DEFAULT_URDF, help="PET_description folder (mesh collision model); '' for the simple box model")) -> None:
+          task_param: list[str] = typer.Option(None, "--task-param", help="Task knob KEY=VALUE, repeatable (e.g. goal_dist_max=0.4, bearing_deg=90)"),
+          init_from: Path = typer.Option(None, help="Warm-start from this PPO run directory (model.zip + vecnormalize.pkl); a larger observation is padded with zeros"),
+          video: bool = typer.Option(True, "--video/--no-video", help="Render the end-of-run video into docs/media (off for sweeps)"),
+          urdf: str = typer.Option(DEFAULT_URDF_DIR, help="PET_description folder (mesh collision model); '' for the simple box model")) -> None:
     """Train a policy with SB3 and save model, normalisation stats, config and metadata."""
     from petctl.rl.config import EnvConfig
     from petctl.rl.train import train as _train
@@ -42,7 +46,10 @@ def train(steps: int = typer.Option(200_000, help="Total environment steps"),
         cfg.max_target_step_rad = max_step_rad
     if cap_nm is not None:
         cfg.dr.cap_nm = (cap_nm, cap_nm)
-    path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo, hours, ent_coef)
+    for kv in task_param or []:
+        k, _, v = kv.partition("=")
+        cfg.task_params[k.strip()] = float(v)
+    path = _train(cfg, steps, n_envs, out or Path(f"data/rl/{task}_{seed}"), seed, algo, hours, ent_coef, init_from, video)
     typer.echo(f"Saved to {path}")
 
 
@@ -141,3 +148,58 @@ def best(runs: list[Path] = typer.Argument(None, help="Run directories (default:
         typer.echo(f"{name}: {what} at {steps} steps, {mins:.0f} min, {saved}")
     if not rows:
         typer.echo("no best.json found")
+
+
+@rl_app.command("stages")
+def stages() -> None:
+    """List the curriculum stages, their gates and tunable knobs."""
+    from petctl.rl.curriculum.stages import STAGES
+
+    for st in STAGES.values():
+        g = st.gate
+        typer.echo(f"{st.name}  [{st.task}]  parent: {st.parent or '-'}\n  {st.description}\n  gate: success >= {g.min_success} at DR {g.dr_scale}, {g.episodes} eps, goal {g.task_params}\n"
+                   f"  knobs: {', '.join(f'{k} {lo:g}..{hi:g}' for k, (lo, hi) in st.knobs.items())}")
+
+
+@rl_app.command("stage-train")
+def stage_train(stage: str = typer.Argument(..., help="Stage name (see `petctl rl stages`)"),
+                set_: list[str] = typer.Option(None, "--set", help="Knob override KEY=VALUE (validated against the stage's allowed ranges), repeatable"),
+                out: Path = typer.Option(None, help="Run directory (default data/rl/curriculum/<stage>/iter_NN)"),
+                init_from: Path = typer.Option(None, help="Warm-start run (default: latest passing run of the parent stage)"),
+                seed: int = typer.Option(0), note: str = typer.Option("", help="Why this iteration (recorded in iteration.json)")) -> None:
+    """Train one iteration of a curriculum stage with guard-railed overrides."""
+    from petctl.rl.curriculum.runner import launch
+    from petctl.rl.curriculum.stages import get_stage
+
+    overrides = {k.strip(): float(v) for k, _, v in (kv.partition("=") for kv in set_ or [])}
+    typer.echo(f"Saved to {launch(get_stage(stage), overrides, out, init_from, seed, note)}")
+
+
+@rl_app.command("watch")
+def watch_(run: Path = typer.Argument(..., help="Run directory"), stage: str = typer.Option(None, help="Stage whose gate level defines 'passing'"),
+           window: int = typer.Option(100, help="Episodes per rolling window"),
+           until_actionable: bool = typer.Option(False, help="Poll until the verdict needs action (passing/plateau/collapse/glitch/stalled/finished)"),
+           poll_s: float = typer.Option(60.0), max_wait_h: float = typer.Option(6.0)) -> None:
+    """Classify a training run from its episode log; prints the verdict JSON and writes <run>/verdict.json (no LLM involved)."""
+    import json
+    from dataclasses import asdict
+
+    from petctl.rl.curriculum.stages import get_stage
+    from petctl.rl.curriculum.watch import watch
+
+    pass_score = get_stage(stage).gate.min_success if stage else None
+    typer.echo(json.dumps(asdict(watch(run, pass_score, window, until_actionable, poll_s, max_wait_h * 3600)), indent=1))
+
+
+@rl_app.command("gate")
+def gate_(run: Path = typer.Argument(..., help="Run directory"), stage: str = typer.Option(..., help="Stage whose frozen gate to apply"),
+          policy_file: str = typer.Option("policy.npz", help="e.g. best_policy.npz")) -> None:
+    """Run the stage's frozen gate on a policy; prints JSON, exit code 0 = pass, 1 = fail."""
+    import json
+
+    from petctl.rl.curriculum.gate import run_gate
+    from petctl.rl.curriculum.stages import get_stage
+
+    res = run_gate(run, get_stage(stage), policy_file)
+    typer.echo(json.dumps(res, indent=1))
+    raise typer.Exit(0 if res["passed"] else 1)

@@ -1,6 +1,6 @@
 """Ceiling search for the jump task: how high can PET leave the ground with a periodic crouch-then-snap motion? (sim only)
 
-Run: python scripts/jump_search.py --out data/rl/jump_motions.json
+Run: python scripts/rl/jump_search.py --out data/rl/jump_motions.json
 Differential evolution over a two-pose square-wave motion (crouch pose, snap pose, period, duty), scored by the task's own record
 clearance (lowest point of the lowest module above the floor, airborne only, glitch-guarded). Tells RL what is achievable.
 """
@@ -14,10 +14,10 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import differential_evolution
 
-from petctl.rl.config import EnvConfig
+from petctl.rl.config import DEFAULT_URDF_DIR, EnvConfig
 from petctl.rl.env import PetEnv
 
-URDF = "/Users/nsted/Documents/PET/body/URDF/PET_description"
+URDF = DEFAULT_URDF_DIR
 _ENV: PetEnv | None = None
 _CFG: dict = {}
 

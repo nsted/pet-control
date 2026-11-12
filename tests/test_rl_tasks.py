@@ -1,4 +1,4 @@
-"""walk_straight task, config round-trip, and the inference-only GaitPolicy."""
+"""RL tasks (walk, reach, jump), config round-trip, the inference-only GaitPolicy and the skill library."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("gymnasium")
 pytest.importorskip("mujoco")
 
-from petctl.rl.config import EnvConfig  # noqa: E402
+from petctl.rl.config import DEFAULT_URDF_DIR, EnvConfig  # noqa: E402
 from petctl.rl.env import PetEnv  # noqa: E402
 from petctl.rl.policy import POLICY_FILE, GaitPolicy  # noqa: E402
 
@@ -85,7 +85,7 @@ def test_walk_sideways_axis_and_sign() -> None:
 
 def test_reach_up_peak_reward_telescopes_and_guards_clipping() -> None:
     """Rewards peak growth only: zero at the flat start, total peak_gain ~ 10*height_w*peak, no peak while clipping the floor."""
-    cfg = EnvConfig(task="reach_up", episode_s=5.0, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg = EnvConfig(task="reach_up", episode_s=5.0, urdf_dir=DEFAULT_URDF_DIR)
     cfg.dr.scale = 0.0
     env = PetEnv(cfg)
     env.reset(seed=0)
@@ -100,7 +100,7 @@ def test_reach_up_peak_reward_telescopes_and_guards_clipping() -> None:
 
 
 def _still_env():
-    cfg = EnvConfig(task="reach_still", episode_s=20.0, action_scale_rad=np.pi, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg = EnvConfig(task="reach_still", episode_s=20.0, action_scale_rad=np.pi, urdf_dir=DEFAULT_URDF_DIR)
     cfg.dr.scale, cfg.dr.cap_nm = 0.0, (0.5, 0.5)
     return PetEnv(cfg)
 
@@ -142,7 +142,7 @@ def test_finalize_session_marks_best_and_writes_index(tmp_path: Path) -> None:
 
 def test_jump_scores_only_airborne_clearance() -> None:
     """Standing/lying scores 0 (floor contact); lifting the whole body off the floor is scored by lowest-point height."""
-    cfg = EnvConfig(task="jump", episode_s=5.0, action_scale_rad=np.pi, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg = EnvConfig(task="jump", episode_s=5.0, action_scale_rad=np.pi, urdf_dir=DEFAULT_URDF_DIR)
     cfg.dr.scale, cfg.dr.cap_nm = 0.0, (0.5, 0.5)
     env = PetEnv(cfg)
     env.reset(seed=0)
@@ -163,7 +163,7 @@ def test_jump_scores_only_airborne_clearance() -> None:
 
 def test_jump_rejects_blown_up_physics_without_recording_it() -> None:
     """A teleport to 16 m with huge velocity must not set a record, and must end the episode with a penalty."""
-    cfg = EnvConfig(task="jump", episode_s=5.0, action_scale_rad=np.pi, urdf_dir="/Users/nsted/Documents/PET/body/URDF/PET_description")
+    cfg = EnvConfig(task="jump", episode_s=5.0, action_scale_rad=np.pi, urdf_dir=DEFAULT_URDF_DIR)
     cfg.dr.scale, cfg.dr.cap_nm = 0.0, (0.5, 0.5)
     env = PetEnv(cfg)
     env.reset(seed=0)
@@ -180,13 +180,13 @@ def test_skill_library_add_resolve_list(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(skills, "SKILLS_ROOT", tmp_path / "lib")
     cfg = EnvConfig(task="walk_straight", episode_s=1.0)
-    cfg.dr.cap_nm = (0.5, 0.5)
+    cfg.dr.cap_nm = (0.6, 0.6)
     run = _fake_run(tmp_path, cfg)
     monkeypatch.setattr(skills, "VERIFY_SEEDS", (0, 1))
     dest = skills.add_skill(run, "fake_a", note="test", render=False)
     assert (dest / "policy.npz").exists() and (dest / "config.json").exists()
     info = json.loads((dest / "skill.json").read_text())
-    assert info["id"] == "walk_straight/fake_a" and info["score"]["seeds"] == [0, 1] and info["caveats"]   # 0.5 N.m > real cap
+    assert info["id"] == "walk_straight/fake_a" and info["score"]["seeds"] == [0, 1] and info["caveats"]   # 0.6 N.m > the real 0.5 N.m cap
     with pytest.raises(FileExistsError):
         skills.add_skill(run, "fake_a", render=False)
     skills.add_skill(run, "fake_b", render=False)

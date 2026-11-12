@@ -52,6 +52,7 @@ class BuildParams:
     urdf_dir: str | None = None             # PET_description folder from the Fusion export: use its meshes/joints for the lying model
     self_collide: bool = True               # module-vs-module contact (parent/child pairs are excluded by MuJoCo)
     max_hull_verts: int = 200
+    walls: tuple[tuple[float, float, float, float], ...] = ()    # static vertical walls: (centre x, centre y, yaw rad, half length m); 2 cm thick, 16 cm tall
     extra: dict[str, float] = field(default_factory=dict)
 
 
@@ -192,6 +193,10 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
     if not p.hanging:
         L.append(f'<geom name="floor" type="plane" size="20 20 0.1" material="floor" friction="{p.floor_friction} {p.torsional_friction} '
                  f'{p.rolling_friction}" condim="4" solref="{p.floor_solref[0]} {p.floor_solref[1]}"/>')
+    hh = p.extra.get("wall_half_h", 0.08)
+    for i, (wx, wy, wyaw, wl) in enumerate(p.walls):
+        L.append(f'<geom name="wall{i}" type="box" pos="{wx} {wy} {hh}" euler="0 0 {wyaw}" size="{wl} 0.01 {hh}" '
+                 f'friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" condim="4" rgba=".7 .7 .75 1"/>')
     root_pos = "" if p.hanging else f' pos="0 0 {z0:.6f}"'
     for k in range(N_MODULES):
         joint = ""

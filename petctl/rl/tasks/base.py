@@ -16,10 +16,28 @@ class Task(ABC):
     name = "task"
     score_label = "m"             # unit/meaning of metrics()["distance"], shown in the skill library
     terminate_on_flip = True      # end the episode when the tail IMU is tipped past EnvConfig.flip_up_dot (off for reaching poses)
+    touch_obs = False             # append motor-reply contact signals (measured torque, commanded-minus-measured position; this tick and the last) to the observation
+    extra_obs_dim = 0             # task-specific observation entries appended after the proprioception (e.g. goal direction)
 
     def __init__(self, cfg: EnvConfig) -> None:
         """Store the env config (reward weights, control rate)."""
         self.cfg = cfg
+
+    def param(self, key: str, default: float) -> float:
+        """A task knob from ``EnvConfig.task_params`` (falls back to ``default``)."""
+        return float(self.cfg.task_params.get(key, default))
+
+    def layout(self, head: np.ndarray, heading: np.ndarray, rng: np.random.Generator) -> tuple[tuple[tuple[float, float, float, float], ...], np.ndarray | None]:
+        """Static world geometry placed before the sim is built, given the nominal head position and heading: ``(walls, goal_xy or None)``."""
+        return (), None
+
+    def markers(self, sim: PetSim) -> list[tuple[np.ndarray, float, tuple[float, float, float, float]]]:
+        """Visual-only markers (world position, radius, rgba) drawn in videos/viewer, e.g. the goal. Never seen by the policy."""
+        return []
+
+    def extra_obs(self, sim: PetSim) -> np.ndarray:
+        """Task-specific observation entries (length ``extra_obs_dim``); must only use what the real robot could be told."""
+        return np.zeros(self.extra_obs_dim, dtype=np.float32)
 
     @abstractmethod
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:

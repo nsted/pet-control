@@ -9,6 +9,7 @@ import pytest
 pytest.importorskip("mujoco")
 
 from petctl.gravity_model import equilibrium  # noqa: E402
+from petctl.rl.config import DEFAULT_URDF_DIR  # noqa: E402
 from petctl.sim.model_builder import BOX_HALF, BuildParams, PetSim  # noqa: E402
 
 
@@ -40,7 +41,7 @@ def test_torque_cap_limits_actuator_force() -> None:
     assert np.abs(sim.joint_torque()).max() <= 0.05 + 1e-9
 
 
-_URDF = "/Users/nsted/Documents/PET/body/URDF/PET_description"
+_URDF = DEFAULT_URDF_DIR
 
 
 @pytest.mark.skipif(not os.path.isdir(_URDF), reason="Fusion URDF export not present")

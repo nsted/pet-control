@@ -34,3 +34,6 @@ config/imu_tare.json
 
 # Script output data (logs, calibration runs, sweeps)
 data/
+
+# MuJoCo writes this into the working directory
+MUJOCO_LOG.TXT
