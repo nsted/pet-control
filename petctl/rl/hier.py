@@ -15,7 +15,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from petctl.rl.config import N_JOINTS, EnvConfig
+from petctl.rl.config import EnvConfig
 from petctl.rl.env import PetEnv
 from petctl.rl.policy import GaitPolicy
 
@@ -42,7 +42,7 @@ class SelectorEnv(gym.Env):
         self.env = PetEnv(cfg)
         self.hold, self.force = hold, force_offset
         self.n_low = self.low._mean.shape[0]
-        self.e0 = 3 + 3 + 3 * N_JOINTS + cfg.history * N_JOINTS            # start of the task-specific (goal) entries
+        self.e0 = 3 + 3 + 3 * cfg.n_joints + cfg.history * cfg.n_joints            # start of the task-specific (goal) entries
         self.action_space = spaces.Discrete(len(OFFSETS_DEG))
         n = 4 + 3 + (self.env.obs_builder.size - self.e0 - 4) + N_RECENT + 1
         self.observation_space = spaces.Box(-np.inf, np.inf, (n,), np.float32)

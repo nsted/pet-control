@@ -17,9 +17,10 @@ import numpy as np
 from petctl.sim.model_builder import BuildParams, PetSim
 
 
-def run(urdf: str | None, cap: float, amp: float, freq: float, phi: float, alt: bool, seconds: float, friction: float) -> dict[str, float]:
-    sim = PetSim(BuildParams(cap_nm=(cap,) * 7, urdf_dir=urdf, floor_friction=friction))
-    sim.step(np.zeros(7), 1.0)
+def run(urdf: str | None, cap: float, amp: float, freq: float, phi: float, alt: bool, seconds: float, friction: float, n_modules: int = 8) -> dict[str, float]:
+    nj = n_modules - 1
+    sim = PetSim(BuildParams(cap_nm=(cap,) * nj, urdf_dir=urdf, floor_friction=friction, n_modules=n_modules))
+    sim.step(np.zeros(nj), 1.0)
     p0, q0 = sim.head_pos().copy(), sim.data.qpos[3:7].copy()
     fwd = np.zeros(3)
     mat = np.zeros(9)
@@ -30,10 +31,10 @@ def run(urdf: str | None, cap: float, amp: float, freq: float, phi: float, alt: 
     fwd /= np.linalg.norm(fwd)
     lat = np.array([-fwd[1], fwd[0], 0.0])
     dt, taus, sat = 0.05, [], []
-    sign = np.array([(-1.0) ** k if alt else 1.0 for k in range(7)])   # joint k+1 -> index k
+    sign = np.array([(-1.0) ** k if alt else 1.0 for k in range(nj)])   # joint k+1 -> index k
     for i in range(int(seconds / dt)):
         t = i * dt
-        tgt = sign * amp * np.sin(2 * np.pi * freq * t - phi * np.arange(1, 8))
+        tgt = sign * amp * np.sin(2 * np.pi * freq * t - phi * np.arange(1, nj + 1))
         sim.step(tgt, dt)
         tau = np.abs(sim.joint_torque())
         taus.append(tau.max())
@@ -46,6 +47,7 @@ def run(urdf: str | None, cap: float, amp: float, freq: float, phi: float, alt: 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--urdf", default=None)
+    ap.add_argument("--n-modules", type=int, default=8, help="body length 8..15 (sim-only study)")
     ap.add_argument("--caps", type=float, nargs="+", default=[0.164])
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--friction", type=float, default=1.0)
@@ -56,7 +58,7 @@ def main() -> int:
     print("| cap | amp | f Hz | phi | signs | fwd cm | lat cm | peak tau | sat frac |")
     print("|---|---|---|---|---|---|---|---|---|")
     for cap, amp, f, phi, alt in itertools.product(a.caps, a.amps, a.freqs, a.phis, (False, True)):
-        r = run(a.urdf, cap, amp, f, phi, alt, a.seconds, a.friction)
+        r = run(a.urdf, cap, amp, f, phi, alt, a.seconds, a.friction, a.n_modules)
         print(f"| {cap} | {amp} | {f} | {phi:+.2f} | {'alt' if alt else 'plain'} | {r['fwd_cm']:+.1f} | {r['lat_cm']:+.1f} | "
               f"{r['tau_max']:.3f} | {r['sat']:.2f} |", flush=True)
     return 0

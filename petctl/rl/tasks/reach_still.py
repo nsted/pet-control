@@ -66,8 +66,8 @@ class ReachStill(ReachUp):
             "height_change": PTS_PER_M * (h - self._prev_h),
             "peak_bonus": PEAK_BONUS * PTS_PER_M * max(h - self._peak_h, 0.0),
             "clipping": -PENALTY_SCALE * w.validity * clip,
-            "energy": -PENALTY_SCALE * w.energy * float(np.sum(tau ** 2)),
-            "action_rate": -PENALTY_SCALE * w.action_rate * float(np.sum((action - prev_action) ** 2)),
+            "energy": -PENALTY_SCALE * w.energy * float(np.sum(tau ** 2)) / self.cfg.len_norm,
+            "action_rate": -PENALTY_SCALE * w.action_rate * float(np.sum((action - prev_action) ** 2)) / self.cfg.len_norm,
         }
         self._prev_h = h
         self._peak_h = max(self._peak_h, h)

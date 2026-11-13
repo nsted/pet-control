@@ -71,8 +71,8 @@ class ReachUp(Task):
             "peak_gain": 10.0 * w.height * inc,
             "height": 0.02 * w.height * g if ok else 0.0,
             "clipping": -w.validity * clip,
-            "energy": -w.energy * float(np.sum(tau ** 2)),
-            "action_rate": -w.action_rate * float(np.sum((action - prev_action) ** 2)),
+            "energy": -w.energy * float(np.sum(tau ** 2)) / self.cfg.len_norm,
+            "action_rate": -w.action_rate * float(np.sum((action - prev_action) ** 2)) / self.cfg.len_norm,
         }
         return float(sum(terms.values())), terms
 

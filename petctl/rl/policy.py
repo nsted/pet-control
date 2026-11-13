@@ -34,6 +34,8 @@ def export_policy(run: Path, model_file: str = "model", norm_file: str = "vecnor
     for i, lin in enumerate(layers):
         arrays[f"w{i}"] = lin.weight.detach().numpy().astype(np.float64)
         arrays[f"b{i}"] = lin.bias.detach().numpy().astype(np.float64)
+    cfg_file = run / "config.json"
+    arrays["n_joints"] = np.array(EnvConfig.from_dict(json.loads(cfg_file.read_text())).n_joints if cfg_file.exists() else N_JOINTS)
     out = run / out_file
     np.savez(out, **arrays)
     return out
@@ -46,19 +48,22 @@ class GaitPolicy:
         """Load ``policy_file`` (default ``policy.npz``) and ``config.json`` from a run directory."""
         self.cfg = EnvConfig.from_dict(json.loads((run / "config.json").read_text()))
         z = np.load(run / policy_file)
+        n_file = int(z["n_joints"]) if "n_joints" in z.files else N_JOINTS          # runs exported before configurable length have 7 joints
+        if n_file != self.cfg.n_joints:
+            raise ValueError(f"{run / policy_file} was exported for {n_file} joints but config.json says n_modules={self.cfg.n_modules} ({self.cfg.n_joints} joints)")
         n = int(z["n_layers"])
         self._w = [z[f"w{i}"] for i in range(n)]
         self._b = [z[f"b{i}"] for i in range(n)]
         self._mean, self._var = z["obs_mean"], z["obs_var"]
         self._clip, self._eps = float(z["clip_obs"]), float(z["eps"])
         self.obs = ObsBuilder(self.cfg)
-        self._tgt = np.zeros(N_JOINTS)
+        self._tgt = np.zeros(self.cfg.n_joints)
 
     def reset(self, first: Snapshot) -> None:
         """Start a new run: clear histories and targets."""
         self.obs.reset(first)
         random_start = float(self.cfg.task_params.get("start_pose_rad", 0.0)) > 0.0      # mirrors PetEnv.reset
-        self._tgt = np.asarray(first.joint_pos, float).copy() if random_start else np.zeros(N_JOINTS)
+        self._tgt = np.asarray(first.joint_pos, float).copy() if random_start else np.zeros(self.cfg.n_joints)
 
     def action(self, obs: np.ndarray) -> np.ndarray:
         """Raw policy output in [-1, 1] for an (un-normalised) observation."""

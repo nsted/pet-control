@@ -26,7 +26,7 @@ class Locomote(Task):
         self.side = np.array([-self.heading[1], self.heading[0], 0.0])
         n = max(1, int(round(self.cfg.progress_window_s * self.cfg.control_hz)))
         self._hist: deque[np.ndarray] = deque([self.p0.copy()] * (n + 1), maxlen=n + 1)
-        self._prev_qd = np.zeros(7)
+        self._prev_qd = np.zeros(self.cfg.n_joints)
 
     def tracked_pos(self, sim: PetSim) -> np.ndarray:
         """World position whose motion is rewarded (head here; subclasses may use the centre of mass)."""
@@ -55,10 +55,10 @@ class Locomote(Task):
         up = sim.data.site_xmat[sim.model.site("imu").id].reshape(3, 3)[2, 2]
         terms = {
             "progress": self.param("progress_weight", w.progress) * float(np.clip(v_prog, -0.5, 0.5)),
-            "energy": -w.energy * float(np.sum(tau ** 2)),
-            "action_rate": -w.action_rate * float(np.sum((action - prev_action) ** 2)),
-            "joint_acc": -w.joint_acc * float(np.sum(acc ** 2)),
-            "saturation": -w.saturation * float(np.mean(np.abs(tau) >= 0.98 * cap)),
+            "energy": -w.energy * float(np.sum(tau ** 2)) / self.cfg.len_norm,
+            "action_rate": -w.action_rate * float(np.sum((action - prev_action) ** 2)) / self.cfg.len_norm,
+            "joint_acc": -w.joint_acc * float(np.sum(acc ** 2)) / self.cfg.len_norm,
+            "saturation": -w.saturation * float(np.mean(np.abs(tau) >= 0.98 * cap)) / self.cfg.len_norm,
             "lateral": -w.lateral * abs(v_lat),
             "yaw": -self.param("yaw_weight", w.yaw) * abs(float(sim.data.sensor("gyro").data[2])),
             "tilt": -self.param("tilt_weight", w.tilt) * (1.0 - float(up)),

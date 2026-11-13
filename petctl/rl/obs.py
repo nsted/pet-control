@@ -1,6 +1,6 @@
 """Observation builder shared by the training env and the deployed policy so the two cannot drift apart.
 
-Inputs are exactly what the real robot provides: tail-IMU quaternion + gyro, the 7 joint angles (from MIT feedback), and the previous
+Inputs are exactly what the real robot provides: tail-IMU quaternion + gyro, the joint angles (7 on the real robot) (from MIT feedback), and the previous
 actions. Absolute yaw is NOT used (the BNO085 heading drifts); the gravity direction in the IMU frame replaces the quaternion.
 Velocity comes from a window of positions because MIT velocity feedback clips at +-0.5 rad/s.
 """
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from petctl.rl.config import N_JOINTS, EnvConfig
+from petctl.rl.config import EnvConfig
 
 
 TOUCH_MEMORY_S = (0.5, 3.0)       # time constants (s) of the running averages of the contact signals
@@ -24,13 +24,20 @@ TOUCH_ERR_SCALE = 3.0            # rad -> observation units for the commanded-mi
 class Snapshot:
     """One sample of what the policy may see. ``quat`` is (w, x, y, z), IMU frame -> world (world z up)."""
 
-    joint_pos: np.ndarray            # (7,) rad
+    joint_pos: np.ndarray            # (n_joints,) rad
     quat: np.ndarray                 # (4,)
     gyro: np.ndarray                 # (3,) rad/s
-    cap_nm: np.ndarray               # (7,) current per-joint torque cap, N.m
+    cap_nm: np.ndarray               # (n_joints,) current per-joint torque cap, N.m
     extra: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))   # task-specific entries (goal direction ...), supplied by the caller
-    torque: np.ndarray = field(default_factory=lambda: np.zeros(N_JOINTS))     # (7,) N.m, from the MIT reply frame (used by tasks with touch_obs)
-    target: np.ndarray = field(default_factory=lambda: np.zeros(N_JOINTS))     # (7,) rad, the position target last commanded
+    torque: np.ndarray | None = None  # (n_joints,) N.m, from the MIT reply frame (used by tasks with touch_obs); zeros when omitted
+    target: np.ndarray | None = None  # (n_joints,) rad, the position target last commanded; zeros when omitted
+
+    def __post_init__(self) -> None:
+        """Fill omitted reply-frame fields with zeros of the joint count."""
+        if self.torque is None:
+            self.torque = np.zeros(len(self.joint_pos))
+        if self.target is None:
+            self.target = np.zeros(len(self.joint_pos))
 
 
 def gravity_in_body(quat: np.ndarray) -> np.ndarray:
@@ -54,24 +61,25 @@ class ObsBuilder:
         self.touch = TASKS[cfg.task].touch_obs
         self.touch_off = float(cfg.task_params.get("touch_off", 0.0)) > 0.0          # ablation: zero the contact channels
         self.touch_long = self.touch and float(cfg.task_params.get("touch_long", 0.0)) > 0.0
-        self.size = 3 + 3 + N_JOINTS + N_JOINTS + N_JOINTS + cfg.history * N_JOINTS + self.extra_dim + (8 * N_JOINTS if self.touch else 0) + (4 * N_JOINTS if self.touch_long else 0)
-        self._touch_prev = np.zeros(2 * N_JOINTS)
-        self._touch_ema = np.zeros((2, 2 * N_JOINTS))
-        self._touch_slow = np.zeros((2, 2 * N_JOINTS))
+        self.n_joints = nj = cfg.n_joints
+        self.size = 3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
+        self._touch_prev = np.zeros(2 * self.n_joints)
+        self._touch_ema = np.zeros((2, 2 * self.n_joints))
+        self._touch_slow = np.zeros((2, 2 * self.n_joints))
         self._pos: deque[np.ndarray] = deque(maxlen=cfg.pos_window + 1)
         self._act: deque[np.ndarray] = deque(maxlen=cfg.history)
 
     def reset(self, first: Snapshot) -> None:
         """Clear the histories using the first snapshot."""
-        self._touch_prev = np.zeros(2 * N_JOINTS)
-        self._touch_ema = np.zeros((2, 2 * N_JOINTS))
-        self._touch_slow = np.zeros((2, 2 * N_JOINTS))
+        self._touch_prev = np.zeros(2 * self.n_joints)
+        self._touch_ema = np.zeros((2, 2 * self.n_joints))
+        self._touch_slow = np.zeros((2, 2 * self.n_joints))
         self._pos.clear()
         self._act.clear()
         for _ in range(self.cfg.pos_window + 1):
             self._pos.append(first.joint_pos.copy())
         for _ in range(self.cfg.history):
-            self._act.append(np.zeros(N_JOINTS))
+            self._act.append(np.zeros(self.n_joints))
 
     def push_action(self, action: np.ndarray) -> None:
         """Record the action just applied."""

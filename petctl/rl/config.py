@@ -7,7 +7,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-N_JOINTS = 7
+N_JOINTS = 7                # joints of the real 8-module robot (default); the live count is ``EnvConfig.n_joints``
+MIN_MODULES, MAX_MODULES = 8, 15
+REF_JOINTS = 7              # per-joint reward weights were tuned for 7 joints; length-scaled terms are divided by n_joints / REF_JOINTS
 # PET_description folder from the Fusion export (mesh collision model). Override with the PET_URDF_DIR environment variable;
 # the default is body/URDF/PET_description next to the code/ folder (PET/code/petctl -> PET/body).
 DEFAULT_URDF_DIR = os.environ.get("PET_URDF_DIR", str(Path(__file__).resolve().parents[4] / "body" / "URDF" / "PET_description"))
@@ -72,6 +74,22 @@ class EnvConfig:
     sim_dt: float = 0.004             # MuJoCo timestep (s); 0.004 is 1.75x faster than 0.002 with the same gait (17.6 vs 17.8 cm in 15 s)
     urdf_dir: str | None = None       # PET_description folder: use the mesh collision model (the box model barely locomotes)
     task_params: dict[str, float] = field(default_factory=dict)   # per-task knobs (e.g. goal_reach goal distance/bearing); curriculum stages set these
+    n_modules: int = 8                # body length: head + (n-2) middle + tail; sim-only design study allows 8..15 (the real robot is 8)
+
+    def __post_init__(self) -> None:
+        """Reject lengths outside the supported range."""
+        if not MIN_MODULES <= int(self.n_modules) <= MAX_MODULES:
+            raise ValueError(f"n_modules must be in {MIN_MODULES}..{MAX_MODULES}, got {self.n_modules}")
+
+    @property
+    def n_joints(self) -> int:
+        """Servo joints: one per module except the head."""
+        return int(self.n_modules) - 1
+
+    @property
+    def len_norm(self) -> float:
+        """Divisor for reward terms that sum over joints (1.0 at 8 modules)."""
+        return self.n_joints / REF_JOINTS
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form (JSON-serialisable) for saving with checkpoints."""

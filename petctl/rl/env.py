@@ -8,7 +8,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from petctl.rl.config import N_JOINTS, EnvConfig
+from petctl.rl.config import EnvConfig
 from petctl.rl.domain_rand import sample_params
 from petctl.rl.obs import ObsBuilder, Snapshot
 from petctl.rl.tasks import TASKS
@@ -34,7 +34,7 @@ def quantise(x: np.ndarray, q: float) -> np.ndarray:
 
 
 class PetEnv(gym.Env):  # type: ignore[type-arg]
-    """Action: 7 values in [-1, 1] -> joint-angle targets (rad) about the zero pose, EMA-filtered and slew-limited like the deployed path."""
+    """Action: ``n_joints`` values (7 for the real 8-module robot) in [-1, 1] -> joint-angle targets (rad) about the zero pose, EMA-filtered and slew-limited like the deployed path."""
 
     metadata = {"render_modes": []}
 
@@ -42,12 +42,14 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         """Create the env; ``base`` overrides nominal plant parameters (e.g. weighed masses)."""
         self.cfg = cfg or EnvConfig()
         if base is None:
-            base = BuildParams(urdf_dir=self.cfg.urdf_dir, dt=self.cfg.sim_dt)
+            base = BuildParams(urdf_dir=self.cfg.urdf_dir, dt=self.cfg.sim_dt, n_modules=self.cfg.n_modules)
+        elif base.n_modules != self.cfg.n_modules:
+            raise ValueError(f"base BuildParams has {base.n_modules} modules but EnvConfig.n_modules is {self.cfg.n_modules}")
         self.base = base
         self.dt = 1.0 / self.cfg.control_hz
         self.obs_builder = ObsBuilder(self.cfg)
         self.observation_space = spaces.Box(-np.inf, np.inf, (self.obs_builder.size,), np.float32)
-        self.action_space = spaces.Box(-1.0, 1.0, (N_JOINTS,), np.float32)
+        self.action_space = spaces.Box(-1.0, 1.0, (self.cfg.n_joints,), np.float32)
         self.max_steps = int(round(self.cfg.episode_s * self.cfg.control_hz))
         self.sim: PetSim | None = None
 
@@ -56,10 +58,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         assert self.sim is not None
         d, rng = self.sim.data, self._rng
         dr = self.cfg.dr
-        pos = self.sim.joint_pos() + self._joint_off + rng.normal(0, dr.pos_noise_rad * dr.scale, N_JOINTS)
+        pos = self.sim.joint_pos() + self._joint_off + rng.normal(0, dr.pos_noise_rad * dr.scale, self.cfg.n_joints)
         quat = _qmul(self._tilt, d.sensor("quat").data.copy())
         gyro = d.sensor("gyro").data + rng.normal(0, dr.gyro_noise * dr.scale, 3)
-        trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM, N_JOINTS), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
+        trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM, self.cfg.n_joints), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
         return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy())
 
     def _nominal_head(self) -> tuple[np.ndarray, np.ndarray]:
@@ -88,28 +90,28 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             params = BuildParams(**{**params.__dict__, "walls": walls, "obstacles": tuple(obstacles)})
         self.sim = PetSim(params)
         dr = self.cfg.dr
-        self._joint_off = self._rng.uniform(-dr.joint_offset_rad, dr.joint_offset_rad, N_JOINTS) * dr.scale
+        self._joint_off = self._rng.uniform(-dr.joint_offset_rad, dr.joint_offset_rad, self.cfg.n_joints) * dr.scale
         ax = self._rng.normal(size=3)
         ang = self._rng.uniform(0, dr.imu_tilt_rad * dr.scale)
         self._tilt = np.concatenate([[np.cos(ang / 2)], np.sin(ang / 2) * ax / np.linalg.norm(ax)])
         amp = float(self.cfg.task_params.get("start_pose_rad", 0.0))          # random start pose: each joint uniform in +-amp (rad)
-        q0 = np.zeros(N_JOINTS)
+        q0 = np.zeros(self.cfg.n_joints)
         for _ in range(8 if amp > 0 else 1):                                  # resample start poses that topple while settling (episode would end at once)
             if amp > 0:
-                q0 = self._rng.uniform(-amp, amp, N_JOINTS)
+                q0 = self._rng.uniform(-amp, amp, self.cfg.n_joints)
                 self.sim.reset(q0)
             self.sim.step(q0, SETTLE_S)                                       # hold the start pose while the body settles on the floor
             if self._up_dot() >= self.cfg.flip_up_dot or amp <= 0:
                 break
         else:
-            q0 = np.zeros(N_JOINTS)
+            q0 = np.zeros(self.cfg.n_joints)
             self.sim.reset()
             self.sim.step(q0, SETTLE_S)
         self.task.preset_goal = goal_xy
         self.task.reset(self.sim, self._rng)
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
-        self._tgt = self.sim.joint_pos().copy() if amp > 0 else np.zeros(N_JOINTS)
-        self._prev_action = np.zeros(N_JOINTS)
+        self._tgt = self.sim.joint_pos().copy() if amp > 0 else np.zeros(self.cfg.n_joints)
+        self._prev_action = np.zeros(self.cfg.n_joints)
         self._t = 0
         snap = self._snapshot()
         self.obs_builder.reset(snap)

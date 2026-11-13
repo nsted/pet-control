@@ -129,8 +129,8 @@ class Jump(ReachUp):
             "glitch": -gl,
             "com_rise": SHAPE_PTS_PER_M * (com - self._prev_com),
             "clipping": -PENALTY_SCALE * w.validity * max(0.0, pen - MAX_PENETRATION_M),
-            "energy": -PENALTY_SCALE * w.energy * float(np.sum(tau ** 2)),
-            "action_rate": -PENALTY_SCALE * w.action_rate * float(np.sum((action - prev_action) ** 2)),
+            "energy": -PENALTY_SCALE * w.energy * float(np.sum(tau ** 2)) / self.cfg.len_norm,
+            "action_rate": -PENALTY_SCALE * w.action_rate * float(np.sum((action - prev_action) ** 2)) / self.cfg.len_norm,
         }
         self._prev_com = com
         return float(sum(terms.values())), terms

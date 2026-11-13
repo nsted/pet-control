@@ -25,8 +25,9 @@ from petctl.config import MOTOR_LIMITS
 from petctl.gravity_model import A, G, P, Q, ghat
 from petctl.sim.mujoco_model import COULOMB_NM, MODULE_MASS_KG, PEAK_TORQUE_NM
 
-N_JOINTS = 7
+N_JOINTS = 7                                # the CAD robot (8 modules); ``BuildParams.n_modules`` lengthens it in simulation
 N_MODULES = 8
+MAX_MODULES = 15
 MODULE_PITCH_M = 0.058                      # distance between consecutive motor centres along the chain (CAD: 5.8 cm)
 BOX_HALF = (0.029, 0.035, 0.0175)           # module collision box half-sizes: along chain, across, thickness (7 cm prism, rough)
 
@@ -43,6 +44,7 @@ class BuildParams:
     dt: float = 0.002
     masses: tuple[float, ...] = (MODULE_MASS_KG,) * N_MODULES    # head..tail (kg); to be replaced by weighed values
     cap_nm: tuple[float, ...] = (PEAK_TORQUE_NM,) * N_JOINTS
+    n_modules: int = N_MODULES              # 8 (the real robot) .. 15: longer bodies repeat the middle-module pair of the CAD chain
     floor_friction: float = 1.0             # sliding friction coefficient (carpet: measure)
     torsional_friction: float = 0.005
     rolling_friction: float = 0.0002
@@ -55,6 +57,25 @@ class BuildParams:
     obstacles: tuple[tuple[str, float, float, float, float, float], ...] = ()    # scattered static obstacles: (kind 'box'|'cyl'|'ell', x, y, yaw, a, b); 12 cm tall. box: half extents a,b; cyl: radius a; ell: ellipsoid half axes a,b
     walls: tuple[tuple[float, float, float, float], ...] = ()    # static vertical walls: (centre x, centre y, yaw rad, half length m); 2 cm thick, 16 cm tall
     extra: dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Validate ``n_modules`` and stretch the per-module / per-joint tuples left at their 8-module defaults to the new length."""
+        n = int(self.n_modules)
+        if not N_MODULES <= n <= MAX_MODULES:
+            raise ValueError(f"n_modules must be in {N_MODULES}..{MAX_MODULES}, got {n}")
+        if len(self.masses) != n:
+            if len(set(self.masses)) != 1:
+                raise ValueError(f"masses has {len(self.masses)} entries for {n} modules")
+            self.masses = (self.masses[0],) * n
+        if len(self.cap_nm) != n - 1:
+            if len(set(self.cap_nm)) != 1:
+                raise ValueError(f"cap_nm has {len(self.cap_nm)} entries for {n - 1} joints")
+            self.cap_nm = (self.cap_nm[0],) * (n - 1)
+        if len(self.coulomb) != n - 1:
+            if len(self.coulomb) != N_JOINTS:
+                raise ValueError(f"coulomb has {len(self.coulomb)} entries for {n - 1} joints")
+            mid = float(np.median(self.coulomb[:N_JOINTS - 1]))          # new middle joints: median of the measured middle joints; the tail joint keeps its own
+            self.coulomb = tuple(self.coulomb[:N_JOINTS - 1]) + (mid,) * (n - N_MODULES) + (self.coulomb[N_JOINTS - 1],)
 
 
 def _frame() -> tuple[np.ndarray, np.ndarray]:
@@ -163,8 +184,71 @@ def _urdf_frame(g: UrdfGeometry) -> np.ndarray:
     return np.vstack([x, y, u])
 
 
+def _rot_y(a: float) -> np.ndarray:
+    """Rotation by ``a`` rad about +y."""
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+
+
+def _extend_chain(centres: list[np.ndarray], axes: dict[int, np.ndarray], anchors: dict[int, np.ndarray], hulls: list[np.ndarray], n: int
+                  ) -> tuple[list[np.ndarray], dict[int, np.ndarray], dict[int, np.ndarray], list[np.ndarray]]:
+    """Lengthen the 8-module chain (robot frame) to ``n`` modules by repeating the middle-module pair.
+
+    The CAD chain is periodic with period two (the +-45 deg joint axes and the +-0.6 cm zig-zag alternate), so a module ``j >= 7``
+    is a copy of module 5 or 6 (same parity) translated by the measured pair shift, and likewise for the joints. The whole chain is first
+    rotated about y so that this pair shift is horizontal (the 8-module frame leaves the lying chain tilted by ~5 deg). The tail is the
+    original tail translated to the new end; when ``n`` is odd the parity at the end flips, so the tail is turned 180 deg about the chain
+    axis (the same operation that relates module 5 to module 6) before translating. Head and tail hulls are otherwise unchanged.
+    """
+    pair = np.mean([centres[k + 2] - centres[k] for k in range(1, 5)], axis=0)
+    lvl = _rot_y(float(np.arctan(pair[2] / pair[0])))
+    centres = [lvl @ c for c in centres]
+    axes = {k: lvl @ v for k, v in axes.items()}
+    anchors = {k: lvl @ v for k, v in anchors.items()}
+    hulls = [(lvl @ h.T).T for h in hulls]
+    pair = lvl @ pair
+    pair = np.array([pair[0], 0.0, 0.0])
+    t_flip = centres[6][0] - centres[5][0]                       # odd -> even parity operator: x += t, y = -y, z = zc - z
+    zc = centres[5][2] + centres[6][2]
+
+    def flip(v: np.ndarray) -> np.ndarray:
+        return np.array([v[0] + t_flip, -v[1], zc - v[2]])
+
+    def src_of(j: int) -> int:
+        return 5 if j % 2 else 6
+
+    c2, h2 = list(centres[:7]), list(hulls[:7]) if hulls else []
+    for j in range(7, n - 1):                                   # extra middle modules
+        k = src_of(j)
+        sh = (j - k) // 2 * pair
+        c2.append(centres[k] + sh)
+        if hulls:
+            h2.append(hulls[k] + sh)
+    if n % 2 == 0:
+        sh = (n - 8) // 2 * pair
+        c2.append(centres[7] + sh)
+        if hulls:
+            h2.append(hulls[7] + sh)
+    else:
+        sh = (n - 9) // 2 * pair
+        c2.append(flip(centres[7]) + sh)
+        if hulls:
+            h2.append(np.array([flip(v) for v in hulls[7]]) + sh)
+    a2, q2 = dict((k, axes[k]) for k in range(1, 7)), dict((k, anchors[k]) for k in range(1, 7))
+    for k in range(7, n):
+        if k == n - 1 and n % 2 == 0:
+            a2[k], q2[k] = axes[7], anchors[7] + (n - 8) // 2 * pair
+        else:
+            src = src_of(k)
+            a2[k], q2[k] = axes[src], anchors[src] + (k - src) // 2 * pair
+    return c2, a2, q2, h2
+
+
 def build_mjcf(p: BuildParams) -> tuple[str, float]:
     """Return ``(xml, z0)``: the MJCF and the root height (m) at which the lying robot just touches the floor."""
+    nm = int(p.n_modules)
+    if nm != N_MODULES and p.hanging:
+        raise ValueError("the hanging regression model only exists for the 8-module CAD chain")
     geo = load_urdf(p.urdf_dir) if (p.urdf_dir and not p.hanging) else None
     if geo is not None:
         R = _urdf_frame(geo)
@@ -172,6 +256,8 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
         axes = {k: R @ geo.axes[k] for k in range(1, N_JOINTS + 1)}
         anchors = {k: R @ geo.anchors[k] for k in range(1, N_JOINTS + 1)}
         hulls = [(R @ h.T).T for h in geo.hulls]
+        if nm != N_MODULES:
+            centres, axes, anchors, hulls = _extend_chain(centres, axes, anchors, hulls, nm)
         z0 = float(-min(h[:, 2].min() for h in hulls) + 1e-3)
     else:
         R = np.eye(3) if p.hanging else _frame()[0]
@@ -179,6 +265,8 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
         axes = {k: R @ A[k] for k in range(1, N_JOINTS + 1)}
         anchors = {k: R @ Q[k] for k in range(1, N_JOINTS + 1)}
         hulls = []
+        if nm != N_MODULES:
+            centres, axes, anchors, hulls = _extend_chain(centres, axes, anchors, [], nm)
         z0 = 0.0 if p.hanging else float(-min(c[2] - BOX_HALF[2] for c in centres) + 1e-3)
     gravity = G * ghat if p.hanging else np.array([0.0, 0.0, -G])
     L: list[str] = [
@@ -204,7 +292,7 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
         L.append(f'<geom name="obs{i}" {shape} pos="{ox} {oy} {oh}" euler="0 0 {oyaw}" friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" '
                  f'condim="4" rgba=".85 .55 .25 1"/>')
     root_pos = "" if p.hanging else f' pos="0 0 {z0:.6f}"'
-    for k in range(N_MODULES):
+    for k in range(nm):
         joint = ""
         if k == 0:
             joint = "" if p.hanging else '<freejoint name="root"/>'
@@ -223,15 +311,15 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
             hx, hy, hz = BOX_HALF
             L.append(f'<geom name="g{k}" type="box" pos="{_vec(centres[k])}" size="{hx} {hy} {hz}" mass="0" '
                      f'friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" condim="4"/>')
-        if k == N_MODULES - 1:
+        if k == nm - 1:
             L.append(f'<site name="imu" pos="{_vec(centres[k])}"/>')
         if k == 0:
             L.append(f'<site name="head" pos="{_vec(centres[0])}"/>')
-    L.append("</body>" * N_MODULES)
+    L.append("</body>" * nm)
     L.append("</worldbody>")
     L.append("<actuator>" + "".join(
         f'<position name="a{k}" joint="j{k}" kp="{p.kp}" kv="{p.kd}" forcerange="{-p.cap_nm[k - 1]} {p.cap_nm[k - 1]}"/>'
-        for k in range(1, N_JOINTS + 1)) + "</actuator>")
+        for k in range(1, nm)) + "</actuator>")
     L.append('<sensor><gyro name="gyro" site="imu"/><accelerometer name="accel" site="imu"/><framequat name="quat" objtype="site" objname="imu"/>'
              '<framepos name="head_pos" objtype="site" objname="head"/><framelinvel name="head_vel" objtype="site" objname="head"/></sensor>')
     L.append("</mujoco>")
@@ -269,14 +357,14 @@ class PetSim:
         mujoco.mj_forward(self.model, self.data)
 
     def joint_pos(self) -> np.ndarray:
-        """Joint angles (rad), servo 1..7."""
+        """Joint angles (rad), servo 1..n_modules-1."""
         a = 7 if not self.p.hanging else 0
-        return self.data.qpos[a:a + N_JOINTS]
+        return self.data.qpos[a:a + self.p.n_modules - 1]
 
     def joint_vel(self) -> np.ndarray:
         """True joint velocities (rad/s)."""
         a = 6 if not self.p.hanging else 0
-        return self.data.qvel[a:a + N_JOINTS]
+        return self.data.qvel[a:a + self.p.n_modules - 1]
 
     def step(self, target: np.ndarray, seconds: float) -> None:
         """Advance ``seconds`` with the position target ``target`` (rad), delayed by ``delay_s``."""
