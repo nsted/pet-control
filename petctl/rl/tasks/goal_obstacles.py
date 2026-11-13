@@ -23,6 +23,7 @@ GRID_RES_M = 0.05
 PLAN_MARGIN_M = 0.13          # clearance kept round obstacles when planning (about half the body's swing width)
 START_KEEP_OUT = (-0.2, 0.62)  # start keep-out circle: centre offset along the heading from the head (m), radius (m)
 GOAL_KEEP_OUT_M = 0.28
+POST_KEEP_OUT_M = 0.5         # with a post: no obstacle surface closer than this to the post axis
 LOOKAHEAD_M = 0.25
 EXPLORE_CELL_M = 0.10
 
@@ -82,6 +83,20 @@ class DistanceField:
         self.reachable = free
         self.gx, self.gy = np.gradient(self.field, GRID_RES_M)
 
+    def state(self) -> dict[str, np.ndarray]:
+        """Arrays that rebuild this field without re-running the planner (for the layout cache)."""
+        return {"lo": self.lo, "field": self.field, "reachable": self.reachable}
+
+    @classmethod
+    def from_state(cls, st: dict[str, np.ndarray]) -> DistanceField:
+        """Rebuild a field saved by ``state`` (the gradient is recomputed; it is a pure function of the field)."""
+        f = cls.__new__(cls)
+        f.lo = np.asarray(st["lo"], float)
+        f.field, f.reachable = np.asarray(st["field"], float), np.asarray(st["reachable"], bool)
+        f.nx, f.ny = f.field.shape
+        f.gx, f.gy = np.gradient(f.field, GRID_RES_M)
+        return f
+
     def _ij(self, p: np.ndarray) -> tuple[int, int]:
         return (int(np.clip(round((p[0] - self.lo[0]) / GRID_RES_M), 0, self.nx - 1)), int(np.clip(round((p[1] - self.lo[1]) / GRID_RES_M), 0, self.ny - 1)))
 
@@ -107,9 +122,24 @@ class GoalObstacles(GoalReach):
     name = "goal_obstacles"
     score_label = "m towards goal"
     touch_obs = True
+    cacheable = True
 
     preset_goal: np.ndarray | None = None
     obstacles: tuple = ()
+
+    def _goal_keep(self) -> float:
+        """Clear radius round the target (m): wider when the target is a post (``post`` task knob)."""
+        return max(GOAL_KEEP_OUT_M, POST_KEEP_OUT_M) if self.param("post", 0.0) > 0.0 else GOAL_KEEP_OUT_M
+
+    def layout_state(self) -> dict[str, object]:
+        """The last ``layout`` result as plain arrays/lists (obstacles + planner field), for the layout cache."""
+        return {"obstacles": [list(o) for o in self.obstacles], **{f"field_{k}": v for k, v in self._field.state().items()}}
+
+    def restore_layout(self, state: dict[str, object], goal: np.ndarray) -> tuple[tuple, np.ndarray | None]:
+        """Install a layout saved by ``layout_state`` and return what ``layout`` would: ``((), goal)``."""
+        self.obstacles = tuple((str(o[0]), *(float(v) for v in o[1:])) for o in state["obstacles"])  # type: ignore[attr-defined]
+        self._field = DistanceField.from_state({k[6:]: v for k, v in state.items() if k.startswith("field_")})  # type: ignore[arg-type]
+        return (), np.asarray(goal, float)
 
     def layout(self, head: np.ndarray, heading: np.ndarray, rng: np.random.Generator) -> tuple[tuple, np.ndarray | None]:
         """Sample the target and the obstacles; retry until a way through exists."""
@@ -155,7 +185,7 @@ class GoalObstacles(GoalReach):
                 c = head[:2] + s_along * u + t * perp
                 ob = (kind, float(c[0]), float(c[1]), float(rng.uniform(0, np.pi)), a, bb)
                 r = bounding_radius(ob)
-                if np.linalg.norm(c - keep_c) < START_KEEP_OUT[1] + r or np.linalg.norm(c - goal) < GOAL_KEEP_OUT_M + r:
+                if np.linalg.norm(c - keep_c) < START_KEEP_OUT[1] + r or np.linalg.norm(c - goal) < self._goal_keep() + r:
                     continue
                 if any(np.linalg.norm(c - np.array(o[1:3])) < r + bounding_radius(o) + 0.04 for o in obs):
                     continue
@@ -200,7 +230,7 @@ class GoalObstacles(GoalReach):
                     c = centre + rr * np.array([np.cos(th), np.sin(th)])
                 ob = (kind, float(c[0]), float(c[1]), float(rng.uniform(0, np.pi)), a, bb)
                 r = bounding_radius(ob)
-                if np.linalg.norm(c - centre) < START_KEEP_OUT[1] + r or np.linalg.norm(c - goal) < GOAL_KEEP_OUT_M + r:
+                if np.linalg.norm(c - centre) < START_KEEP_OUT[1] + r or np.linalg.norm(c - goal) < self._goal_keep() + r:
                     continue
                 if any(np.linalg.norm(c - np.array(o[1:3])) < r + bounding_radius(o) + gap for o in obs):
                     continue

@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from petctl.rl.curriculum.stages import REAL_CAP_NM
+
 N_JOINTS = 7                # joints of the real 8-module robot (default); the live count is ``EnvConfig.n_joints``
 MIN_MODULES, MAX_MODULES = 8, 15
 REF_JOINTS = 7              # per-joint reward weights were tuned for 7 joints; length-scaled terms are divided by n_joints / REF_JOINTS
@@ -26,7 +28,7 @@ class DomainRand:
     armature: tuple[float, float] = (1e-4, 1e-3)
     kp_scale: tuple[float, float] = (0.65, 1.35)
     coulomb_scale: tuple[float, float] = (0.5, 2.0)
-    cap_nm: tuple[float, float] = (0.05, 0.164)
+    cap_nm: tuple[float, float] = (REAL_CAP_NM, REAL_CAP_NM)    # the real per-joint cap; the old (0.05, 0.164) default was stale (curriculum runs always overrode it)
     mass_scale: tuple[float, float] = (0.9, 1.1)
     floor_friction: tuple[float, float] = (0.4, 1.5)
     joint_offset_rad: float = 0.03

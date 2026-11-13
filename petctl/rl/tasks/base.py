@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from petctl.rl.config import EnvConfig
-from petctl.sim.model_builder import PetSim
+from petctl.sim.model_builder import POST_HEIGHT_M, POST_RADIUS_M, PetSim
 
 
 class Task(ABC):
@@ -17,6 +17,7 @@ class Task(ABC):
     score_label = "m"             # unit/meaning of metrics()["distance"], shown in the skill library
     terminate_on_flip = True      # end the episode when the tail IMU is tipped past EnvConfig.flip_up_dot (off for reaching poses)
     touch_obs = False             # append motor-reply contact signals (measured torque, commanded-minus-measured position; this tick and the last) to the observation
+    cacheable = False             # layout() can be stored/restored through layout_state()/restore_layout() (see petctl.rl.layout_cache)
     extra_obs_dim = 0             # task-specific observation entries appended after the proprioception (e.g. goal direction)
 
     def __init__(self, cfg: EnvConfig) -> None:
@@ -30,6 +31,15 @@ class Task(ABC):
     def layout(self, head: np.ndarray, heading: np.ndarray, rng: np.random.Generator) -> tuple[tuple[tuple[float, float, float, float], ...], np.ndarray | None]:
         """Static world geometry placed before the sim is built, given the nominal head position and heading: ``(walls, goal_xy or None)``."""
         return (), None
+
+    def post_pose(self, sim: PetSim) -> dict[str, float] | None:
+        """Privileged pose of the target post (None if the episode has none): axis ``x, y``, base height ``z``, ``radius``, ``height`` (m). Never observed."""
+        post = sim.p.post
+        if post is None:
+            return None
+        ter = sim.p.terrain
+        z = 0.0 if ter is None else ter.support_height(post[0], post[1], POST_RADIUS_M)
+        return {"x": float(post[0]), "y": float(post[1]), "z": float(z), "radius": POST_RADIUS_M, "height": POST_HEIGHT_M}
 
     def markers(self, sim: PetSim) -> list[tuple[np.ndarray, float, tuple[float, float, float, float]]]:
         """Visual-only markers (world position, radius, rgba) drawn in videos/viewer, e.g. the goal. Never seen by the policy."""

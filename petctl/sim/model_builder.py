@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import mujoco  # type: ignore[import-untyped]
 import numpy as np
@@ -24,12 +25,16 @@ import numpy as np
 from petctl.config import MOTOR_LIMITS
 from petctl.gravity_model import A, G, P, Q, ghat
 from petctl.sim.mujoco_model import COULOMB_NM, MODULE_MASS_KG, PEAK_TORQUE_NM
+from petctl.sim.terrain import BASE_M, CELL_M, ELEV_MAX_M, HALF_M, Terrain, tile_slices
 
 N_JOINTS = 7                                # the CAD robot (8 modules); ``BuildParams.n_modules`` lengthens it in simulation
 N_MODULES = 8
 MAX_MODULES = 15
 MODULE_PITCH_M = 0.058                      # distance between consecutive motor centres along the chain (CAD: 5.8 cm)
 BOX_HALF = (0.029, 0.035, 0.0175)           # module collision box half-sizes: along chain, across, thickness (7 cm prism, rough)
+POST_RADIUS_M = 0.05                        # the target post: a heavy immovable cylinder (a static world geom), 10 cm diameter
+POST_HEIGHT_M = 0.4
+FLOOR_BELOW_TERRAIN_M = 0.002               # with a heightfield the safety plane sits just under z = 0 so the terrain tiles carry all the contacts
 
 
 @dataclass
@@ -56,6 +61,8 @@ class BuildParams:
     max_hull_verts: int = 200
     obstacles: tuple[tuple[str, float, float, float, float, float], ...] = ()    # scattered static obstacles: (kind 'box'|'cyl'|'ell', x, y, yaw, a, b); 12 cm tall. box: half extents a,b; cyl: radius a; ell: ellipsoid half axes a,b
     walls: tuple[tuple[float, float, float, float], ...] = ()    # static vertical walls: (centre x, centre y, yaw rad, half length m); 2 cm thick, 16 cm tall
+    terrain: Terrain | None = None          # per-episode heightfield + friction tiles (None = flat plane, byte-identical to before)
+    post: tuple[float, float] | None = None  # world xy of the target post (static cylinder POST_RADIUS_M x POST_HEIGHT_M standing on the terrain)
     extra: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -127,6 +134,7 @@ def _read_stl(path: str) -> np.ndarray:
     return a["v"].reshape(-1, 3).astype(float)
 
 
+@lru_cache(maxsize=4)
 def load_urdf(urdf_dir: str) -> UrdfGeometry:
     """Module shapes from ``meshes/*.stl`` (mm, CAD world frame at q=0) and joints from the validated ``gravity_model``.
 
@@ -278,10 +286,23 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
     if hulls:
         L.append("<asset>" + "".join(
             f'<mesh name="h{k}" maxhullvert="{p.max_hull_verts}" vertex="{_vec(h.reshape(-1))}"/>' for k, h in enumerate(hulls)) + "</asset>")
+    ter = p.terrain if not p.hanging else None
+    if ter is not None:
+        L.append("<asset>" + "".join(
+            f'<hfield name="t{ty}{tx}" nrow="{yhi - ylo + 1}" ncol="{xhi - xlo + 1}" size="{(xhi - xlo) * CELL_M / 2} {(yhi - ylo) * CELL_M / 2} {ELEV_MAX_M} {BASE_M}"/>'
+            for ty, (ylo, yhi) in enumerate(tile_slices()) for tx, (xlo, xhi) in enumerate(tile_slices())) + "</asset>")
     L.append('<worldbody>')
     if not p.hanging:
-        L.append(f'<geom name="floor" type="plane" size="20 20 0.1" material="floor" friction="{p.floor_friction} {p.torsional_friction} '
+        fz = f' pos="0 0 {-FLOOR_BELOW_TERRAIN_M}"' if ter is not None else ""
+        L.append(f'<geom name="floor" type="plane"{fz} size="20 20 0.1" material="floor" friction="{p.floor_friction} {p.torsional_friction} '
                  f'{p.rolling_friction}" condim="4" solref="{p.floor_solref[0]} {p.floor_solref[1]}"/>')
+    if ter is not None:
+        tmu = ter.tile_friction(p.floor_friction)
+        for ty, (ylo, yhi) in enumerate(tile_slices()):
+            for tx, (xlo, xhi) in enumerate(tile_slices()):
+                cx, cy = -HALF_M + (xlo + xhi) / 2 * CELL_M, -HALF_M + (ylo + yhi) / 2 * CELL_M
+                L.append(f'<geom name="terr{ty}{tx}" type="hfield" hfield="t{ty}{tx}" pos="{cx} {cy} 0" friction="{tmu[ty, tx]} {p.torsional_friction} '
+                         f'{p.rolling_friction}" condim="4" solref="{p.floor_solref[0]} {p.floor_solref[1]}" rgba="{"0.42 0.36 0.28 1" if ter.tile_loose[ty, tx] else "0.30 0.34 0.38 1"}"/>')
     hh = p.extra.get("wall_half_h", 0.08)
     for i, (wx, wy, wyaw, wl) in enumerate(p.walls):
         L.append(f'<geom name="wall{i}" type="box" pos="{wx} {wy} {hh}" euler="0 0 {wyaw}" size="{wl} 0.01 {hh}" '
@@ -289,8 +310,17 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
     oh = p.extra.get("obstacle_half_h", 0.06)
     for i, (kind, ox, oy, oyaw, oa, ob) in enumerate(p.obstacles):
         shape = {"box": f'type="box" size="{oa} {ob} {oh}"', "cyl": f'type="cylinder" size="{oa} {oh}"', "ell": f'type="ellipsoid" size="{oa} {ob} {oh}"'}[kind]
-        L.append(f'<geom name="obs{i}" {shape} pos="{ox} {oy} {oh}" euler="0 0 {oyaw}" friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" '
+        oz = oh if ter is None else oh + ter.support_height(ox, oy, 0.0 if kind == "ell" else (oa if kind == "cyl" else float(np.hypot(oa, ob))))
+        L.append(f'<geom name="obs{i}" {shape} pos="{ox} {oy} {oz}" euler="0 0 {oyaw}" friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" '
                  f'condim="4" rgba=".85 .55 .25 1"/>')
+    if p.post is not None:
+        px, py = p.post
+        pz = (ter.support_height(px, py, POST_RADIUS_M) if ter is not None else 0.0) + POST_HEIGHT_M / 2
+        L.append(f'<geom name="post" type="cylinder" size="{POST_RADIUS_M} {POST_HEIGHT_M / 2}" pos="{px} {py} {pz}" friction="{p.floor_friction} {p.torsional_friction} '
+                 f'{p.rolling_friction}" condim="4" rgba=".9 .2 .2 1"/>')
+    if ter is not None:                                           # the lying body must not start inside the terrain (the start disk is flat, so normally 0)
+        foot = max(float(np.hypot(c[0], c[1])) for c in centres) + 0.15
+        z0 += ter.footprint_height(foot)
     root_pos = "" if p.hanging else f' pos="0 0 {z0:.6f}"'
     for k in range(nm):
         joint = ""
@@ -326,6 +356,17 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
     return "".join(L), z0
 
 
+def write_terrain(model: mujoco.MjModel, terrain: Terrain, floor_friction: float | None = None) -> None:
+    """Write ``terrain`` into a compiled model's heightfield tiles (and, if ``floor_friction`` is given, its tile friction)."""
+    for ty, (ylo, yhi) in enumerate(tile_slices()):
+        for tx, (xlo, xhi) in enumerate(tile_slices()):
+            hid = model.hfield(f"t{ty}{tx}").id
+            adr, n = int(model.hfield_adr[hid]), int(model.hfield_nrow[hid] * model.hfield_ncol[hid])
+            model.hfield_data[adr:adr + n] = (terrain.heights[ylo:yhi + 1, xlo:xhi + 1] / ELEV_MAX_M).ravel()
+            if floor_friction is not None:
+                model.geom_friction[model.geom(f"terr{ty}{tx}").id, 0] = terrain.tile_friction(floor_friction)[ty, tx]
+
+
 class PetSim:
     """Steps the PET model: delayed position targets, MuJoCo PD actuators with per-joint torque cap, optional free body."""
 
@@ -334,10 +375,24 @@ class PetSim:
         self.p = params or BuildParams()
         xml, self.z0 = build_mjcf(self.p)
         self.model = mujoco.MjModel.from_xml_string(xml)
+        if self.p.terrain is not None and not self.p.hanging:
+            write_terrain(self.model, self.p.terrain)
         self.data = mujoco.MjData(self.model)
         self._delay_steps = max(0, int(round(self.p.delay_s / self.p.dt)))
         self._buf: deque[np.ndarray] = deque()
         self.set_cap(np.array(self.p.cap_nm))
+        self.reset()
+        self._foot = float(np.max(np.hypot(self.data.xipos[1:, 0], self.data.xipos[1:, 1]))) + 0.15      # radius of the lying body about the origin (+margin)
+        self._z0_flat = self.z0 - (0.0 if self.p.terrain is None else self.p.terrain.footprint_height(self._foot))
+
+    def set_terrain(self, terrain: Terrain, floor_friction: float | None = None) -> None:
+        """Swap in a new terrain (heights, tile friction, start height) without rebuilding the model, then reset. The model must have been built with a terrain."""
+        if self.p.terrain is None:
+            raise ValueError("this sim was built without a terrain; build it with BuildParams(terrain=...)")
+        fr = self.p.floor_friction if floor_friction is None else floor_friction
+        write_terrain(self.model, terrain, fr)
+        self.p = BuildParams(**{**self.p.__dict__, "terrain": terrain, "floor_friction": fr})
+        self.z0 = self._z0_flat + terrain.footprint_height(self._foot)
         self.reset()
 
     def set_cap(self, cap_nm: np.ndarray) -> None:

@@ -25,6 +25,8 @@ from petctl.sim.model_builder import PetSim
 
 GLITCH_COM_SPEED = 3.0       # m/s; no real PET motion is anywhere near this, so it is a physics blow-up
 GLITCH_PENALTY = 300.0
+GLITCH_LAUNCH_M = 0.5        # terrain episodes: any module centre more than this above the local terrain is a launch (physics glitch)
+GLITCH_PENETRATION_M = 0.01  # terrain episodes: any contact deeper than this is a glitch
 DIST_OBS_SCALE_M = 1.0
 ROLL_WINDOW_S = 2.0          # a roll counts as continuous when the body keeps turning the same way over this window
 ROLL_RATE_CAP = 3.0          # rad/s at which the roll reward saturates
@@ -205,7 +207,7 @@ class GoalReach(Locomote):
         terms["roll"] = self.param("roll_weight", 0.0) * min(roll_rate, cap) / cap
         if self.param("roll_needs_progress", 0.0) > 0.0 and terms["progress"] <= 0.0:
             terms["roll"] = 0.0                                      # roll only pays while the head is actually closing on the goal (otherwise it spins in place)
-        if step / dt > GLITCH_COM_SPEED:
+        if step / dt > GLITCH_COM_SPEED or self._terrain_glitch(sim):
             self.glitch = True
             terms["glitch"] = -GLITCH_PENALTY
         else:
@@ -228,6 +230,18 @@ class GoalReach(Locomote):
                     self.reached = True
                     self.t_goal = self._t * dt
         return total + terms["goal"] + terms["glitch"] + terms["roll"] + terms["time"], terms
+
+    @staticmethod
+    def _terrain_glitch(sim: PetSim) -> bool:
+        """Terrain episodes only: a module launched more than ``GLITCH_LAUNCH_M`` above the local terrain, or a contact penetrating more than ``GLITCH_PENETRATION_M``."""
+        ter = sim.p.terrain
+        if ter is None:
+            return False
+        com = sim.data.xipos[1:]
+        if bool(np.any(com[:, 2] - ter.height_at(com[:, 0], com[:, 1]) > GLITCH_LAUNCH_M)):
+            return True
+        d = sim.data
+        return bool(d.ncon and np.min(d.contact.dist[:d.ncon]) < -GLITCH_PENETRATION_M)
 
     def terminated(self, sim: PetSim) -> bool:
         """End on arrival or on a physics blow-up."""

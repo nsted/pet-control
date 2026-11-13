@@ -10,9 +10,11 @@ from gymnasium import spaces
 
 from petctl.rl.config import EnvConfig
 from petctl.rl.domain_rand import sample_params
+from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot
 from petctl.rl.tasks import TASKS
 from petctl.sim.model_builder import BuildParams, PetSim
+from petctl.sim.terrain import START_RADIUS_M, generate_terrain
 
 SETTLE_S = 0.75
 
@@ -71,7 +73,25 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             fwd = s.data.site_xmat[s.model.site("head").id].reshape(3, 3)[:, 0].copy()
             fwd[2] = 0.0
             self._nom = (s.head_pos().copy(), fwd / max(np.linalg.norm(fwd), 1e-9))
+            self._foot = s._foot
         return self._nom
+
+    def _layout(self, seed: int | None) -> tuple[tuple, np.ndarray | None]:
+        """Static geometry for this episode: from the layout cache for training resets when ``layout_cache`` > 0, else sampled from the env rng (always for gate seeds)."""
+        head, heading = self._nominal_head()
+        if self.task.cacheable and self.task.param("layout_cache", 0.0) > 0 and uses_cache(seed):
+            cache = getattr(self, "_cache", None)
+            if cache is None:
+                cache = self._cache = LayoutCache(self.cfg, head, heading)
+
+            def make(rng: np.random.Generator) -> tuple[dict[str, object], np.ndarray]:
+                t = TASKS[self.cfg.task](self.cfg)
+                _, goal = t.layout(head, heading, rng)
+                return t.layout_state(), goal  # type: ignore[attr-defined, return-value]
+
+            state, goal = cache.get(int(self._rng.integers(cache.n)), make)
+            return self.task.restore_layout(state, goal)  # type: ignore[attr-defined, no-any-return]
+        return self.task.layout(head, heading, self._rng)
 
     def _up_dot(self) -> float:
         assert self.sim is not None
@@ -84,10 +104,20 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._rng = self.np_random
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
         self.task = TASKS[self.cfg.task](self.cfg)
-        walls, goal_xy = self.task.layout(*self._nominal_head(), self._rng)           # static geometry (walls) must exist before the sim is built
+        walls, goal_xy = self._layout(seed)                                           # static geometry (walls) must exist before the sim is built
         obstacles = getattr(self.task, "obstacles", ())
         if walls or obstacles:
             params = BuildParams(**{**params.__dict__, "walls": walls, "obstacles": tuple(obstacles)})
+        if self.task.param("post", 0.0) > 0.0:                                         # heavy immovable target post on the goal point
+            if goal_xy is None:
+                raise ValueError(f"task '{self.cfg.task}' lays out no target, so it cannot have a post")
+            params = BuildParams(**{**params.__dict__, "post": (float(goal_xy[0]), float(goal_xy[1]))})
+        level = self.task.param("terrain_level", 0.0)
+        if level > 0.0:                                                                 # per-episode heightfield terrain (flat start disk covers the body)
+            tseed = int(self._rng.integers(2 ** 31 - 1))
+            terrain = generate_terrain(level, tseed, max(START_RADIUS_M, self._foot))
+            params = BuildParams(**{**params.__dict__, "terrain": terrain})
+            self.privileged["terrain_level"], self.privileged["terrain_seed"] = float(level), float(tseed)
         self.sim = PetSim(params)
         dr = self.cfg.dr
         self._joint_off = self._rng.uniform(-dr.joint_offset_rad, dr.joint_offset_rad, self.cfg.n_joints) * dr.scale
@@ -109,6 +139,9 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             self.sim.step(q0, SETTLE_S)
         self.task.preset_goal = goal_xy
         self.task.reset(self.sim, self._rng)
+        post = self.task.post_pose(self.sim)
+        if post is not None:
+            self.privileged["post"] = post
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
         self._tgt = self.sim.joint_pos().copy() if amp > 0 else np.zeros(self.cfg.n_joints)
         self._prev_action = np.zeros(self.cfg.n_joints)
