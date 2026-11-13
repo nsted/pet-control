@@ -41,6 +41,31 @@ def burn_caption(frame: np.ndarray, text: str) -> np.ndarray:
     return np.asarray(img)
 
 
+VIDEO_BUDGET_PER_HOUR = 10                 # owner rule: at most this many videos per hour (override with PETCTL_VIDEO_FORCE=1 for an explicit owner request)
+_VIDEO_LOG = Path(__file__).resolve().parents[2] / "docs" / "media" / ".video_log.jsonl"
+
+
+def video_budget_ok(now: float | None = None) -> bool:
+    """True if fewer than ``VIDEO_BUDGET_PER_HOUR`` videos were rendered in the last hour (renders are logged to docs/media/.video_log.jsonl)."""
+    import os
+    import time as _t
+    if os.environ.get("PETCTL_VIDEO_FORCE") == "1":
+        return True
+    now = _t.time() if now is None else now
+    try:
+        stamps = [float(json.loads(line)["t"]) for line in _VIDEO_LOG.read_text().splitlines() if line.strip()]
+    except (OSError, ValueError, KeyError):
+        stamps = []
+    return sum(1 for t in stamps if now - t < 3600.0) < VIDEO_BUDGET_PER_HOUR
+
+
+def _log_video(out: Path) -> None:
+    import time as _t
+    _VIDEO_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with _VIDEO_LOG.open("a") as f:
+        f.write(json.dumps({"t": _t.time(), "file": str(out)}) + "\n")
+
+
 def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds: float | None = None, seed: int = 0,
                  dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (960, 540), task_params: dict[str, float] | None = None, base: Any = None,
                  distance: float = 0.9, azimuth: float = 130.0, label: str | None = None) -> dict[str, float]:
@@ -49,6 +74,8 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
     ``task_params`` overrides entries of the run's ``EnvConfig.task_params`` (e.g. force a mid-route goal change for a demo).
     Every frame carries a caption saying what was being trained (``label``, default derived from the stage/task of the run).
     """
+    if not video_budget_ok():
+        raise RuntimeError(f"video budget reached ({VIDEO_BUDGET_PER_HOUR}/hour); set PETCTL_VIDEO_FORCE=1 only for an explicit owner request")
     pol = GaitPolicy(run, policy_file)
     pol.cfg.dr.scale = dr_scale
     pol.cfg.task_params = {**pol.cfg.task_params, **(task_params or {})}
@@ -87,6 +114,7 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
         ff.stdin.write(burn_caption(rend.render(), f"{caption[:70]}  {tag}  t={t:4.1f}s").tobytes())
     ff.stdin.close()
     ff.wait()
+    _log_video(out)
     return {k: float(x) for k, x in info.get("metrics", {}).items()}
 
 

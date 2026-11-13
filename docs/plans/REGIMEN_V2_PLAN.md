@@ -334,3 +334,7 @@ Risks (R):
 | M6 | D1 + D2 hug passed; capacitive_off drop; delta-bias table; post-leak test | hug held >= 0.70 | 2-3 days |
 | M7 | E full course passed; final eval suite; videos; plan + log updated; skills banked in `models/skills/` | hug held >= 0.60 on terrain + field with all three ablations | 2-3 days |
 Total: ~3.5 weeks wall-clock, one job at a time; Fable effort concentrated at M1/M2 decisions, every gate verdict, and failed iterations.
+
+
+## Owner standing rule: videos
+Only the best video of each run (selected by the gate's best episode), never per-seed galleries or periodic progress clips, max 10 videos per hour overall, unless the owner requests more. Captions per the video-label rule remain. Enforced by a render-budget guard in `petctl/rl/video.py` (log of render times; `PETCTL_VIDEO_FORCE=1` for explicit owner requests).
