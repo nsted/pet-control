@@ -52,6 +52,7 @@ class BuildParams:
     urdf_dir: str | None = None             # PET_description folder from the Fusion export: use its meshes/joints for the lying model
     self_collide: bool = True               # module-vs-module contact (parent/child pairs are excluded by MuJoCo)
     max_hull_verts: int = 200
+    obstacles: tuple[tuple[str, float, float, float, float, float], ...] = ()    # scattered static obstacles: (kind 'box'|'cyl'|'ell', x, y, yaw, a, b); 12 cm tall. box: half extents a,b; cyl: radius a; ell: ellipsoid half axes a,b
     walls: tuple[tuple[float, float, float, float], ...] = ()    # static vertical walls: (centre x, centre y, yaw rad, half length m); 2 cm thick, 16 cm tall
     extra: dict[str, float] = field(default_factory=dict)
 
@@ -197,6 +198,11 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
     for i, (wx, wy, wyaw, wl) in enumerate(p.walls):
         L.append(f'<geom name="wall{i}" type="box" pos="{wx} {wy} {hh}" euler="0 0 {wyaw}" size="{wl} 0.01 {hh}" '
                  f'friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" condim="4" rgba=".7 .7 .75 1"/>')
+    oh = p.extra.get("obstacle_half_h", 0.06)
+    for i, (kind, ox, oy, oyaw, oa, ob) in enumerate(p.obstacles):
+        shape = {"box": f'type="box" size="{oa} {ob} {oh}"', "cyl": f'type="cylinder" size="{oa} {oh}"', "ell": f'type="ellipsoid" size="{oa} {ob} {oh}"'}[kind]
+        L.append(f'<geom name="obs{i}" {shape} pos="{ox} {oy} {oh}" euler="0 0 {oyaw}" friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" '
+                 f'condim="4" rgba=".85 .55 .25 1"/>')
     root_pos = "" if p.hanging else f' pos="0 0 {z0:.6f}"'
     for k in range(N_MODULES):
         joint = ""

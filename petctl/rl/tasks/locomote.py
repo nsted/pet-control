@@ -54,14 +54,14 @@ class Locomote(Task):
         bus = 0.6 + BUS_A_PER_NM2 * float(np.sum(tau ** 2))             # idle ~0.6 A + fitted per-motor quadratic
         up = sim.data.site_xmat[sim.model.site("imu").id].reshape(3, 3)[2, 2]
         terms = {
-            "progress": w.progress * float(np.clip(v_prog, -0.5, 0.5)),
+            "progress": self.param("progress_weight", w.progress) * float(np.clip(v_prog, -0.5, 0.5)),
             "energy": -w.energy * float(np.sum(tau ** 2)),
             "action_rate": -w.action_rate * float(np.sum((action - prev_action) ** 2)),
             "joint_acc": -w.joint_acc * float(np.sum(acc ** 2)),
             "saturation": -w.saturation * float(np.mean(np.abs(tau) >= 0.98 * cap)),
             "lateral": -w.lateral * abs(v_lat),
-            "yaw": -w.yaw * abs(float(sim.data.sensor("gyro").data[2])),
-            "tilt": -w.tilt * (1.0 - float(up)),
+            "yaw": -self.param("yaw_weight", w.yaw) * abs(float(sim.data.sensor("gyro").data[2])),
+            "tilt": -self.param("tilt_weight", w.tilt) * (1.0 - float(up)),
             "current": -w.current * max(0.0, bus - BUS_LIMIT_A),
             "alive": w.alive,
         }

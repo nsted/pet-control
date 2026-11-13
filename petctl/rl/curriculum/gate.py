@@ -39,7 +39,8 @@ def _condition(run: Path, stage: Stage, policy_file: str, dr_scale: float) -> di
     succ = np.array([m.get("success", 0.0) for m in rows])
     dist = np.array([m["distance"] for m in rows])
     ttg = [m["time_to_goal_s"] for m in rows if math.isfinite(m.get("time_to_goal_s", float("nan")))]
-    return {"dr_scale": dr_scale, "episodes": len(rows), "success_rate": float(succ.mean()), "distance_median": float(np.median(dist)),
+    med = {k: float(np.median([m[k] for m in rows if math.isfinite(m.get(k, float("nan")))] or [float("nan")])) for k in rows[0]}
+    return {"metric_median": med, "dr_scale": dr_scale, "episodes": len(rows), "success_rate": float(succ.mean()), "distance_median": float(np.median(dist)),
             "distance_q1": float(np.percentile(dist, 25)), "glitch_rate": float(np.mean([m.get("glitch", 0.0) for m in rows])),
             "time_to_goal_median_s": float(np.median(ttg)) if ttg else float("nan")}
 
@@ -51,6 +52,10 @@ def run_gate(run: Path, stage: Stage, policy_file: str = "policy.npz") -> dict[s
     reasons = []
     if robust["success_rate"] < stage.gate.min_success:
         reasons.append(f"robust success {robust['success_rate']:.2f} < {stage.gate.min_success:.2f}")
+    for k, v in stage.gate.min_median.items():
+        got = robust["metric_median"].get(k, float("nan"))
+        if not got >= v:
+            reasons.append(f"median {k} {got:.2f} < {v:.2f}")
     if robust["glitch_rate"] > stage.gate.max_glitch or nominal["glitch_rate"] > stage.gate.max_glitch:
         reasons.append("glitch episodes present")
     res = {"stage": stage.name, "run": str(run), "policy_file": policy_file, "passed": not reasons, "fail_reasons": reasons,

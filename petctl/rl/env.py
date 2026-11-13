@@ -83,8 +83,9 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
         self.task = TASKS[self.cfg.task](self.cfg)
         walls, goal_xy = self.task.layout(*self._nominal_head(), self._rng)           # static geometry (walls) must exist before the sim is built
-        if walls:
-            params = BuildParams(**{**params.__dict__, "walls": walls})
+        obstacles = getattr(self.task, "obstacles", ())
+        if walls or obstacles:
+            params = BuildParams(**{**params.__dict__, "walls": walls, "obstacles": tuple(obstacles)})
         self.sim = PetSim(params)
         dr = self.cfg.dr
         self._joint_off = self._rng.uniform(-dr.joint_offset_rad, dr.joint_offset_rad, N_JOINTS) * dr.scale

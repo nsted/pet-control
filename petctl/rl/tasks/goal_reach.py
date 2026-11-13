@@ -10,7 +10,7 @@ current head heading), ``goal_radius`` (m), ``success_bonus``, and for course ch
 from where the robot is when the previous is reached; 0 = unlimited, the episode never ends on arrival, used for interactive click-to-navigate),
 ``redirect_every_s`` (automatic target moves: while a goal is still unreached it jumps to a new random position, with random timing, on average every
 this many seconds and never closer than ``redirect_min_gap_s`` (default 5 s) apart; 0 = off) or the older single-shot ``redirect_prob`` (chance an episode
-moves the current goal once, at a random time in [``redirect_min_s``, ``redirect_max_s``]). ``start_pose_rad`` (random initial joint angles) is applied by the env.
+moves the current goal once, at a random time in [``redirect_min_s``, ``redirect_max_s``]). ``start_pose_rad`` (random initial joint angles) is applied by the env. ``allow_flip`` (default 1: episodes do not end when the body tips over; set 0 to restore flip termination). ``roll_weight`` rewards continuous rolling about the body's long axis (net IMU-gyro roll over 2 s, saturating at 3 rad/s); ``roll_turns`` in the metrics is the net number of revolutions.
 """
 
 from __future__ import annotations
@@ -19,12 +19,15 @@ from collections import deque
 
 import numpy as np
 
+from petctl.rl.obs import gravity_in_body
 from petctl.rl.tasks.locomote import Locomote
 from petctl.sim.model_builder import PetSim
 
 GLITCH_COM_SPEED = 3.0       # m/s; no real PET motion is anywhere near this, so it is a physics blow-up
 GLITCH_PENALTY = 300.0
 DIST_OBS_SCALE_M = 1.0
+ROLL_WINDOW_S = 2.0          # a roll counts as continuous when the body keeps turning the same way over this window
+ROLL_RATE_CAP = 3.0          # rad/s at which the roll reward saturates
 
 
 class GoalReach(Locomote):
@@ -52,6 +55,7 @@ class GoalReach(Locomote):
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Sample the goal relative to the initial heading and head position."""
         super().reset(sim, rng)
+        self.terminate_on_flip = self.param("allow_flip", 1.0) <= 0.0       # allow_flip=1: the body may tip over / roll; the episode no longer ends on it
         self.p0 = self._com(sim)
         n = max(1, int(round(self.cfg.progress_window_s * self.cfg.control_hz)))
         self._hist = deque([self.p0.copy()] * (n + 1), maxlen=n + 1)      # Locomote anchored the window on the head; this task tracks the CoM
@@ -68,6 +72,15 @@ class GoalReach(Locomote):
         self._spawn_goal(self._head(sim), first=True)
         self._last = self.p0.copy()
         self._t = 0
+        self._roll = 0.0                                    # roll angle about the body's long axis (rad), integrated from the IMU gyro (IMU x axis runs head->tail)
+        self._roll_abs = 0.0
+        self._roll_peak = 0.0
+        self._roll_ang: float | None = None
+        self._roll_gyro = 0.0
+        self._roll_head = 0.0
+        self._head_ang: float | None = None
+        n_roll = max(2, int(round(ROLL_WINDOW_S * self.cfg.control_hz)))
+        self._roll_hist: deque[float] = deque([0.0] * (n_roll + 1), maxlen=n_roll + 1)
         self.path_m = 0.0
         self.energy = 0.0
         self.reached = False
@@ -168,6 +181,30 @@ class GoalReach(Locomote):
         d = self._point_at_goal(head)
         total, terms = super().reward(sim, action, prev_action)
         terms["goal"] = terms["glitch"] = 0.0
+        terms["time"] = -self.param("time_penalty", 0.0) * dt          # per-second cost of not having arrived yet
+        # Roll about the long axis from the tail IMU's gravity direction (deployable: quaternion/accelerometer), unwrapped step by step. The
+        # earlier integral of gyro-x was exploitable (tail wobble gave 4.6 "turns" while the body never tipped); gyro is kept only as a diagnostic.
+        g = gravity_in_body(sim.data.sensor("quat").data)
+        ang = float(np.arctan2(g[1], g[2]))
+        dang = 0.0 if self._roll_ang is None else (ang - self._roll_ang + np.pi) % (2 * np.pi) - np.pi
+        self._roll_ang = ang
+        self._roll += dang
+        self._roll_abs += abs(dang)
+        self._roll_gyro += float(sim.data.sensor("gyro").data[0]) * dt
+        Rh = sim.data.xmat[sim.model.body("m0").id].reshape(3, 3)                       # ground truth (not observed): head module orientation
+        hang = float(np.arctan2(Rh[2, 1], Rh[2, 2]))
+        self._roll_head += 0.0 if self._head_ang is None else (hang - self._head_ang + np.pi) % (2 * np.pi) - np.pi
+        self._head_ang = hang
+        self._roll_hist.append(self._roll)
+        # Ratchet: pay only for NEW net roll, i.e. growth of the largest |cumulative roll| reached so far. Rocking back and forth (even through large
+        # angles) saturates at its amplitude and then earns nothing; only continuing in one direction keeps paying. (A windowed |net roll| paid for rocking.)
+        prev_peak = self._roll_peak
+        self._roll_peak = max(self._roll_peak, abs(self._roll))
+        roll_rate = (self._roll_peak - prev_peak) / dt
+        cap = self.param("roll_rate_cap", ROLL_RATE_CAP)
+        terms["roll"] = self.param("roll_weight", 0.0) * min(roll_rate, cap) / cap
+        if self.param("roll_needs_progress", 0.0) > 0.0 and terms["progress"] <= 0.0:
+            terms["roll"] = 0.0                                      # roll only pays while the head is actually closing on the goal (otherwise it spins in place)
         if step / dt > GLITCH_COM_SPEED:
             self.glitch = True
             terms["glitch"] = -GLITCH_PENALTY
@@ -181,7 +218,7 @@ class GoalReach(Locomote):
                 self._schedule_redirect(self._t * dt)
             if d <= self.radius:
                 self.goals_done += 1
-                terms["goal"] = self.bonus * (1.0 + (1.0 - self._t / max(1, int(round(self.cfg.episode_s * self.cfg.control_hz)))))
+                terms["goal"] = self.bonus * (1.0 + self.param("speed_gain", 1.0) * (1.0 - self._t / max(1, int(round(self.cfg.episode_s * self.cfg.control_hz)))))       # faster arrival pays more
                 self._banked += self._dist_start - d
                 self._dist_start = d                                                    # the leg's progress is banked; do not count it twice
                 if self.n_goals == 0 or self.goals_done < self.n_goals:
@@ -190,7 +227,7 @@ class GoalReach(Locomote):
                 else:
                     self.reached = True
                     self.t_goal = self._t * dt
-        return total + terms["goal"] + terms["glitch"], terms
+        return total + terms["goal"] + terms["glitch"] + terms["roll"] + terms["time"], terms
 
     def terminated(self, sim: PetSim) -> bool:
         """End on arrival or on a physics blow-up."""
@@ -200,5 +237,5 @@ class GoalReach(Locomote):
         """Episode-level numbers used by the curriculum watcher and gate."""
         d = self.distance(sim)
         return {"distance": d, "success": float(self.reached), "final_dist": self._to_goal(self._head(sim))[1], "dist0": self.dist0, "goals_reached": float(self.goals_done), "redirects": float(self.redirects),
-                "bearing0_deg": float(np.rad2deg(self.bearing0)), "time_to_goal_s": self.t_goal, "path": self.path_m,
+                "bearing0_deg": float(np.rad2deg(self.bearing0)), "time_to_goal_s": self.t_goal, "path": self.path_m, "roll_turns": abs(self._roll) / (2 * np.pi), "roll_abs_turns": self._roll_abs / (2 * np.pi), "roll_gyro_turns": abs(self._roll_gyro) / (2 * np.pi), "roll_head_turns": abs(self._roll_head) / (2 * np.pi),
                 "energy_per_m": self.energy / d if d > 1e-3 else float("inf"), "glitch": float(self.glitch)}

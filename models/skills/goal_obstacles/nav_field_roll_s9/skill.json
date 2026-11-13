@@ -1,0 +1,40 @@
+{
+ "id": "goal_obstacles/nav_field_roll_s9",
+ "task": "goal_obstacles",
+ "name": "nav_field_roll_s9",
+ "note": "S9 iter_02: field + roll_weight 3 from S8; gate nominal 0.675 / robust 0.75; roll unused (0.05 turns). Sim only.",
+ "created": "2026-11-13 09:19:36",
+ "score_label": "m towards goal",
+ "score": {
+  "nominal_median": 2.608350665269245,
+  "nominal_best": 2.940440244495351,
+  "robust_median": 2.162935493725188,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.5,
+   0.5
+  ],
+  "action_scale_rad": 1.0,
+  "action_ema": 0.3,
+  "max_target_step_rad": 0.35,
+  "episode_s": 120.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "data/rl/curriculum_fast/s9_field_roll/iter_02",
+  "policy_file": "policy.npz",
+  "steps": 3000000,
+  "wall_s": 1355.4360632896423,
+  "git": "5ab80e4"
+ },
+ "caveats": []
+}

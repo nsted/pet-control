@@ -15,6 +15,8 @@ import numpy as np
 from petctl.rl.config import N_JOINTS, EnvConfig
 
 
+TOUCH_MEMORY_S = (0.5, 3.0)       # time constants (s) of the running averages of the contact signals
+TOUCH_LONG_S = (10.0, 30.0)         # extra slow averages, appended after the touch block when the task sets touch_long
 TOUCH_ERR_SCALE = 3.0            # rad -> observation units for the commanded-minus-measured position error
 
 
@@ -51,14 +53,19 @@ class ObsBuilder:
         self.extra_dim = TASKS[cfg.task].extra_obs_dim
         self.touch = TASKS[cfg.task].touch_obs
         self.touch_off = float(cfg.task_params.get("touch_off", 0.0)) > 0.0          # ablation: zero the contact channels
-        self.size = 3 + 3 + N_JOINTS + N_JOINTS + N_JOINTS + cfg.history * N_JOINTS + self.extra_dim + (4 * N_JOINTS if self.touch else 0)
+        self.touch_long = self.touch and float(cfg.task_params.get("touch_long", 0.0)) > 0.0
+        self.size = 3 + 3 + N_JOINTS + N_JOINTS + N_JOINTS + cfg.history * N_JOINTS + self.extra_dim + (8 * N_JOINTS if self.touch else 0) + (4 * N_JOINTS if self.touch_long else 0)
         self._touch_prev = np.zeros(2 * N_JOINTS)
+        self._touch_ema = np.zeros((2, 2 * N_JOINTS))
+        self._touch_slow = np.zeros((2, 2 * N_JOINTS))
         self._pos: deque[np.ndarray] = deque(maxlen=cfg.pos_window + 1)
         self._act: deque[np.ndarray] = deque(maxlen=cfg.history)
 
     def reset(self, first: Snapshot) -> None:
         """Clear the histories using the first snapshot."""
         self._touch_prev = np.zeros(2 * N_JOINTS)
+        self._touch_ema = np.zeros((2, 2 * N_JOINTS))
+        self._touch_slow = np.zeros((2, 2 * N_JOINTS))
         self._pos.clear()
         self._act.clear()
         for _ in range(self.cfg.pos_window + 1):
@@ -80,6 +87,12 @@ class ObsBuilder:
         if self.touch:                                       # contact is inferred from the MIT reply: torque and tracking error, this tick and the previous one
             cur = np.concatenate([np.clip(snap.torque / np.maximum(snap.cap_nm, 1e-6), -1.5, 1.5), np.clip((snap.target - snap.joint_pos) * TOUCH_ERR_SCALE, -3.0, 3.0)])
             cur = np.zeros_like(cur) if self.touch_off else cur
-            parts.append(np.concatenate([cur, self._touch_prev]))
+            for k, tau in enumerate(TOUCH_MEMORY_S):                 # running averages over ~0.5 s and ~3 s: memory of where and how hard the body was blocked
+                self._touch_ema[k] += (self.dt / tau) * (cur - self._touch_ema[k])
+            parts.append(np.concatenate([cur, self._touch_prev, self._touch_ema[0], self._touch_ema[1]]))
             self._touch_prev = cur
+            if self.touch_long:                                  # 10 s / 30 s memory: what was already tried a while ago
+                for k, tau in enumerate(TOUCH_LONG_S):
+                    self._touch_slow[k] += (self.dt / tau) * (cur - self._touch_slow[k])
+                parts.append(np.concatenate(list(self._touch_slow)))
         return np.concatenate(parts).astype(np.float32)

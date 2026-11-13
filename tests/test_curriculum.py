@@ -272,13 +272,90 @@ def test_goal_wall_layout_and_touch_obs() -> None:
     assert 0.4 < np.hypot(wx - head[0], wy - head[1]) < 1.0 and half == 0.5          # between the head and the goal (1.5 m away)
     assert env.task.goal[0] > wx                                                      # goal is beyond the wall
     base = EnvConfig(task="goal_reach", task_params=dict(tp))
-    assert obs.shape[0] == PetEnv(base).observation_space.shape[0] + 28
+    assert obs.shape[0] == PetEnv(base).observation_space.shape[0] + 56
     for _ in range(40):
         obs, *_ = env.step(np.random.default_rng(0).uniform(-1, 1, 7))
-    assert np.abs(obs[-28:-14]).max() > 0.0
+    assert np.abs(obs[-56:-42]).max() > 0.0
     cfg_off = EnvConfig(task="goal_wall", task_params={**tp, "touch_off": 1.0})
     e2 = PetEnv(cfg_off)
     o2, _ = e2.reset(seed=3)
     for _ in range(40):
         o2, *_ = e2.step(np.random.default_rng(0).uniform(-1, 1, 7))
-    assert np.all(o2[-28:] == 0.0)
+    assert np.all(o2[-56:] == 0.0)
+
+
+def test_allow_flip_does_not_end_episode() -> None:
+    """With allow_flip the task no longer terminates when the tail IMU tips over; without it, it does."""
+    from petctl.rl.config import EnvConfig
+    from petctl.rl.env import PetEnv
+
+    for allow, expect_end in ((0.0, True), (1.0, False)):
+        env = PetEnv(EnvConfig(task="goal_reach", task_params={"allow_flip": allow}))
+        env.reset(seed=1)
+        env.sim.data.qpos[3:7] = [0.7071, 0.7071, 0.0, 0.0]          # roll the root 90 degrees
+        import mujoco
+        mujoco.mj_forward(env.sim.model, env.sim.data)
+        env.sim.data.qvel[:] = 0
+        assert env.task.terminate_on_flip is (not allow)
+
+
+def test_goal_wall_shortest_path_and_stall() -> None:
+    """Shaping follows the way round the wall (first waypoint is a wall end); a policy that stands still is stopped by the stall rule."""
+    from petctl.rl.config import EnvConfig
+    from petctl.rl.env import PetEnv
+
+    tp = {"goal_dist_min": 1.5, "goal_dist_max": 1.5, "wall_len_min": 0.5, "wall_len_max": 0.5, "wall_offset": 0.0, "stall_s": 5.0}
+    env = PetEnv(EnvConfig(task="goal_wall", task_params=tp, episode_s=60.0))
+    env.reset(seed=2)
+    head = env.task._head(env.sim)
+    d, wp = env.task.path_dist(head)
+    straight = float(np.linalg.norm((env.task.goal - head)[:2]))
+    assert d > straight + 0.2                                       # blocked: the way round is longer than the straight line
+    assert abs(wp[1]) > 0.4 and wp[0] > 0.0                         # first waypoint is a wall end, off to one side (wall centred on the line, half length 0.5 + margin)
+    assert np.allclose(env.task.heading[:2], (wp - head)[:2] / np.linalg.norm((wp - head)[:2]), atol=1e-6)
+    end, steps = False, 0
+    while not end and steps < 400:
+        _, _, term, trunc, _ = env.step(np.zeros(7))
+        end, steps = term or trunc, steps + 1
+    assert end and 100 <= steps < 200                               # ~5 s of no progress at 20 Hz, well before the 60 s limit
+
+
+def test_roll_metric_counts_net_revolutions() -> None:
+    """Spinning the root about the body's long axis registers as net roll turns; the roll reward term is logged."""
+    from petctl.rl.config import EnvConfig
+    from petctl.rl.env import PetEnv
+
+    env = PetEnv(EnvConfig(task="goal_reach", task_params={"allow_flip": 1.0, "roll_weight": 5.0, "goal_dist_min": 5.0, "goal_dist_max": 5.0}))
+    env.reset(seed=0)
+    env.sim.model.opt.gravity[:] = 0.0                               # float the robot free of the floor so it spins about its long axis unimpeded
+    env.sim.data.qpos[2] += 1.0
+    for _ in range(40):
+        env.sim.data.qvel[3] = 2.0                                   # free-joint angular velocity about the body x (long) axis
+        _, _, _, _, info = env.step(np.zeros(7))
+    assert info["metrics"]["roll_turns"] > 0.2 and info["terms"]["roll"] > 0.0
+
+
+def test_goal_obstacles_layout_and_path() -> None:
+    """Scattered obstacles are built as geoms, keep the start and goal clear, leave a way through, and the shaping direction points along the shortest path."""
+    from petctl.rl.config import EnvConfig
+    from petctl.rl.env import PetEnv
+
+    tp = {"goal_dist_min": 2.2, "goal_dist_max": 2.2, "n_obs_min": 6, "n_obs_max": 6, "stall_s": 8.0}
+    env = PetEnv(EnvConfig(task="goal_obstacles", task_params=tp, episode_s=60.0))
+    for seed in range(5):
+        obs, _ = env.reset(seed=seed)
+        o = env.sim.p.obstacles
+        assert 1 <= len(o) <= 6 and env.sim.model.ngeom >= len(o)
+        head, goal = env.task._head(env.sim), env.task.goal
+        assert all(np.hypot(x - goal[0], y - goal[1]) > 0.28 for _, x, y, _, _, _ in o)
+        assert all(np.hypot(x - head[0], y - head[1]) > 0.5 for _, x, y, _, _, _ in o)
+        pd = env.task._field.value(head[:2])
+        assert np.isfinite(pd) and pd >= np.linalg.norm((goal - head)[:2]) - 0.1
+        h = env.task.heading
+        assert abs(np.linalg.norm(h) - 1.0) < 1e-6 or np.linalg.norm(h) == 0.0
+        assert obs.shape[0] == PetEnv(EnvConfig(task="goal_reach")).observation_space.shape[0] + 56
+    end, steps = False, 0
+    while not end and steps < 400:
+        _, _, term, trunc, _ = env.step(np.zeros(7))
+        end, steps = term or trunc, steps + 1
+    assert end and steps < 300                                       # stall rule stops a robot that does not move (8 s ~ 160 steps)

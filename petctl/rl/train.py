@@ -92,8 +92,8 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0)
     model: Any
     if algo == "ppo":
-        model = sb3.PPO("MlpPolicy", venv, n_steps=256, batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=0.99, gae_lambda=0.95,
-                        clip_range=0.2, ent_coef=ent_coef, learning_rate=lambda f: 3e-4 * f, seed=seed, verbose=1,
+        model = sb3.PPO("MlpPolicy", venv, n_steps=int(os.environ.get("PETCTL_NSTEPS", "256")), batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=float(os.environ.get("PETCTL_GAMMA", "0.99")), gae_lambda=0.95,
+                        clip_range=0.2, ent_coef=ent_coef, learning_rate=lambda f: float(os.environ.get("PETCTL_LR", "3e-4")) * f, seed=seed, verbose=1,
                         policy_kwargs={"net_arch": [256, 256], "log_std_init": -1.0}, tensorboard_log=str(out / "tb"))
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))

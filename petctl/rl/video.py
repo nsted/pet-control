@@ -18,12 +18,36 @@ MEDIA_DIR = Path("docs/media")
 SESSIONS_DIR = MEDIA_DIR / "sessions"
 
 
+def training_label(run: Path, task: str) -> str:
+    """Human-readable "what was being trained" for a run directory: stage name + description when the run belongs to a curriculum stage."""
+    stage = run.parent.name
+    try:
+        from petctl.rl.curriculum.stages import STAGES
+
+        st = STAGES[stage] if isinstance(STAGES, dict) else next(x for x in STAGES if x.name == stage)
+        return f"{st.name} ({run.name}): {st.description}"
+    except Exception:  # noqa: BLE001 - not a curriculum run
+        return f"{run.parent.name}/{run.name}: task={task}"
+
+
+def burn_caption(frame: np.ndarray, text: str) -> np.ndarray:
+    """Return ``frame`` (H,W,3 uint8) with a dark banner and ``text`` along the top."""
+    from PIL import Image, ImageDraw
+
+    img = Image.fromarray(np.ascontiguousarray(frame))
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle([0, 0, img.width, 22], fill=(0, 0, 0, 170))
+    d.text((6, 5), text[:int(img.width / 6.2)], fill=(255, 255, 255, 255))
+    return np.asarray(img)
+
+
 def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds: float | None = None, seed: int = 0,
                  dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (960, 540), task_params: dict[str, float] | None = None, base: Any = None,
-                 distance: float = 0.9, azimuth: float = 130.0) -> dict[str, float]:
+                 distance: float = 0.9, azimuth: float = 130.0, label: str | None = None) -> dict[str, float]:
     """Roll out ``run/policy_file`` deterministically for one episode, write an MP4 to ``out``, return the episode metrics.
 
     ``task_params`` overrides entries of the run's ``EnvConfig.task_params`` (e.g. force a mid-route goal change for a demo).
+    Every frame carries a caption saying what was being trained (``label``, default derived from the stage/task of the run).
     """
     pol = GaitPolicy(run, policy_file)
     pol.cfg.dr.scale = dr_scale
@@ -38,6 +62,7 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
     cam = mujoco.MjvCamera()
     cam.distance, cam.elevation, cam.azimuth = distance, -35, azimuth
     out.parent.mkdir(parents=True, exist_ok=True)
+    caption = label or training_label(run, pol.cfg.task)
     ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps),
                            "-i", "-", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out)], stdin=subprocess.PIPE)
     assert ff.stdin is not None
@@ -51,8 +76,15 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
             cam.lookat[:] = env.sim.data.subtree_com[1]
             rend.update_scene(env.sim.data, camera=cam)
             draw_markers(rend.scene, env.task.markers(env.sim))
-            ff.stdin.write(np.ascontiguousarray(rend.render()).tobytes())
+            ff.stdin.write(burn_caption(rend.render(), f"{caption[:92]}  t={t:4.1f}s").tobytes())
             next_frame += frame_dt
+    reached = bool(getattr(env.task, "reached", False))
+    tag = "TARGET REACHED" if reached else "episode ended (target not reached)"
+    for _ in range(2 * fps):                                    # hold the final state for 2 s: the episode ends the moment the target is reached, so the green marker would otherwise flash by
+        cam.lookat[:] = env.sim.data.subtree_com[1]
+        rend.update_scene(env.sim.data, camera=cam)
+        draw_markers(rend.scene, env.task.markers(env.sim))
+        ff.stdin.write(burn_caption(rend.render(), f"{caption[:70]}  {tag}  t={t:4.1f}s").tobytes())
     ff.stdin.close()
     ff.wait()
     return {k: float(x) for k, x in info.get("metrics", {}).items()}
@@ -67,7 +99,7 @@ def record_best_video(run: Path, media_dir: Path = MEDIA_DIR) -> Path | None:
         best = run / "best.json"
         policy_file = "best_policy.npz" if (run / "best_policy.npz").exists() else "policy.npz"
         ep = json.loads(best.read_text()).get("episode", "x") if best.exists() else "final"
-        out = media_dir / f"{run.name}_best_ep{ep}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        out = media_dir / f"{run.parent.name}_{run.name}_best_ep{ep}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
         m = record_video(run, out, policy_file)
         print(f"[video] {out}  " + "  ".join(f"{k}={v:.3f}" for k, v in m.items()), flush=True)
         return out
