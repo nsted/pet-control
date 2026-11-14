@@ -41,6 +41,12 @@ class DomainRand:
     cap_fn: tuple[float, float] = (0.02, 0.05)              # per-face false negative
     cap_fp: tuple[float, float] = (0.005, 0.005)            # per-face false positive
     cap_pressure_noise: tuple[float, float] = (0.10, 0.10)  # relative 1-sigma
+    reply_noise_mult: tuple[float, float] = (0.5, 2.0)      # motor-reply torque noise multiplier (log-uniform about 1), task knob reply_dr, assumption A3
+    reply_delay_ticks: tuple[float, float] = (1.0, 2.0)     # reply-frame delay in control ticks (rounded)
+    reply_drop: float = 0.05                                 # probability a reply frame is dropped (previous value held); scaled by ``scale``
+    delta_bias_m: tuple[float, float] = (0.0, 0.05)         # head-frame goal-delta localiser bias magnitude (task knob delta_frame), plan sec 2
+    delta_noise_m: tuple[float, float] = (0.01, 0.02)       # per-tick 1-sigma noise per horizontal axis
+    delta_delay_s: tuple[float, float] = (0.0, 0.15)
 
 
 @dataclass

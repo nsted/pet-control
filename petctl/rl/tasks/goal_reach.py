@@ -28,6 +28,7 @@ GLITCH_PENALTY = 300.0
 GLITCH_LAUNCH_M = 0.5        # terrain episodes: any module centre more than this above the local terrain is a launch (physics glitch)
 GLITCH_PENETRATION_M = 0.01  # terrain episodes: any contact deeper than this is a glitch
 DIST_OBS_SCALE_M = 1.0
+NEAR_FIELD_M = 0.3           # head-frame delta: near-field distance channel = min(d, this) / this
 ROLL_WINDOW_S = 2.0          # a roll counts as continuous when the body keeps turning the same way over this window
 ROLL_RATE_CAP = 3.0          # rad/s at which the roll reward saturates
 
@@ -41,6 +42,13 @@ class GoalReach(Locomote):
     name = "goal_reach"
     score_label = "m towards goal"
     extra_obs_dim = 4            # unit goal direction in the IMU frame (3) + distance / 1 m clipped to [0, 2]
+    # Knob ``delta_frame`` > 0 (default 0 = the above): head-frame delta, 5 entries = unit vector head->goal in the HEAD frame (3), far field
+    # min(d / 1 m, 2), near field min(d, 0.3 m) / 0.3 m; with the delta DR of the plan (knobs ``delta_dr`` default 1, ``delta_bias_m`` fixed bias magnitude).
+
+    @classmethod
+    def extra_dim(cls, params: dict[str, float]) -> int:
+        """4 entries (tail-IMU-frame goal), or 5 with ``delta_frame`` > 0 (head-frame delta + near-field distance)."""
+        return cls.extra_obs_dim + (1 if float(params.get("delta_frame", 0.0)) > 0.0 else 0)
 
     @staticmethod
     def _com(sim: PetSim) -> np.ndarray:
@@ -89,6 +97,22 @@ class GoalReach(Locomote):
         self.glitch = False
         self.t_goal = float("nan")
         self._point_at_goal(self._head(sim))
+        self._delta_head = self.param("delta_frame", 0.0) > 0.0
+        if self._delta_head:                                                          # separate rng so existing configs keep their random stream
+            self._init_delta_dr(int(rng.integers(2 ** 31 - 1)))
+
+    def _init_delta_dr(self, seed: int) -> None:
+        """Sample this episode's localiser bias / noise / delay for the head-frame delta (all scaled by ``dr.scale``; zero at scale 0)."""
+        dr, s = self.cfg.dr, self.cfg.dr.scale
+        r = self._drng = np.random.default_rng(seed)
+        mag = self.param("delta_bias_m", -1.0)
+        mag = float(r.uniform(*dr.delta_bias_m) * s) if mag < 0.0 else mag                     # knob delta_bias_m >= 0 fixes the magnitude (bias-perturbation eval)
+        ang = float(r.uniform(0.0, 2 * np.pi))
+        self._d_bias = mag * np.array([np.cos(ang), np.sin(ang), 0.0])
+        self._d_sigma = float(r.uniform(*dr.delta_noise_m) * s)
+        self._d_delay = int(round(float(r.uniform(*dr.delta_delay_s)) * s * self.cfg.control_hz))
+        self._d_on = self.param("delta_dr", 1.0) > 0.0
+        self._d_hist: deque[np.ndarray] = deque(maxlen=self._d_delay + 1)
 
     def _spawn_goal(self, origin: np.ndarray, first: bool = False, sim: PetSim | None = None) -> None:
         """Sample a goal from ``origin`` (the head position) at a random distance and bearing about the current head heading (initial heading for the first)."""
@@ -156,10 +180,26 @@ class GoalReach(Locomote):
         return d
 
     def extra_obs(self, sim: PetSim) -> np.ndarray:
-        """Goal direction in the IMU frame and the (clipped) distance."""
+        """Goal direction in the IMU frame and the (clipped) distance; with ``delta_frame`` the head-frame delta (see class docstring)."""
+        if self._delta_head:
+            return self._delta_obs(sim)
         u, d = self._to_goal(self._head(sim))
         r = sim.data.site_xmat[sim.model.site("imu").id].reshape(3, 3)
         return np.concatenate([r.T @ u, [min(d / DIST_OBS_SCALE_M, 2.0)]]).astype(np.float32)
+
+    def _delta_obs(self, sim: PetSim) -> np.ndarray:
+        """Head-frame delta: horizontal world vector head->goal (after delay, bias, noise) as a unit vector in the head frame + far and near distances."""
+        v = self.goal - self._head(sim)
+        v[2] = 0.0
+        if self._d_on:
+            if not self._d_hist:
+                self._d_hist.extend([v.copy()] * self._d_hist.maxlen)                 # type: ignore[arg-type]
+            self._d_hist.append(v.copy())
+            v = self._d_hist[0] + self._d_bias
+            v[:2] += self._drng.normal(0.0, self._d_sigma, 2)
+        d = float(np.linalg.norm(v))
+        r = sim.data.site_xmat[sim.model.site("head").id].reshape(3, 3)
+        return np.concatenate([r.T @ (v / max(d, 1e-9)), [min(d / DIST_OBS_SCALE_M, 2.0), min(d, NEAR_FIELD_M) / NEAR_FIELD_M]]).astype(np.float32)
 
     def markers(self, sim: PetSim) -> list[tuple[np.ndarray, float, tuple[float, float, float, float]]]:
         """A red ball of the success radius on the floor at the goal (turns green once reached)."""

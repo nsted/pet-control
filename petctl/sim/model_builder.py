@@ -24,6 +24,7 @@ import numpy as np
 
 from petctl.config import MOTOR_LIMITS
 from petctl.gravity_model import A, G, P, Q, ghat
+from petctl.sim.bus import BusClamp
 from petctl.sim.mujoco_model import COULOMB_NM, MODULE_MASS_KG, PEAK_TORQUE_NM
 from petctl.sim.terrain import BASE_M, CELL_M, ELEV_MAX_M, HALF_M, Terrain, tile_slices
 
@@ -380,6 +381,7 @@ class PetSim:
         self.data = mujoco.MjData(self.model)
         self._delay_steps = max(0, int(round(self.p.delay_s / self.p.dt)))
         self._buf: deque[np.ndarray] = deque()
+        self.bus: BusClamp | None = None                    # optional petctl.sim.bus.BusClamp (per-robot current estimate / spike clamp); None = off
         self.set_cap(np.array(self.p.cap_nm))
         self.reset()
         self._foot = float(np.max(np.hypot(self.data.xipos[1:, 0], self.data.xipos[1:, 1]))) + 0.15      # radius of the lying body about the origin (+margin)
@@ -428,7 +430,11 @@ class PetSim:
             if len(self._buf) > self._delay_steps:
                 self._last_target = self._buf.popleft()
             self.data.ctrl[:] = self._last_target
+            if self.bus is not None:
+                self.bus.before(self.model, self.data)
             mujoco.mj_step(self.model, self.data)
+            if self.bus is not None:
+                self.bus.after(self.model, self.data)
 
     def joint_torque(self) -> np.ndarray:
         """Applied actuator torque (N.m) at the last step."""

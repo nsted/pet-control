@@ -24,6 +24,11 @@ class Task(ABC):
         """Store the env config (reward weights, control rate)."""
         self.cfg = cfg
 
+    @classmethod
+    def extra_dim(cls, params: dict[str, float]) -> int:
+        """Length of the task-specific observation block for the given task knobs (``extra_obs_dim`` unless a knob changes it)."""
+        return cls.extra_obs_dim
+
     def param(self, key: str, default: float) -> float:
         """A task knob from ``EnvConfig.task_params`` (falls back to ``default``)."""
         return float(self.cfg.task_params.get(key, default))

@@ -59,7 +59,7 @@ class ObsBuilder:
         self.dt = 1.0 / cfg.control_hz
         from petctl.rl.tasks import TASKS            # local import: tasks import the sim, which obs consumers may not need
 
-        self.extra_dim = TASKS[cfg.task].extra_obs_dim
+        self.extra_dim = TASKS[cfg.task].extra_dim(cfg.task_params)
         self.touch = TASKS[cfg.task].touch_obs
         self.touch_off = float(cfg.task_params.get("touch_off", 0.0)) > 0.0          # ablation: zero the contact channels
         self.touch_long = self.touch and float(cfg.task_params.get("touch_long", 0.0)) > 0.0

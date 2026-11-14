@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from petctl.config import REGIMEN_BUS_MEAN_A, REGIMEN_BUS_PEAK_A
 from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
-from petctl.rl.config import EnvConfig
-from petctl.rl.domain_rand import sample_params
+from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
+from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot
 from petctl.rl.tasks import TASKS
+from petctl.sim.bus import BusClamp
 from petctl.sim.model_builder import BuildParams, PetSim
 from petctl.sim.terrain import START_RADIUS_M, generate_terrain
 
 SETTLE_S = 0.75
+BUS_MEAN_WINDOW_S = 2.0                # running-mean window of the bus-current penalty (plan sec 5.5)
 
 
 def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -57,6 +61,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.sim: PetSim | None = None
         self._cap_out: tuple[np.ndarray, np.ndarray] | None = None
         self.cap_sensor: CapacitiveSensor | None = None
+        self._reply_mult, self._reply_buf = 1.0, None
+        self.bus: BusClamp | None = None
 
     # ------------------------------------------------------------------ helpers
     def _snapshot(self) -> Snapshot:
@@ -66,9 +72,31 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         pos = self.sim.joint_pos() + self._joint_off + rng.normal(0, dr.pos_noise_rad * dr.scale, self.cfg.n_joints)
         quat = _qmul(self._tilt, d.sensor("quat").data.copy())
         gyro = d.sensor("gyro").data + rng.normal(0, dr.gyro_noise * dr.scale, 3)
-        trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM, self.cfg.n_joints), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
+        trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM * self._reply_mult, self.cfg.n_joints), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
+        if self._reply_buf is not None:                                               # reply-frame DR (knob reply_dr): delay of 1-2 ticks, dropped frames hold the last delivered value
+            if not self._reply_buf:
+                self._reply_buf.extend([trq] * self._reply_buf.maxlen)               # type: ignore[arg-type]
+                self._reply_last = trq
+            self._reply_buf.append(trq)
+            out = self._reply_buf[0]
+            trq = self._reply_last if self._reply_rng.random() < self._reply_drop else out
+            self._reply_last = trq
         return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy(),
                         None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]))
+
+    def _init_reply_dr(self) -> None:
+        """Per-episode reply-frame DR (task knob ``reply_dr``, assumption A3): torque-noise multiplier x0.5-2, 1-2 tick delay, 5% dropped frames, all scaled by ``dr.scale``."""
+        self._reply_mult, self._reply_buf = 1.0, None
+        if self.task.param("reply_dr", 0.0) <= 0.0:
+            return
+        dr, s = self.cfg.dr, self.cfg.dr.scale
+        r = self._reply_rng = np.random.default_rng(int(self._rng.integers(2 ** 31 - 1)))        # separate stream: knob off leaves the env rng untouched
+        lo, hi = dr.reply_noise_mult
+        self._reply_mult = float(np.exp(s * r.uniform(np.log(lo), np.log(hi))))
+        delay = int(round(_u(r, *dr.reply_delay_ticks, s, mid=dr.reply_delay_ticks[0])))
+        self._reply_drop = dr.reply_drop * s
+        self._reply_buf = deque(maxlen=delay + 1)
+        self._reply_last = np.zeros(self.cfg.n_joints)
 
     def _nominal_head(self) -> tuple[np.ndarray, np.ndarray]:
         """Head position and forward direction (floor plane) of the robot lying at the zero pose; where tasks lay out world geometry."""
@@ -153,6 +181,14 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             self.cap_sensor = CapacitiveSensor(n, self.dt, sample_cap_params(self.cfg.dr, self._rng, training), np.random.default_rng(int(self._rng.integers(2 ** 31 - 1))),
                                                enabled=PostProbe.of(self.sim) is not None)
             self._cap_out = (np.zeros((n, 3)), np.zeros((n, 3)))
+        self._init_reply_dr()
+        self.bus = None
+        if self.task.param("bus_model", 0.0) > 0.0 or self.task.param("bus_penalty", 0.0) > 0.0:       # per-robot current model, spike clamp and metrics (plan sec 5.5); off by default
+            self.bus = self.sim.bus = BusClamp(self.sim.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=self.task.param("bus_clamp", 1.0) > 0.0)
+            self._bus_win: deque[float] = deque(maxlen=max(1, int(round(BUS_MEAN_WINDOW_S * self.cfg.control_hz))))
+            self._bus_means: list[float] = []
+            self._bus_peak = self._bus_peak_applied = 0.0
+            self._bus_over = 0
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
         self._tgt = self.sim.joint_pos().copy() if amp > 0 else np.zeros(self.cfg.n_joints)
         self._prev_action = np.zeros(self.cfg.n_joints)
@@ -174,6 +210,16 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             raise FloatingPointError("simulation diverged (NaN)")
         self.obs_builder.push_action(a)
         reward, terms = self.task.reward(self.sim, a, self._prev_action)
+        if self.bus is not None:
+            tick = self.bus.end_tick()
+            self._bus_win.append(tick["mean"])
+            self._bus_means.append(tick["mean"])
+            self._bus_peak, self._bus_peak_applied = max(self._bus_peak, tick["peak"]), max(self._bus_peak_applied, tick["applied_peak"])
+            self._bus_over += int(tick["over"])
+            pen = self.task.param("bus_penalty", 0.0)
+            if pen > 0.0:                                                                 # penalty on the 2 s running mean above the 4 A budget
+                terms["bus"] = -pen * max(0.0, float(np.mean(self._bus_win)) - REGIMEN_BUS_MEAN_A)
+                reward += terms["bus"]
         self._prev_action = a
         self._t += 1
         if self.cap_sensor is not None:
@@ -186,6 +232,9 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}
         if hasattr(self.task, "metrics"):
             info["metrics"] = self.task.metrics(self.sim)
+        if self.bus is not None:
+            info.setdefault("metrics", {}).update({"bus_mean_a": float(np.mean(self._bus_means)), "bus_peak_a": self._bus_peak, "bus_peak_applied_a": self._bus_peak_applied,
+                                                   "frac_ticks_over_10a": self._bus_over / len(self._bus_means)})
         if (terminated or truncated) and hasattr(self.task, "pose"):
             info["pose"] = self.task.pose()
         return self.obs_builder.build(self._snapshot()), reward, terminated, truncated, info

@@ -26,6 +26,11 @@ class GoalSequence(GoalReach):
     score_label = "m towards targets"
     extra_obs_dim = 8            # current target (dir 3 + dist) and next target (dir 3 + dist, zeros when there is none)
 
+    @classmethod
+    def extra_dim(cls, params: dict[str, float]) -> int:
+        """Always 8 (the head-frame delta knob applies to goal_reach and its single-target subclasses only)."""
+        return cls.extra_obs_dim
+
     def param(self, key: str, default: float) -> float:
         """Task knob with this task's own defaults (4 targets)."""
         return super().param(key, 4.0 if key == "n_goals" else default)
