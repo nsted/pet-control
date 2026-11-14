@@ -130,11 +130,11 @@ def warm_start(model: Any, venv: Any, src: Path, new_cfg: EnvConfig | None = Non
 
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
           ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None, asymmetric: bool = False,
-          extra_callbacks: list[Any] | None = None, warm_copy_ret: bool = False) -> Path:
+          extra_callbacks: list[Any] | None = None, warm_copy_ret: bool = False, log_std_init: float | None = None) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``.
 
     ``init_from``: a PPO run directory to warm-start from (see ``warm_start``). ``video=False`` skips the end-of-run video in docs/media. ``stop_when_gate_passes``: a curriculum ``Stage``; training stops as soon as its gate passes.
-    ``warm_copy_ret``: with ``init_from``, also copy the reward-normalisation statistics (continuing the same task). ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
+    ``warm_copy_ret``: with ``init_from``, also copy the reward-normalisation statistics (continuing the same task). ``log_std_init``: initial policy log-std (default -1.0; with ``init_from`` it is re-applied after the warm start, which would otherwise copy the source's). ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
     """
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
@@ -154,7 +154,7 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     if asymmetric and algo != "ppo":
         raise ValueError("asymmetric critic is implemented for PPO only")
     policy: Any = "MlpPolicy"
-    pkw: dict[str, Any] = {"net_arch": [256, 256], "log_std_init": -1.0}
+    pkw: dict[str, Any] = {"net_arch": [256, 256], "log_std_init": -1.0 if log_std_init is None else float(log_std_init)}
     if asymmetric:
         from petctl.rl.asym import AsymActorCriticPolicy
         policy, pkw = AsymActorCriticPolicy, {**pkw, "n_policy": PetEnv(cfg).observation_space.shape[0]}
@@ -166,6 +166,8 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
     if init_from is not None:
         print(f"[warm-start] from {init_from}: {warm_start(model, venv, init_from, cfg, asymmetric, warm_copy_ret)}", flush=True)
+        if log_std_init is not None:
+            model.policy.log_std.data.fill_(float(log_std_init))
     t0 = time.time()
     callback: Any
     if cfg.task in ("reach_still", "jump"):

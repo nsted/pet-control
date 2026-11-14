@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from petctl.rl.hug import HugMixin
-from petctl.rl.hug_start import MODES, arrange_coil, mix_probs, mix_switched, sample_start_mode
+from petctl.rl.hug_start import MIX_V3_EARLY, MIX_V3_LATE, MODES, PERTURB_V3_EARLY, PERTURB_V3_LATE, arrange_coil, mix_probs, mix_switched, sample_start_mode
 from petctl.rl.tasks.goal_obstacles import DistanceField, GoalObstacles
 from petctl.rl.tasks.goal_reach import GLITCH_PENALTY, GLITCH_PENETRATION_M
 from petctl.sim.model_builder import POST_RADIUS_M, PetSim
@@ -28,6 +28,7 @@ class GoalHug(HugMixin, GoalObstacles):
     _start_mode = "straight"
     _start_placed = False
     _mode_params: dict[str, float] = {}
+    _v3_switched = False
 
     def param(self, key: str, default: float) -> float:
         """Task knob with this task's own defaults (``post`` is on); the start mode of this episode overrides the layout knobs."""
@@ -41,7 +42,11 @@ class GoalHug(HugMixin, GoalObstacles):
         self._start_mode, self._mode_params, self._start_placed = "straight", {}, False
         if self.param("hug_start_mix", 0.0) > 0.0:
             switched = self.param("hug_mix_switched", 0.0) > 0.0 or mix_switched()
-            self._start_mode = sample_start_mode(rng, *mix_probs(switched))
+            self._v3_switched = switched
+            if self.param("hug_mix_v3", 0.0) > 0.0:                                          # hug v3: coil-heavy phase 1 (70/30/0), phase 2 30/30/40
+                self._start_mode = sample_start_mode(rng, *(MIX_V3_LATE if switched else MIX_V3_EARLY))
+            else:
+                self._start_mode = sample_start_mode(rng, *mix_probs(switched))
             if self.param("hug_force_mode", 0.0) > 0.0:                                       # tests / scripted-policy checks: 1 = coil, 2 = half, 0 = draw
                 self._start_mode = MODES[int(self.param("hug_force_mode", 0.0))]
             if self._start_mode == "straight":
@@ -54,7 +59,10 @@ class GoalHug(HugMixin, GoalObstacles):
         """Coil / half-coil start modes: pose the body round the post (see ``hug_start.arrange_coil``), move the post to the coil centre and rebuild the target field. None = ordinary start."""
         if self._start_mode == "straight":
             return None
-        goal = arrange_coil(sim, rng, self._start_mode, self.param("hug_perturb_scale", 1.0))
+        scale = self.param("hug_perturb_scale", 1.0)
+        if self.param("hug_mix_v3", 0.0) > 0.0:
+            scale *= PERTURB_V3_LATE if self._v3_switched else PERTURB_V3_EARLY
+        goal = arrange_coil(sim, rng, self._start_mode, scale)
         if goal is None:
             return None
         self._start_placed = True

@@ -22,6 +22,7 @@ HOLD_S = 3.0
 DUTY = 0.9                       # fraction of the ticks of the hold window that must be hug ticks
 SQUEEZE_CAP_N = 1.0              # per-face normal force at which the (optional, default weight 0) squeeze term saturates
 PEN_VALID_M = 0.005              # post penetration beyond this is charged by the validity term
+POST_FORCE_FREE_N = 5.0          # v3: total post normal force charged only above this
 DEFAULT_WEIGHTS = {"approach_weight": 5.0, "coverage_weight": 2.0, "squeeze_weight": 0.0, "hold_weight": 1.0, "hug_bonus": 100.0, "speed_gain": 1.0}
 
 
@@ -181,7 +182,13 @@ class HugMixin:
         dist = self._hug_mean_dist(sim)
         terms["approach"] = P("approach_weight", DEFAULT_WEIGHTS["approach_weight"]) * (self._hug_prev_dist - dist)
         self._hug_prev_dist = dist
-        if st.hug_modules > self._hug_peak:
+        v3 = P("hug_v3", 0.0) > 0.0
+        if v3:                                                  # v3: dense per-tick coverage (pays for STAYING), small discovery ratchet on the running peak
+            terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * st.hug_modules / self._hug.h
+            terms["coverage_ratchet"] = P("coverage_ratchet", 0.0) * max(0, st.hug_modules - self._hug_peak)
+            self._hug_peak = max(self._hug_peak, st.hug_modules)
+            terms["post_force"] = -P("post_force_penalty", 0.0) * max(0.0, float(self._hug_probe.read().force.sum()) - POST_FORCE_FREE_N)
+        elif st.hug_modules > self._hug_peak:
             terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * (st.hug_modules - self._hug_peak)
             self._hug_peak = st.hug_modules
         if st.hug_tick:
@@ -190,7 +197,7 @@ class HugMixin:
                 on = self._hug_probe.read().touch & st.module_hug[:, None]
                 f = np.minimum(st.face_force[on], SQUEEZE_CAP_N) / SQUEEZE_CAP_N
                 terms["squeeze"] = sq_w * float(f.mean()) if f.size else 0.0
-            terms["hold"] = P("hold_weight", DEFAULT_WEIGHTS["hold_weight"]) * (1.0 + st.hold_ticks / self._hug.hold_need)
+            terms["hold"] = P("hold_weight", DEFAULT_WEIGHTS["hold_weight"]) * (1.0 if v3 else 1.0 + st.hold_ticks / self._hug.hold_need)
         if st.just_held:
             self.hug_success = True
             max_steps = max(1, int(round(self.cfg.episode_s * self.cfg.control_hz)))

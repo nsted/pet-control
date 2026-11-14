@@ -266,6 +266,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             if pen > 0.0:                                                                 # penalty on the 2 s running mean above the 4 A budget
                 terms["bus"] = -pen * max(0.0, float(np.mean(self._bus_win)) - REGIMEN_BUS_MEAN_A)
                 reward += terms["bus"]
+            bpen = self.task.param("bus_peak_penalty", 0.0)
+            if bpen > 0.0:                                                                # v3: per-tick penalty on the DEMANDED peak current above the 10 A ceiling (before the clamp)
+                terms["bus_peak"] = -bpen * max(0.0, float(tick["peak"]) - REGIMEN_BUS_PEAK_A)
+                reward += terms["bus_peak"]
         self._prev_action = a
         self._t += 1
         for k, v in terms.items():                                                    # per-term episode sums (logged as metrics term_<name> at the end of goal-task episodes)

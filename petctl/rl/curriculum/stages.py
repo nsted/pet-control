@@ -43,6 +43,7 @@ class Stage:
     parent: str | None = None                # stage whose passing policy warm-starts this one
     knobs: dict[str, tuple[float, float]] = field(default_factory=dict)   # tunable name -> (lo, hi); keys: ent_coef, dr_scale, steps, or any task_param
     max_iterations: int = 8
+    log_std_init: float | None = None        # PPO initial log-std (None = train() default -1.0)
 
 
 _COMMON_KNOBS = {"ent_coef": (0.0, 0.02), "dr_scale": (0.0, 1.0), "steps": (500_000, 4_000_000)}
@@ -211,6 +212,16 @@ STAGES["m2_flat2"] = Stage(
 FLAT2_PHASE1 = {"bearing_deg": 45.0, "goal_dist_min": 0.6, "goal_dist_max": 1.2, "dr_scale": 0.3}       # overrides of phase 1 (0.7M steps, ent 0.01)
 FLAT2_PHASE1_STEPS, FLAT2_PHASE1_ENT = 700_000, 0.01
 M2V2_TASKS = ("m2_hug2", "m2_flat2")
+
+# ---------------------------------------------------------------- M2 v3 hug (dense per-tick coverage, post-force / bus-peak penalties, low exploration noise, coil-heavy start in two phases)
+_M2_HUG3 = {**_M2_HUG2, "coverage_weight": 1.0, "coverage_ratchet": 5.0, "hold_weight": 3.0, "hug_bonus": 300.0, "post_force_penalty": 0.02, "bus_peak_penalty": 2.0,
+            "hug_v3": 1.0, "hug_mix_v3": 1.0}
+STAGES["m2_hug3"] = Stage(
+    "m2_hug3", "goal_hug", "M2 v3 hug: dense per-tick coverage (1 x run/H) + discovery ratchet 5/module, hold 3/tick, bonus 300 on a held hug (3 s, 90 % duty); post-force (>5 N) and bus-peak "
+    "(demand > 10 A) penalties; exploration std 0.2 (log_std -1.6), ent 0; start mix phase 1 (1M steps) coil 70 / half 30 (+-0.10 rad), phase 2 coil 30 / half 30 / straight 40 (+-0.2 rad); "
+    "stop if rolling hold_duty < 0.3 at 1M steps; warm start from the length's flat policy when one exists.",
+    task_params=dict(_M2_HUG3), gate=STAGES["m2_hug2"].gate, steps=3_000_000, n_envs=8, dr_scale=0.6, episode_s=30.0, ent_coef=0.0, knobs=dict(_M2V2_KNOBS), log_std_init=-1.6)
+M2V3_TASKS = ("m2_hug3",)
 
 
 def get_stage(name: str) -> Stage:

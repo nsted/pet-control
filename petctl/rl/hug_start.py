@@ -25,6 +25,9 @@ from petctl.sim.model_builder import PetSim
 MODES = ("straight", "coil", "half")
 MIX_EARLY = (0.3, 0.3)          # (coil, half) probabilities; the rest is straight
 MIX_LATE = (0.1, 0.2)
+MIX_V3_EARLY, MIX_V3_LATE = (0.7, 0.3), (0.3, 0.3)       # hug v3 (coil, half); phase 1 has NO straight starts, phase 2 40 % straight
+PERTURB_V3_EARLY, PERTURB_V3_LATE = 0.5, 1.0             # x PERTURB_RAD: +-0.10 rad in phase 1, +-0.20 rad in phase 2
+V3_PHASE1_STEPS, V3_STOP_DUTY, V3_SWITCH_DUTY, V3_WINDOW = 1_000_000, 0.3, 0.5, 200
 SWITCH_SUCCESS = 0.5            # rolling training success (last SWITCH_WINDOW episodes) above which the mix switches to MIX_LATE
 SWITCH_WINDOW = 200
 PERTURB_RAD = 0.2               # coil mode: each joint perturbed uniformly by +-this
@@ -178,3 +181,50 @@ class ScriptedCoilEvaluator:
                 ret, steps, done = ret + float(r), steps + 1, te or tr
             rows.append({"seed": int(s), "ret": ret, "steps": steps, "metrics": {k: float(v) for k, v in info.get("metrics", {}).items()}, "gt": {}, "leak_moved_at_step": -1})
         return rows
+
+
+def v3_phase_decision(duties: list[float] | deque[float], steps: int, switched: bool, phase1_steps: int = V3_PHASE1_STEPS, window: int = V3_WINDOW,
+                      switch_duty: float = V3_SWITCH_DUTY, stop_duty: float = V3_STOP_DUTY) -> str:
+    """Hug v3 phase logic from the rolling mean ``hold_duty`` of the last ``window`` episodes: ``"none"``, ``"switch"`` (to phase 2) or ``"stop"``.
+
+    Early switch when the full window's mean exceeds ``switch_duty``; at ``phase1_steps`` (still in phase 1) the run stops if the mean (no episodes = 0) is below ``stop_duty``, else it switches.
+    """
+    if switched:
+        return "none"
+    last = list(duties)[-window:]
+    mean = sum(last) / len(last) if last else 0.0
+    if len(last) >= window and mean > switch_duty:
+        return "switch"
+    if steps >= phase1_steps:
+        return "stop" if mean < stop_duty else "switch"
+    return "none"
+
+
+class HugV3PhaseCallback(BaseCallback):
+    """Hug v3 start-mix phases: writes the switch flag on ``v3_phase_decision == "switch"``; on ``"stop"`` ends training (``stopped`` / ``rate`` / ``checked_at`` record it)."""
+
+    def __init__(self, flag: Path, phase1_steps: int = V3_PHASE1_STEPS, window: int = V3_WINDOW) -> None:
+        """``flag``: the switch flag file (exported by the driver as ``$PETCTL_HUG_MIX_FLAG`` before the workers start)."""
+        super().__init__()
+        self.flag, self.phase1_steps, self.window = Path(flag), phase1_steps, window
+        self._duty: deque[float] = deque(maxlen=window)
+        self.switched_at: int | None = None
+        self.stopped = False
+        self.rate: float | None = None
+        self.checked_at: int | None = None
+
+    def _on_step(self) -> bool:
+        for done, info in zip(self.locals["dones"], self.locals["infos"]):
+            if done and "metrics" in info:
+                self._duty.append(float(info["metrics"].get("hold_duty", 0.0)))
+        d = v3_phase_decision(self._duty, int(self.num_timesteps), self.switched_at is not None, self.phase1_steps, self.window)
+        mean = sum(self._duty) / len(self._duty) if self._duty else 0.0
+        if d == "switch":
+            self.switched_at = int(self.num_timesteps)
+            self.flag.write_text(str(self.switched_at))
+            print(f"[hug-v3] rolling hold_duty {mean:.3f}: phase 2 (coil 30 / half 30 / straight 40, perturb 0.2) at {self.switched_at} steps", flush=True)
+        elif d == "stop":
+            self.stopped, self.rate, self.checked_at = True, mean, int(self.num_timesteps)
+            print(f"[hug-v3] rolling hold_duty {mean:.3f} < {V3_STOP_DUTY} at {self.checked_at} steps: STOP RULE", flush=True)
+            return False
+        return True
