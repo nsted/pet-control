@@ -47,7 +47,7 @@ def validate_overrides(stage: Stage, overrides: dict[str, float]) -> None:
 def build_config(stage: Stage, overrides: dict[str, float]) -> EnvConfig:
     """EnvConfig for a stage iteration (stage defaults + validated overrides)."""
     validate_overrides(stage, overrides)
-    cfg = EnvConfig(task=stage.task, urdf_dir=DEFAULT_URDF_DIR)
+    cfg = EnvConfig(task=stage.task, urdf_dir=DEFAULT_URDF_DIR, n_modules=int(overrides.get("n_modules", 8)))
     cfg.dr.scale = overrides.get("dr_scale", stage.dr_scale)
     cfg.dr.cap_nm = (stage.cap_nm, stage.cap_nm)
     cfg.episode_s = stage.episode_s
@@ -55,7 +55,7 @@ def build_config(stage: Stage, overrides: dict[str, float]) -> EnvConfig:
         cfg.action_scale_rad = stage.action_scale
     if stage.action_ema is not None:
         cfg.action_ema = stage.action_ema
-    cfg.task_params = {**stage.task_params, **{k: v for k, v in overrides.items() if k in stage.task_params or k not in ("ent_coef", "dr_scale", "steps")}}
+    cfg.task_params = {**stage.task_params, **{k: v for k, v in overrides.items() if k in stage.task_params or k not in ("ent_coef", "dr_scale", "steps", "n_modules")}}
     return cfg
 
 

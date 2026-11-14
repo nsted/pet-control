@@ -44,3 +44,29 @@ class GateStopCallback(BaseCallback):
               f"(robust success {res['robust']['success_rate']:.2f}, nominal {res['nominal']['success_rate']:.2f})", flush=True)
         self.passed = bool(res["passed"])
         return not self.passed
+
+
+class HealthStopCallback(BaseCallback):
+    """Stop a run that has gone bad: a non-finite episode return, or a glitch rate above ``max_glitch`` over the last ``window`` episodes (checked once the window is full)."""
+
+    def __init__(self, window: int = 200, max_glitch: float = 0.2) -> None:
+        """``window``: episodes in the rolling glitch rate; ``max_glitch``: stop above this fraction."""
+        super().__init__()
+        self._glitch: deque[float] = deque(maxlen=window)
+        self.max_glitch = max_glitch
+        self.reason: str | None = None
+
+    def _on_step(self) -> bool:
+        for done, info in zip(self.locals["dones"], self.locals["infos"]):
+            if not done:
+                continue
+            r = info.get("episode", {}).get("r")
+            if r is not None and r != r:
+                self.reason = "non-finite episode return"
+                return False
+            if "metrics" in info:
+                self._glitch.append(float(info["metrics"].get("glitch", 0.0)))
+        if len(self._glitch) == self._glitch.maxlen and sum(self._glitch) / len(self._glitch) > self.max_glitch:
+            self.reason = f"glitch rate {sum(self._glitch) / len(self._glitch):.2f} > {self.max_glitch}"
+            return False
+        return True

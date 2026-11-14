@@ -155,6 +155,42 @@ STAGES["s8c_flat_v2"] = dataclasses.replace(            # S8 with longer touch m
     knobs={**_s8.knobs, "touch_long": (0.0, 1.0)})
 
 
+# ---------------------------------------------------------------- Regimen v2 body-length study (M2, plan sec 3): three tasks, trained from scratch at each length L
+# ``n_modules`` is passed as a knob/override (``runner.build_config`` sets ``EnvConfig.n_modules``). The gates below are NOT pass/fail gates (min_success 0): the
+# study only reads the gate2 numbers (n = 100, dr 0.6). Training recipe (gamma 0.997, n_steps 1024, asymmetric critic) is applied by the sweep driver.
+_M2_OBS = {"delta_frame": 1.0, "delta_dr": 1.0, "reply_dr": 1.0, "touch_long": 1.0, "capacitive_obs": 1.0, "bus_model": 1.0, "bus_penalty": 1.0}
+_M2_REWARD = {"success_bonus": 150.0, "speed_gain": 3.0, "time_penalty": 0.5}      # as S8
+_M2_KNOBS = {**_COMMON_KNOBS, "n_modules": (8.0, 15.0), "imu_off": (0.0, 1.0), "touch_off": (0.0, 1.0), "capacitive_off": (0.0, 1.0), "delta_bias_m": (0.0, 0.1),
+             "bus_penalty": (0.0, 5.0), "goal_dist_max": (1.0, 3.0)}
+_M2_FLAT = {**_M2_OBS, **_M2_REWARD, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "bearing_deg": 180.0, "start_pose_rad": 0.6, "allow_flip": 1.0}
+_M2_TERRAIN = {**_M2_FLAT, "terrain_level": 1.0, "terrain_level_min": 0.3}          # training samples each episode's level in [0.3, 1.0]; the gate fixes 1.0
+_M2_HUG = {**_M2_OBS, **_M2_REWARD, "speed_gain": 1.0, "goal_dist_min": 0.2, "goal_dist_max": 0.35, "bearing_deg": 180.0, "start_pose_rad": 0.0, "allow_flip": 1.0,
+           "n_obs_min": 0, "n_obs_max": 0, "n_block": 0, "post": 1.0, "squeeze_weight": 0.0}
+
+
+def _gate_params(train: dict[str, float], **over: float) -> dict[str, float]:
+    """Gate evaluation distribution: the training one without training-only entries, plus overrides."""
+    return {**{k: v for k, v in train.items() if k not in ("terrain_level_min", "bus_penalty")}, **over}
+
+
+def _m2_gate(train: dict[str, float], episode_s: float, **over: float) -> Gate:
+    return Gate(task_params=_gate_params(train, **over), episodes=100, dr_scale=0.6, min_success=0.0, episode_s=episode_s)
+
+
+for _name, _task, _desc, _tp, _ep, _over in [
+    ("m2_flat", "goal_reach", "M2 length study, flat: reach a goal 1.5-2.5 m away at any bearing from a random start pose (head-frame delta + delta DR, reply DR, capacitive block, bus "
+     "penalty on the 2 s mean current); speed reward as S8.", _M2_FLAT, 120.0, {}),
+    ("m2_terrain", "goal_reach", "M2 length study, terrain: as m2_flat on a heightfield (training level sampled in [0.3, 1.0] per episode; gate fixed at 1.0); imu_off ablation available.",
+     _M2_TERRAIN, 120.0, {"terrain_level": 1.0}),
+    ("m2_hug", "goal_hug", "M2 length study, hug from near contact: the head starts 0.2-0.35 m from a 10 cm post (any bearing, no obstacles); hug = proximity definition of plan sec 5.3 "
+     "(no squeeze); capacitive block on.", _M2_HUG, 60.0, {}),
+]:
+    STAGES[_name] = Stage(_name, _task, _desc, task_params=dict(_tp), gate=_m2_gate(_tp, _ep, **_over), steps=2_000_000, n_envs=8, dr_scale=0.6, episode_s=_ep, ent_coef=0.005,
+                          knobs=dict(_M2_KNOBS))
+
+M2_TASKS = ("m2_flat", "m2_terrain", "m2_hug")
+
+
 def get_stage(name: str) -> Stage:
     """Look a stage up by name (raises with the valid names)."""
     if name not in STAGES:

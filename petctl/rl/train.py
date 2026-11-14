@@ -74,7 +74,8 @@ def warm_start(model: Any, venv: Any, src: Path) -> dict[str, int]:
 
 
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
-          ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None, asymmetric: bool = False) -> Path:
+          ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None, asymmetric: bool = False,
+          extra_callbacks: list[Any] | None = None) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``.
 
     ``init_from``: a PPO run directory to warm-start from (see ``warm_start``). ``video=False`` skips the end-of-run video in docs/media. ``stop_when_gate_passes``: a curriculum ``Stage``; training stops as soon as its gate passes.
@@ -103,7 +104,7 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
         from petctl.rl.asym import AsymActorCriticPolicy
         policy, pkw = AsymActorCriticPolicy, {**pkw, "n_policy": PetEnv(cfg).observation_space.shape[0]}
     if algo == "ppo":
-        model = sb3.PPO(policy, venv, n_steps=int(os.environ.get("PETCTL_NSTEPS", "256")), batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=float(os.environ.get("PETCTL_GAMMA", "0.99")), gae_lambda=0.95,
+        model = sb3.PPO(policy, venv, n_steps=int(os.environ.get("PETCTL_NSTEPS", "256")), batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=float(os.environ.get("PETCTL_GAMMA", "0.99")), gae_lambda=float(os.environ.get("PETCTL_GAE", "0.95")),
                         clip_range=0.2, ent_coef=ent_coef, learning_rate=lambda f: float(os.environ.get("PETCTL_LR", "3e-4")) * f, seed=seed, verbose=1,
                         policy_kwargs=pkw, tensorboard_log=str(out / "tb"))
     else:
@@ -123,6 +124,9 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
 
             from petctl.rl.curriculum.early_stop import GateStopCallback
             callback = CallbackList([callback, GateStopCallback(out, stop_when_gate_passes)])
+    if extra_callbacks:
+        from stable_baselines3.common.callbacks import CallbackList
+        callback = CallbackList([callback, *extra_callbacks])
     model.learn(total_timesteps=steps, progress_bar=False, callback=callback)
     model.save(str(out / "model"))
     venv.save(str(out / "vecnormalize.pkl"))

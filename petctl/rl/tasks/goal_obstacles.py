@@ -155,6 +155,9 @@ class GoalObstacles(GoalReach):
         spread = self.param("spread", 1.0)
         keep_c = head[:2] + START_KEEP_OUT[0] * np.array([np.cos(yaw), np.sin(yaw)])
         lo, hi = np.minimum(head[:2], goal) - 1.6, np.maximum(head[:2], goal) + 1.6
+        if n == 0 and self.param("barrier_halfwidth", 0.0) <= 0.0:            # empty layout: the retry loop below would only rebuild the same empty field 30 times (8 s per reset)
+            self.obstacles, self._field = (), DistanceField((), goal, lo, hi)
+            return (), np.array([*goal, head[2]])
         for _ in range(30):
             obs: list[tuple] = []
             n_block = int(self.param("n_block", 1))               # obstacles placed ON the straight line to the target, so the direct path is always blocked
