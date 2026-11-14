@@ -17,6 +17,7 @@ from petctl.rl.config import EnvConfig
 
 TOUCH_MEMORY_S = (0.5, 3.0)       # time constants (s) of the running averages of the contact signals
 TOUCH_LONG_S = (10.0, 30.0)         # extra slow averages, appended after the touch block when the task sets touch_long
+CAP_EMA_S = 0.5                  # contact-memory time constant (s) of the capacitive touch EMA
 TOUCH_ERR_SCALE = 3.0            # rad -> observation units for the commanded-minus-measured position error
 
 
@@ -31,6 +32,7 @@ class Snapshot:
     extra: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))   # task-specific entries (goal direction ...), supplied by the caller
     torque: np.ndarray | None = None  # (n_joints,) N.m, from the MIT reply frame (used by tasks with touch_obs); zeros when omitted
     target: np.ndarray | None = None  # (n_joints,) rad, the position target last commanded; zeros when omitted
+    capacitive: np.ndarray | None = None  # (6 * n_modules,) post-only face sensors: touch (n,3) then pressure (n,3), faces (left, right, middle); zeros when omitted
 
     def __post_init__(self) -> None:
         """Fill omitted reply-frame fields with zeros of the joint count."""
@@ -62,7 +64,12 @@ class ObsBuilder:
         self.touch_off = float(cfg.task_params.get("touch_off", 0.0)) > 0.0          # ablation: zero the contact channels
         self.touch_long = self.touch and float(cfg.task_params.get("touch_long", 0.0)) > 0.0
         self.n_joints = nj = cfg.n_joints
-        self.size = 3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
+        self.capacitive = float(cfg.task_params.get("capacitive_obs", 0.0)) > 0.0         # post-only face sensors; block appended after everything else (9 per module)
+        self.capacitive_off = float(cfg.task_params.get("capacitive_off", 0.0)) > 0.0      # ablation: zero the capacitive block
+        self.n_modules = cfg.n_modules
+        self.size = (3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
+                     + (9 * cfg.n_modules if self.capacitive else 0))
+        self._cap_ema = np.zeros(3 * cfg.n_modules)
         self._touch_prev = np.zeros(2 * self.n_joints)
         self._touch_ema = np.zeros((2, 2 * self.n_joints))
         self._touch_slow = np.zeros((2, 2 * self.n_joints))
@@ -74,6 +81,7 @@ class ObsBuilder:
         self._touch_prev = np.zeros(2 * self.n_joints)
         self._touch_ema = np.zeros((2, 2 * self.n_joints))
         self._touch_slow = np.zeros((2, 2 * self.n_joints))
+        self._cap_ema = np.zeros(3 * self.n_modules)
         self._pos.clear()
         self._act.clear()
         for _ in range(self.cfg.pos_window + 1):
@@ -103,4 +111,10 @@ class ObsBuilder:
                 for k, tau in enumerate(TOUCH_LONG_S):
                     self._touch_slow[k] += (self.dt / tau) * (cur - self._touch_slow[k])
                 parts.append(np.concatenate(list(self._touch_slow)))
+        if self.capacitive:                                  # [touch (n,3), pressure (n,3), 0.5 s EMA of touch (n,3)], faces (left, right, middle)
+            nf = 3 * self.n_modules
+            raw = np.zeros(2 * nf) if snap.capacitive is None else np.asarray(snap.capacitive, float).reshape(-1)[:2 * nf]
+            raw = np.zeros(2 * nf) if self.capacitive_off else raw
+            self._cap_ema += (self.dt / CAP_EMA_S) * (raw[:nf] - self._cap_ema)
+            parts.append(np.concatenate([raw, self._cap_ema]))
         return np.concatenate(parts).astype(np.float32)

@@ -8,6 +8,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
 from petctl.rl.config import EnvConfig
 from petctl.rl.domain_rand import sample_params
 from petctl.rl.layout_cache import LayoutCache, uses_cache
@@ -54,6 +55,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.action_space = spaces.Box(-1.0, 1.0, (self.cfg.n_joints,), np.float32)
         self.max_steps = int(round(self.cfg.episode_s * self.cfg.control_hz))
         self.sim: PetSim | None = None
+        self._cap_out: tuple[np.ndarray, np.ndarray] | None = None
+        self.cap_sensor: CapacitiveSensor | None = None
 
     # ------------------------------------------------------------------ helpers
     def _snapshot(self) -> Snapshot:
@@ -64,7 +67,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         quat = _qmul(self._tilt, d.sensor("quat").data.copy())
         gyro = d.sensor("gyro").data + rng.normal(0, dr.gyro_noise * dr.scale, 3)
         trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM, self.cfg.n_joints), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
-        return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy())
+        return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy(),
+                        None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]))
 
     def _nominal_head(self) -> tuple[np.ndarray, np.ndarray]:
         """Head position and forward direction (floor plane) of the robot lying at the zero pose; where tasks lay out world geometry."""
@@ -142,6 +146,13 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         post = self.task.post_pose(self.sim)
         if post is not None:
             self.privileged["post"] = post
+        self.cap_sensor, self._cap_out = None, None
+        if self.obs_builder.capacitive:                                                # post-only capacitive face sensors (randomised per episode, off in the obs when there is no post)
+            training = uses_cache(seed)                                                # same split as the layout cache: gate/eval seeds never zero the pressure
+            n = self.cfg.n_modules
+            self.cap_sensor = CapacitiveSensor(n, self.dt, sample_cap_params(self.cfg.dr, self._rng, training), np.random.default_rng(int(self._rng.integers(2 ** 31 - 1))),
+                                               enabled=PostProbe.of(self.sim) is not None)
+            self._cap_out = (np.zeros((n, 3)), np.zeros((n, 3)))
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
         self._tgt = self.sim.joint_pos().copy() if amp > 0 else np.zeros(self.cfg.n_joints)
         self._prev_action = np.zeros(self.cfg.n_joints)
@@ -165,6 +176,11 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         reward, terms = self.task.reward(self.sim, a, self._prev_action)
         self._prev_action = a
         self._t += 1
+        if self.cap_sensor is not None:
+            probe = PostProbe.of(self.sim)
+            if probe is not None:
+                gt = probe.read()
+                self._cap_out = self.cap_sensor.step(gt.touch, gt.force)
         terminated = (self.task.terminate_on_flip and self._up_dot() < c.flip_up_dot) or self.task.terminated(self.sim)
         truncated = self._t >= self.max_steps
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}

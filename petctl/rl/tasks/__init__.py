@@ -6,6 +6,7 @@ from petctl.rl.tasks.base import Task
 from petctl.rl.tasks.goal_reach import GoalReach
 from petctl.rl.tasks.goal_obstacles import GoalObstacles
 from petctl.rl.tasks.goal_wall import GoalWall
+from petctl.rl.tasks.goal_hug import GoalHug
 from petctl.rl.tasks.goal_sequence import GoalSequence
 from petctl.rl.tasks.jump import Jump
 from petctl.rl.tasks.locomote import Locomote
@@ -14,6 +15,6 @@ from petctl.rl.tasks.reach_up import ReachUp
 from petctl.rl.tasks.walk_sideways import WalkSideways
 from petctl.rl.tasks.walk_straight import WalkStraight
 
-TASKS: dict[str, type[Task]] = {"locomote": Locomote, "walk_straight": WalkStraight, "walk_sideways": WalkSideways, "reach_up": ReachUp, "reach_still": ReachStill, "jump": Jump, "goal_reach": GoalReach, "goal_sequence": GoalSequence, "goal_wall": GoalWall, "goal_obstacles": GoalObstacles}
+TASKS: dict[str, type[Task]] = {"locomote": Locomote, "walk_straight": WalkStraight, "walk_sideways": WalkSideways, "reach_up": ReachUp, "reach_still": ReachStill, "jump": Jump, "goal_reach": GoalReach, "goal_sequence": GoalSequence, "goal_wall": GoalWall, "goal_obstacles": GoalObstacles, "goal_hug": GoalHug}
 
-__all__ = ["TASKS", "Task", "Locomote", "WalkStraight", "WalkSideways", "ReachUp", "ReachStill", "Jump", "GoalReach", "GoalSequence", "GoalWall", "GoalObstacles"]
+__all__ = ["TASKS", "Task", "Locomote", "WalkStraight", "WalkSideways", "ReachUp", "ReachStill", "Jump", "GoalReach", "GoalSequence", "GoalWall", "GoalObstacles", "GoalHug"]

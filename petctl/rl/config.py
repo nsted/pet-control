@@ -35,6 +35,12 @@ class DomainRand:
     pos_noise_rad: float = 0.002
     gyro_noise: float = 0.02
     imu_tilt_rad: float = 0.05
+    cap_rate_hz: tuple[float, float] = (10.0, 20.0)         # capacitive face sensors (task knob capacitive_obs), assumption A4
+    cap_latency_s: tuple[float, float] = (0.05, 0.15)
+    cap_dropout: tuple[float, float] = (0.02, 0.05)         # whole sample lost, previous value held
+    cap_fn: tuple[float, float] = (0.02, 0.05)              # per-face false negative
+    cap_fp: tuple[float, float] = (0.005, 0.005)            # per-face false positive
+    cap_pressure_noise: tuple[float, float] = (0.10, 0.10)  # relative 1-sigma
 
 
 @dataclass
