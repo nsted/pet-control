@@ -56,8 +56,8 @@ class Locomote(Task):
         terms = {
             "progress": self.param("progress_weight", w.progress) * float(np.clip(v_prog, -0.5, 0.5)),
             "energy": -w.energy * float(np.sum(tau ** 2)) / self.cfg.len_norm,
-            "action_rate": -w.action_rate * float(np.sum((action - prev_action) ** 2)) / self.cfg.len_norm,
-            "joint_acc": -w.joint_acc * float(np.sum(acc ** 2)) / self.cfg.len_norm,
+            "action_rate": -self.param("action_rate_weight", w.action_rate) * float(np.sum((action - prev_action) ** 2)) / self.cfg.len_norm,
+            "joint_acc": -self.param("joint_acc_weight", w.joint_acc) * float(np.sum(acc ** 2)) / self.cfg.len_norm,
             "saturation": -w.saturation * float(np.mean(np.abs(tau) >= 0.98 * cap)),
             "lateral": -w.lateral * abs(v_lat),
             "yaw": -self.param("yaw_weight", w.yaw) * abs(float(sim.data.sensor("gyro").data[2])),

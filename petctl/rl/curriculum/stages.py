@@ -191,6 +191,28 @@ for _name, _task, _desc, _tp, _ep, _over in [
 M2_TASKS = ("m2_flat", "m2_terrain", "m2_hug")
 
 
+# ---------------------------------------------------------------- M2 v2 (Regimen v2, after the length sweep at L=8): hug reward/start-mix fix and the two-phase flat recipe.
+# Gates are the study gates of the v1 stages (same distributions, so v1 and v2 numbers are comparable); not pass/fail (min_success 0).
+_M2V2_KNOBS = {**_M2_KNOBS, "goal_dist_min": (0.2, 2.0), "bearing_deg": (0.0, 180.0), "hug_start_mix": (0.0, 1.0)}
+_M2_HUG2 = {**_M2_OBS, "success_bonus": 150.0, "speed_gain": 1.0, "time_penalty": 0.2, "goal_dist_min": 0.2, "goal_dist_max": 0.35, "bearing_deg": 180.0, "start_pose_rad": 0.0,
+            "allow_flip": 1.0, "n_obs_min": 0, "n_obs_max": 0, "n_block": 0, "post": 1.0, "squeeze_weight": 0.0,
+            "approach_weight": 200.0, "coverage_weight": 30.0, "hold_weight": 5.0, "hug_bonus": 300.0, "progress_weight": 0.0, "joint_acc_weight": 0.0, "action_rate_weight": 0.02,
+            "tilt_weight": 0.0, "yaw_weight": 0.0, "hug_start_mix": 1.0}
+STAGES["m2_hug2"] = Stage(
+    "m2_hug2", "goal_hug", "M2 v2 hug: rescaled hug reward (approach 200, coverage 30/module, hold 5/tick, bonus 300; no progress/tilt/yaw, joint_acc off) and a mixed start distribution "
+    "(coiled round the post / half coiled / straight 5-20 cm away, mix shifts to mostly straight once training success passes 0.5); gamma 0.997, warm start from m2_flat.",
+    task_params=dict(_M2_HUG2), gate=dataclasses.replace(STAGES["m2_hug"].gate, episode_s=30.0), steps=3_000_000, n_envs=8, dr_scale=0.6, episode_s=30.0,
+    ent_coef=0.005, knobs=dict(_M2V2_KNOBS))
+STAGES["m2_flat2"] = Stage(
+    "m2_flat2", "goal_reach", "M2 v2 flat: two-phase recipe (phase 1 0.7M steps: bearing 45 deg, goal 0.6-1.2 m, dr 0.3, ent 0.01; phase 2 1.3M steps, same policy: any bearing, goal 0.8-2.0 m, dr 0.6, "
+    "ent 0.005); gate as m2_flat (goal 1.5-2.5 m, any bearing).",
+    task_params={**_M2_FLAT, "goal_dist_min": 0.8, "goal_dist_max": 2.0}, gate=STAGES["m2_flat"].gate, steps=2_000_000, n_envs=8, dr_scale=0.6, episode_s=120.0, ent_coef=0.005,
+    knobs=dict(_M2V2_KNOBS))
+FLAT2_PHASE1 = {"bearing_deg": 45.0, "goal_dist_min": 0.6, "goal_dist_max": 1.2, "dr_scale": 0.3}       # overrides of phase 1 (0.7M steps, ent 0.01)
+FLAT2_PHASE1_STEPS, FLAT2_PHASE1_ENT = 700_000, 0.01
+M2V2_TASKS = ("m2_hug2", "m2_flat2")
+
+
 def get_stage(name: str) -> Stage:
     """Look a stage up by name (raises with the valid names)."""
     if name not in STAGES:

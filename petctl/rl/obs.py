@@ -77,6 +77,18 @@ class ObsBuilder:
         self._pos: deque[np.ndarray] = deque(maxlen=cfg.pos_window + 1)
         self._act: deque[np.ndarray] = deque(maxlen=cfg.history)
 
+    def blocks(self) -> list[tuple[str, int]]:
+        """Ordered ``(name, size)`` blocks of the observation vector (they sum to ``size``); used to map warm-start columns between tasks whose layouts differ."""
+        nj = self.n_joints
+        out = [("base", 3 + 3 + nj + nj + nj + self.cfg.history * nj + self.extra_dim)]
+        if self.touch:
+            out.append(("touch", 8 * nj))
+        if self.touch_long:
+            out.append(("touch_long", 4 * nj))
+        if self.capacitive:
+            out.append(("capacitive", 9 * self.cfg.n_modules))
+        return out
+
     def reset(self, first: Snapshot) -> None:
         """Clear the histories using the first snapshot."""
         self._touch_prev = np.zeros(2 * self.n_joints)

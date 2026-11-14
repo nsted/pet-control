@@ -35,12 +35,44 @@ def make_env_fn(cfg: EnvConfig, rank: int, seed: int, asymmetric: bool = False) 
     return _f
 
 
-def warm_start(model: Any, venv: Any, src: Path) -> dict[str, int]:
+def column_maps(old: EnvConfig, new: EnvConfig, old_asym: bool, new_asym: bool) -> dict[int, tuple[int, np.ndarray]]:
+    """Map the input columns of a source run's first layers onto the new env's, by observation block name (``ObsBuilder.blocks``).
+
+    Returns ``{old input width: (new input width, index)}`` for the actor (deployable observation) and, when both runs use the asymmetric critic, the critic (deployable +
+    privileged vector, which stays the last block); ``index[i]`` is the new column of old column ``i`` or -1 (block absent or of a different size in the new layout).
+    """
+    from petctl.rl.obs import ObsBuilder
+
+    out: dict[int, tuple[int, np.ndarray]] = {}
+    for with_priv in (False, True):
+        if with_priv and not (old_asym and new_asym):
+            continue
+        ob, nb = ObsBuilder(old).blocks(), ObsBuilder(new).blocks()
+        if with_priv:
+            ob, nb = ob + [("privileged", 17 + 7 * old.n_modules)], nb + [("privileged", 17 + 7 * new.n_modules)]
+        starts_new, c = {}, 0
+        for name, size in nb:
+            starts_new[name] = (c, size)
+            c += size
+        idx = []
+        for name, size in ob:
+            if name in starts_new and starts_new[name][1] == size:
+                idx.extend(range(starts_new[name][0], starts_new[name][0] + size))
+            else:
+                idx.extend([-1] * size)
+        out[sum(s for _, s in ob)] = (sum(s for _, s in nb), np.array(idx, int))
+    return out
+
+
+def warm_start(model: Any, venv: Any, src: Path, new_cfg: EnvConfig | None = None, new_asym: bool = False, copy_ret: bool = False) -> dict[str, int]:
     """Initialise ``model``/``venv`` from the PPO run ``src`` (``model.zip`` + ``vecnormalize.pkl``), tolerating a larger observation.
 
     Tensors whose shape matches are copied as-is. For a first-layer weight with more input columns than the source, the overlapping
     leading columns are copied and the new ones start at zero (new observation entries are appended at the end, see ``ObsBuilder``), so the
     policy initially behaves exactly like the source and learns to use the new inputs. Observation normalisation is copied likewise.
+    ``new_cfg`` (the new env's config; the source's is read from ``src/config.json``): when the observation LAYOUTS differ (a block such as the touch block sits in the
+    middle of the new vector) the first-layer columns and the normalisation statistics are mapped block by block (``column_maps``) instead of by position; new columns start at zero.
+    ``copy_ret``: also copy the reward-normalisation statistics (a continuation of the same task; leave False when the reward changes).
     Returns counts of copied / adapted / skipped tensors.
     """
     import pickle
@@ -50,14 +82,28 @@ def warm_start(model: Any, venv: Any, src: Path) -> dict[str, int]:
 
     old = sb3.PPO.load(str(src / "model"), device="cpu").policy.state_dict()
     new = model.policy.state_dict()
+    maps: dict[int, tuple[int, np.ndarray]] = {}
+    if new_cfg is not None and (src / "config.json").exists():
+        old_cfg = EnvConfig.from_dict(json.loads((src / "config.json").read_text()))
+        old_meta = json.loads((src / "meta.json").read_text()) if (src / "meta.json").exists() else {}
+        from petctl.rl.obs import ObsBuilder
+        if ObsBuilder(old_cfg).blocks() != ObsBuilder(new_cfg).blocks():
+            maps = column_maps(old_cfg, new_cfg, bool(old_meta.get("asymmetric")), new_asym)
     n = {"copied": 0, "adapted": 0, "skipped": 0}
     for k, v in new.items():
         o = old.get(k)
         if o is None:
             n["skipped"] += 1
-        elif o.shape == v.shape:
+        elif o.shape == v.shape and not (maps and o.ndim == 2 and o.shape[1] in maps and k.endswith(".0.weight")):
             new[k] = o.clone()
             n["copied"] += 1
+        elif maps and o.ndim == 2 and o.shape[0] == v.shape[0] and o.shape[1] in maps and maps[o.shape[1]][0] == v.shape[1]:
+            z = torch.zeros_like(v)
+            idx = maps[o.shape[1]][1]
+            ok = idx >= 0
+            z[:, torch.as_tensor(idx[ok])] = o[:, torch.as_tensor(np.flatnonzero(ok))]
+            new[k] = z
+            n["adapted"] += 1
         elif o.ndim == 2 and o.shape[0] == v.shape[0] and o.shape[1] < v.shape[1]:
             z = torch.zeros_like(v)
             z[:, :o.shape[1]] = o
@@ -68,18 +114,27 @@ def warm_start(model: Any, venv: Any, src: Path) -> dict[str, int]:
     model.policy.load_state_dict(new)
     with open(src / "vecnormalize.pkl", "rb") as f:
         vn = pickle.load(f)
-    m = min(len(vn.obs_rms.mean), len(venv.obs_rms.mean))
-    venv.obs_rms.mean[:m], venv.obs_rms.var[:m], venv.obs_rms.count = vn.obs_rms.mean[:m], vn.obs_rms.var[:m], vn.obs_rms.count
+    old_w, new_w = len(vn.obs_rms.mean), len(venv.obs_rms.mean)
+    if maps and old_w in maps and maps[old_w][0] == new_w:
+        idx = maps[old_w][1]
+        ok = idx >= 0
+        venv.obs_rms.mean[idx[ok]], venv.obs_rms.var[idx[ok]] = vn.obs_rms.mean[ok], vn.obs_rms.var[ok]
+        venv.obs_rms.count = vn.obs_rms.count
+    else:
+        m = min(old_w, new_w)
+        venv.obs_rms.mean[:m], venv.obs_rms.var[:m], venv.obs_rms.count = vn.obs_rms.mean[:m], vn.obs_rms.var[:m], vn.obs_rms.count
+    if copy_ret:
+        venv.ret_rms = vn.ret_rms
     return n
 
 
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
           ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None, asymmetric: bool = False,
-          extra_callbacks: list[Any] | None = None) -> Path:
+          extra_callbacks: list[Any] | None = None, warm_copy_ret: bool = False) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``.
 
     ``init_from``: a PPO run directory to warm-start from (see ``warm_start``). ``video=False`` skips the end-of-run video in docs/media. ``stop_when_gate_passes``: a curriculum ``Stage``; training stops as soon as its gate passes.
-    ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
+    ``warm_copy_ret``: with ``init_from``, also copy the reward-normalisation statistics (continuing the same task). ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
     """
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
@@ -110,7 +165,7 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
     if init_from is not None:
-        print(f"[warm-start] from {init_from}: {warm_start(model, venv, init_from)}", flush=True)
+        print(f"[warm-start] from {init_from}: {warm_start(model, venv, init_from, cfg, asymmetric, warm_copy_ret)}", flush=True)
     t0 = time.time()
     callback: Any
     if cfg.task in ("reach_still", "jump"):

@@ -195,7 +195,15 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._tilt = np.concatenate([[np.cos(ang / 2)], np.sin(ang / 2) * ax / np.linalg.norm(ax)])
         amp = float(self.cfg.task_params.get("start_pose_rad", 0.0))          # random start pose: each joint uniform in +-amp (rad)
         q0 = np.zeros(self.cfg.n_joints)
+        arranged = False
+        arrange = getattr(self.task, "arrange_start", None)
+        if arrange is not None:                                                      # task-arranged start (goal_hug coil starts): joints posed and the post placed by the task
+            new_goal = arrange(self.sim, self._rng)
+            if new_goal is not None:
+                goal_xy, arranged = new_goal, True
         for _ in range(8 if amp > 0 else 1):                                  # resample start poses that topple while settling (episode would end at once)
+            if arranged:
+                break
             if amp > 0:
                 q0 = self._rng.uniform(-amp, amp, self.cfg.n_joints)
                 self.sim.reset(q0)
@@ -227,7 +235,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             self._bus_peak = self._bus_peak_applied = 0.0
             self._bus_over = 0
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
-        self._tgt = self.sim.joint_pos().copy() if amp > 0 else np.zeros(self.cfg.n_joints)
+        self._tgt = self.sim.joint_pos().copy() if amp > 0 or arranged else np.zeros(self.cfg.n_joints)
+        self._term_sums: dict[str, float] = {}
         self._prev_action = np.zeros(self.cfg.n_joints)
         self._t = 0
         snap = self._snapshot()
@@ -259,6 +268,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                 reward += terms["bus"]
         self._prev_action = a
         self._t += 1
+        for k, v in terms.items():                                                    # per-term episode sums (logged as metrics term_<name> at the end of goal-task episodes)
+            self._term_sums[k] = self._term_sums.get(k, 0.0) + float(v)
         if self.cap_sensor is not None:
             probe = PostProbe.of(self.sim)
             if probe is not None:
@@ -269,6 +280,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}
         if hasattr(self.task, "metrics"):
             info["metrics"] = self.task.metrics(self.sim)
+        if (terminated or truncated) and self.task.name.startswith("goal_"):
+            info.setdefault("metrics", {}).update({f"term_{k}": v for k, v in self._term_sums.items()})
         if self.bus is not None:
             info.setdefault("metrics", {}).update({"bus_mean_a": float(np.mean(self._bus_means)), "bus_peak_a": self._bus_peak, "bus_peak_applied_a": self._bus_peak_applied,
                                                    "frac_ticks_over_10a": self._bus_over / len(self._bus_means)})
