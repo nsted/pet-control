@@ -302,8 +302,16 @@ pass / one named knob / design change / escalate.
 gate -> VOID, fix metric (logged as mis-calibration with data), re-gate; glitch > 0 -> stop, fix physics; success falling > 0.2 within a run -> stop,
 restart from best checkpoint with identical hyper-parameters; current budget violated by a passing policy -> FAIL (not a knob).
 
-**Cost controls:** one training job at a time; eval on the 2 spare cores; Sonnet at default effort; Fable reads JSON + 2 contact sheets per iteration;
-no new stage designed until the previous ablation is in; compute cap ~100M steps (~4-5 days of simulation incl. the length study) before a plan review.
+**Cost controls (owner directive 2026-11-14: compute is a fanless M4 MacBook Air, 4P+6E cores, thermally throttled):**
+- **Every run has a wall budget of 60 min including its gate.** Executors measure steps/s over the first 2 min, set `steps = 0.75 x budget x steps/s`
+  (cap 2.5M), and if the projected wall exceeds the budget they cut steps or episode length, never evidence (seeds, held-out n, ablations, captions).
+- **Pilot first**: 10-15 min (<= 600k steps), DR 0.3, with an explicit go/no-go signal (flat: rolling success >= 0.15 and median progress >= 0.3 m;
+  hug: >= 5% of episodes with run >= 3 and span >= 90 deg and at least one wrap tick; holding: hold_duty > 0.2 by the second hour-run). No long run without a pilot.
+- **Screening gates n = 30** (robust DR 0.6) during iteration: go if the point estimate >= threshold - 0.15 (Wilson 95% half-width ~0.17 at n = 30);
+  **n = 100 held-out only for stage verdicts.**
+- Long stages are chained as 60-min continuations with identical hyper-parameters, each with its own screen; one job at a time; stage budgets in sec 4.2
+  are ceilings, not targets. Episodes as short as the task allows (flat 20 s, hug 20 s with stall/success termination).
+- Sonnet at default effort; Fable reads JSON + 2 contact sheets per run; no new stage designed until the previous ablation is in.
 
 ## 8. Risks, assumptions, open items
 Assumptions (A) - stated so they can be falsified later:
