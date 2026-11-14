@@ -14,7 +14,7 @@ from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
 from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.layout_cache import LayoutCache, uses_cache
-from petctl.rl.obs import ObsBuilder, Snapshot, next_target
+from petctl.rl.obs import ObsBuilder, Snapshot, hold_value, next_target
 from petctl.rl.target_shapes import heldout_index, heldout_shape, sample_training_shape
 from petctl.rl.tasks import TASKS
 from petctl.sim.bus import BusClamp
@@ -23,6 +23,7 @@ from petctl.sim.shapes import shape_of
 from petctl.sim.terrain import START_RADIUS_M, generate_terrain
 
 SETTLE_S = 0.75
+STATE_RUN, STATE_SPAN_DEG = 3, 90.0     # hold-mode diagnostics: the hug pilot state (run >= 3 modules and normal span >= 90 deg)
 BUS_MEAN_WINDOW_S = 2.0                # running-mean window of the bus-current penalty (plan sec 5.5)
 
 
@@ -58,7 +59,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.dt = 1.0 / self.cfg.control_hz
         self.obs_builder = ObsBuilder(self.cfg)
         self.observation_space = spaces.Box(-np.inf, np.inf, (self.obs_builder.size,), np.float32)
-        self.action_space = spaces.Box(-1.0, 1.0, (self.cfg.n_joints,), np.float32)
+        self.action_space = spaces.Box(-1.0, 1.0, (self.cfg.n_actions,), np.float32)
         self.max_steps = int(round(self.cfg.episode_s * self.cfg.control_hz))
         self.sim: PetSim | None = None
         self._cap_out: tuple[np.ndarray, np.ndarray] | None = None
@@ -256,18 +257,39 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
         self._tgt = restored if restored is not None else self.sim.joint_pos().copy() if amp > 0 or arranged else np.zeros(self.cfg.n_joints)
         self._term_sums: dict[str, float] = {}
+        self._h_sum = self._h_wrap_sum = self._state_run = self._state_best = 0
+        self._h_wrap_n = 0
         self._prev_action = np.zeros(self.cfg.n_joints)
         self._t = 0
         snap = self._snapshot()
         self.obs_builder.reset(snap)
         return self.obs_builder.build(snap), {"privileged": self.privileged}
 
+    def _hold_step(self, h: float) -> None:
+        """Hold-mode bookkeeping for this tick: the hold value ``h``, whether this is a wrap tick (the hug metric's ``hug_tick``) and the streak of ticks in the pilot state (run >= 3 and normal span >= 90 deg)."""
+        self._h_sum += h
+        last = getattr(getattr(self.task, "_hug", None), "last", None)
+        if last is not None and last.hug_tick:
+            self._h_wrap_sum += h
+            self._h_wrap_n += 1
+        in_state = last is not None and last.hug_modules >= STATE_RUN and last.span_deg >= STATE_SPAN_DEG
+        self._state_run = self._state_run + 1 if in_state else 0
+        self._state_best = max(self._state_best, self._state_run)
+
+    def _hold_metrics(self) -> dict[str, float]:
+        """Episode metrics of the hold channel: ``h_mean`` (all ticks), ``h_wrap_mean`` / ``h_wrap_n`` (wrap ticks; the mean is absent without wrap ticks), ``state_hold_s`` (longest streak in the pilot state)."""
+        out = {"h_mean": self._h_sum / max(self._t, 1), "h_wrap_n": float(self._h_wrap_n), "state_hold_s": self._state_best / self.cfg.control_hz}
+        if self._h_wrap_n:
+            out["h_wrap_mean"] = self._h_wrap_sum / self._h_wrap_n
+        return out
+
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         """Apply one policy step (1/control_hz seconds of physics)."""
         assert self.sim is not None
-        a = np.clip(np.asarray(action, float), -1.0, 1.0)
+        a_full = np.clip(np.asarray(action, float), -1.0, 1.0)
         c = self.cfg
-        self._tgt = next_target(c, self._tgt, a)
+        self._tgt = next_target(c, self._tgt, a_full)
+        a = a_full[:c.n_joints]                                                          # joint outputs; in ``hold`` mode the last entry is the hold channel (history / reward see the joints only)
         self.sim.step(self._tgt, self.dt)
         if not np.all(np.isfinite(self.sim.data.qpos)):
             raise FloatingPointError("simulation diverged (NaN)")
@@ -288,6 +310,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                 terms["bus_peak"] = -bpen * max(0.0, float(tick["peak"]) - REGIMEN_BUS_PEAK_A)
                 reward += terms["bus_peak"]
         self._prev_action = a
+        if c.action_mode == "hold":
+            self._hold_step(hold_value(a_full))
         self._t += 1
         store = getattr(self.task, "maybe_store", None)
         if store is not None:
@@ -309,6 +333,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if self.bus is not None:
             info.setdefault("metrics", {}).update({"bus_mean_a": float(np.mean(self._bus_means)), "bus_peak_a": self._bus_peak, "bus_peak_applied_a": self._bus_peak_applied,
                                                    "frac_ticks_over_10a": self._bus_over / len(self._bus_means)})
+        if c.action_mode == "hold":
+            info.setdefault("metrics", {}).update(self._hold_metrics())
         if (terminated or truncated) and hasattr(self.task, "pose"):
             info["pose"] = self.task.pose()
         return self.obs_builder.build(self._snapshot()), reward, terminated, truncated, info

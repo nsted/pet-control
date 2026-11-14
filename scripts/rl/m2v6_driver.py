@@ -37,11 +37,11 @@ from petctl.rl.curriculum.early_stop import HealthStopCallback  # noqa: E402
 from petctl.rl.curriculum.gate2 import contact_sheet, run_gate2  # noqa: E402
 from petctl.rl.curriculum.m2v5 import gate2_spec_hug5  # noqa: E402
 from petctl.rl.curriculum.runner import build_config  # noqa: E402
-from petctl.rl.curriculum.stages import FLAT3_PILOT, FLAT3_PILOT_ENT, HUG6_PILOT, get_stage  # noqa: E402
+from petctl.rl.curriculum.stages import FLAT3_PILOT, FLAT3_PILOT_ENT, HUG6_PILOT, get_stage, stage_variant  # noqa: E402
 from petctl.rl.hug_buffer import BUFFER_ENV  # noqa: E402
 
 BENCH = Path("data/rl/m2v5/benchmark.json")
-PILOT_BUDGET_MIN, PILOT_CAP = 12.0, 600_000
+PILOT_BUDGET_MIN, PILOT_CAP = 12.0, 2_500_000      # cap per the owner rule (0.75 x budget x steps/s, max 2.5M); the earlier 600k cap was sized for a 700 steps/s machine
 MAIN_BUDGET_MIN = 45.0
 TAKEOFF_AT_MIN = 6.0
 LOG = Path("docs/plans/CURRICULUM_LOG.md")
@@ -58,14 +58,14 @@ def finished(out: Path) -> bool:
 
 
 def train_phase(stage_name: str, out: Path, length: int, overrides: dict[str, float], ent: float, seed: int, init_from: Path | None, budget_min: float, cap: int, n_envs: int,
-                scale: float, extra: list[Any] | None = None, buffer: Path | None = None, copy_ret: bool = False) -> dict[str, Any]:
+                scale: float, extra: list[Any] | None = None, buffer: Path | None = None, copy_ret: bool = False, action_mode: str | None = None) -> dict[str, Any]:
     """Train one phase under the wall-budget rule; returns ``{steps, wall_s, sps, budget...}`` (read back from ``phase.json`` when already finished)."""
     from petctl.rl.train import train
 
     info_f = out / "phase.json"
     if finished(out) and info_f.exists():
         return json.loads(info_f.read_text())
-    stage = get_stage(stage_name)
+    stage = get_stage(stage_name) if action_mode is None else stage_variant(stage_name, action_mode)       # action_mode: the m2v7 stages take it as a parameter
     cfg = build_config(stage, {"n_modules": float(length), **overrides})
     os.environ.update(RECIPE_ENV)
     if buffer is not None:
@@ -109,18 +109,18 @@ def screen(stage_name: str, out: Path, n: int, workers: int, flat: bool) -> dict
     return s
 
 
-def dump_stop(out: Path, root: Path, tag: str, workers: int) -> None:
+def dump_stop(out: Path, root: Path, tag: str, workers: int, stage_name: str = "m2_hug6") -> None:
     """Stop dump: mean term sums of the last 200 training episodes and two contact-sheet PNGs (best / worst of a 20-episode screen); no video."""
     rows = m2v6.read_episodes(out)[-200:]
     terms = {k: float(np.nanmean([r[k] for r in rows if k in r])) for k in sorted({k for r in rows for k in r if k.startswith("term_")})}
     (root / f"stop_{tag}_term_sums.json").write_text(json.dumps({"episodes": len(rows), "mean_term_sums": terms}, indent=1))
     log(f"[stop] mean term sums (last {len(rows)} episodes): {json.dumps(terms)}")
     try:
-        screen("m2_hug6", out, 20, workers, False)
-        res = json.loads((out / "gate2_m2_hug6.json").read_text())
+        screen(stage_name, out, 20, workers, False)
+        res = json.loads((out / f"gate2_{stage_name}.json").read_text())
         ps = sorted(res["per_seed"], key=lambda r: r["return"])
         for name, r in (("worst", ps[0]), ("best", ps[-1])):
-            png = contact_sheet(out, "m2_hug6", seed=int(r["seed"]), out=root / f"stop_{tag}_sheet_{name}.png")
+            png = contact_sheet(out, stage_name, seed=int(r["seed"]), out=root / f"stop_{tag}_sheet_{name}.png")
             log(f"[stop] {name} sheet (return {r['return']:.1f}): {png}")
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()

@@ -20,6 +20,8 @@ BUS_LIMIT_A = 4.0         # battery budget (config.POWER_BUDGET), used as a soft
 
 
 DELTA_STEP_RAD = 0.25     # action_mode 'delta': target change per tick for an action of +-1
+HOLD_EMA_BASE = 0.3      # action_mode 'hold': ema_eff = HOLD_EMA_BASE + HOLD_EMA_RANGE * h with h = (a_h + 1) / 2 in [0, 1] (h = 0: the EMA 0.3 mapping that walked, h = 1: frozen pose)
+HOLD_EMA_RANGE = 0.7
 DELTA_LIMIT_RAD = 1.2     # action_mode 'delta': targets are clipped to +-this (also the scale of the target block in the observation)
 
 
@@ -83,7 +85,7 @@ class EnvConfig:
     action_scale_rad: float = 0.5     # action in [-1,1] -> joint-angle offset about the default pose
     action_ema: float = 0.6           # target = ema*prev_target + (1-ema)*new (1.0 = frozen)
     max_target_step_rad: float = 0.35 # per-policy-step slew limit (matches the deployed protective ramp, 6 rad/s at 20 Hz = 0.3)
-    action_mode: str = "abs"          # 'abs': target = EMA of action_scale_rad * a; 'delta': target += DELTA_STEP_RAD * a (clipped to +-DELTA_LIMIT_RAD, no EMA) and the target vector is observed
+    action_mode: str = "abs"          # 'abs': target = EMA of action_scale_rad * a; 'delta': target += DELTA_STEP_RAD * a (clipped to +-DELTA_LIMIT_RAD, no EMA) and the target vector is observed; 'hold': n_joints + 1 outputs, the extra one sets the EMA coefficient 0.3 + 0.7 h (learned hold channel), the target vector is observed
     pos_window: int = 3               # velocity estimate = (q_t - q_{t-w}) / (w*dt)
     flip_up_dot: float = 0.2          # terminate if body-up . world-up falls below this
     progress_window_s: float = 1.0
@@ -98,8 +100,8 @@ class EnvConfig:
 
     def __post_init__(self) -> None:
         """Reject lengths outside the supported range."""
-        if self.action_mode not in ("abs", "delta"):
-            raise ValueError(f"action_mode must be 'abs' or 'delta', got {self.action_mode!r}")
+        if self.action_mode not in ("abs", "delta", "hold"):
+            raise ValueError(f"action_mode must be 'abs', 'delta' or 'hold', got {self.action_mode!r}")
         if not MIN_MODULES <= int(self.n_modules) <= MAX_MODULES:
             raise ValueError(f"n_modules must be in {MIN_MODULES}..{MAX_MODULES}, got {self.n_modules}")
 
@@ -107,6 +109,11 @@ class EnvConfig:
     def n_joints(self) -> int:
         """Servo joints: one per module except the head."""
         return int(self.n_modules) - 1
+
+    @property
+    def n_actions(self) -> int:
+        """Policy outputs: one per joint, plus the hold channel in ``hold`` mode."""
+        return self.n_joints + (1 if self.action_mode == "hold" else 0)
 
     @property
     def len_norm(self) -> float:

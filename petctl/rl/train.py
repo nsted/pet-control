@@ -64,6 +64,16 @@ def column_maps(old: EnvConfig, new: EnvConfig, old_asym: bool, new_asym: bool) 
     return out
 
 
+def init_hold_output(model: Any, n_joints: int, h0: float = 0.5) -> None:
+    """``hold`` action mode: start the hold channel (policy output ``n_joints``) at ``h = h0`` (default 0.5: EMA 0.65) by setting its last-layer bias to ``2 h0 - 1`` and zeroing its weights row."""
+    import torch
+
+    net = model.policy.action_net
+    with torch.no_grad():
+        net.weight[n_joints].zero_()
+        net.bias[n_joints] = 2.0 * h0 - 1.0
+
+
 def warm_start(model: Any, venv: Any, src: Path, new_cfg: EnvConfig | None = None, new_asym: bool = False, copy_ret: bool = False) -> dict[str, int]:
     """Initialise ``model``/``venv`` from the PPO run ``src`` (``model.zip`` + ``vecnormalize.pkl``), tolerating a larger observation.
 
@@ -164,8 +174,13 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
                         policy_kwargs=pkw, tensorboard_log=str(out / "tb"))
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
+    if cfg.action_mode == "hold" and init_from is None:
+        init_hold_output(model, cfg.n_joints)
     if init_from is not None:
         print(f"[warm-start] from {init_from}: {warm_start(model, venv, init_from, cfg, asymmetric, warm_copy_ret)}", flush=True)
+        src_cfg = init_from / "config.json"
+        if cfg.action_mode == "hold" and (not src_cfg.exists() or json.loads(src_cfg.read_text()).get("action_mode") != "hold"):      # the source has no hold output: start it at h = 0.5
+            init_hold_output(model, cfg.n_joints)
         if log_std_init is not None:
             model.policy.log_std.data.fill_(float(log_std_init))
     t0 = time.time()

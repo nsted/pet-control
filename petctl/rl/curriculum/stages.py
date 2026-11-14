@@ -269,6 +269,32 @@ STAGES["m2_hug6"] = Stage(
 HUG6_PILOT = {"dr_scale": 0.3}
 M2V6_TASKS = ("m2_flat3", "m2_hug6")
 
+# ---------------------------------------------------------------- M2 v7 (learned hold channel; delta actions failed flat takeoff, so absolute EMA targets + action_mode 'hold'; driver scripts/rl/m2v7_driver.py)
+# Flat: the m2_flat2 recipe at one length with 20 s episodes, goals 0.6-1.5 m; ``action_mode`` is a parameter (use ``stage_variant``): 'abs' (control) | 'hold' (policy has one extra output h, EMA 0.3 + 0.7 h).
+# Pilots: FLAT4_PILOT (bearing 45, goal 0.6-1.2, dr 0.3, ent 0.01); main: the stage as is (bearing 180, goals 0.6-1.5, dr 0.6, ent 0.005). log_std -1.0; recipe env gamma 0.997 / n_steps 1024 / gae 0.97.
+STAGES["m2_flat4"] = dataclasses.replace(
+    STAGES["m2_flat3"], name="m2_flat4", action_mode="abs",   # log_std_init stays None = the train() default -1.0
+    description="M2 v7 flat: m2_flat2 recipe with absolute EMA targets (parameter action_mode abs | hold; hold = learned EMA coefficient 0.3 + 0.7 h from one extra policy output), 20 s episodes, "
+    "goals 0.6-1.5 m any bearing, dr 0.6 (pilot: bearing 45, goal 0.6-1.2, dr 0.3, ent 0.01), ent 0.005, log_std -1.0, asymmetric critic; step budget set by the driver's wall rule.")
+FLAT4_PILOT = dict(FLAT3_PILOT)
+FLAT4_PILOT_ENT = FLAT3_PILOT_ENT
+
+# Hug v7: m2_hug6 (shape family phase 1 for the pilot: cylinders r 4-8 cm, boxes 6-10 cm; straight-only starts head 0.1-0.4 m from the surface, bearing +-90 deg, pose +-0.4 rad; self-bootstrapping buffer
+# on; no scripted poses; 20 s episodes; 8 s stall stop; ent 0.002; log_std -1.2) with action_mode hold. hold_weight 3 per wrap tick (knob; 6 for a re-pilot).
+_M2_HUG7 = {**_M2_HUG6, "shape_phase": 1.0}
+STAGES["m2_hug7"] = dataclasses.replace(
+    STAGES["m2_hug6"], name="m2_hug7", task_params=dict(_M2_HUG7), action_mode="hold", knobs={**STAGES["m2_hug6"].knobs, "hold_weight": (0.0, 12.0)},
+    description="M2 v7 hug: m2_hug6 (shape phase 1: cylinders r 4-8 cm, boxes 6-10 cm; straight starts head 0.1-0.4 m from the surface, bearing +-90 deg, pose +-0.4 rad; buffer starts; 20 s episodes; "
+    "8 s stall stop; hold 3 per wrap tick, ent 0.002, log_std -1.2) with the learned hold channel (action_mode hold: EMA 0.3 + 0.7 h); warm start from the length's flat hold policy.")
+HUG7_PILOT = {"dr_scale": 0.3}
+M2V7_TASKS = ("m2_flat4", "m2_hug7")
+
+
+def stage_variant(name: str, action_mode: str | None = None) -> Stage:
+    """The stage ``name`` with its ``action_mode`` replaced (``abs`` | ``hold`` | ``delta``); None keeps the stage's own."""
+    stage = get_stage(name)
+    return stage if action_mode is None else dataclasses.replace(stage, action_mode=action_mode)
+
 
 def get_stage(name: str) -> Stage:
     """Look a stage up by name (raises with the valid names)."""

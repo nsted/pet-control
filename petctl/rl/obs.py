@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from petctl.rl.config import DELTA_LIMIT_RAD, DELTA_STEP_RAD, EnvConfig
+from petctl.rl.config import DELTA_LIMIT_RAD, DELTA_STEP_RAD, HOLD_EMA_BASE, HOLD_EMA_RANGE, EnvConfig
 
 
 TOUCH_MEMORY_S = (0.5, 3.0)       # time constants (s) of the running averages of the contact signals
@@ -25,12 +25,22 @@ def next_target(cfg: EnvConfig, tgt: np.ndarray, a: np.ndarray) -> np.ndarray:
     """The joint-angle target after one control tick with action ``a`` (already clipped to [-1, 1]); shared by ``PetEnv.step`` and ``GaitPolicy.step`` so they cannot drift.
 
     ``abs``: EMA of ``action_scale_rad * a``, slew-limited. ``delta``: ``tgt + DELTA_STEP_RAD * a`` clipped to +-``DELTA_LIMIT_RAD``, slew-limited, no EMA.
+    ``hold``: ``a`` has ``n_joints + 1`` entries; ``h = (a[-1] + 1) / 2`` sets the EMA coefficient ``0.3 + 0.7 h`` of the ``abs`` mapping (h = 0: EMA 0.3, h = 1: frozen), slew-limited.
     """
-    if cfg.action_mode == "delta":
+    if cfg.action_mode == "hold":
+        nj = len(tgt)
+        ema = HOLD_EMA_BASE + HOLD_EMA_RANGE * hold_value(a)
+        smoothed = ema * tgt + (1 - ema) * (cfg.action_scale_rad * np.asarray(a)[:nj])
+    elif cfg.action_mode == "delta":
         smoothed = np.clip(tgt + DELTA_STEP_RAD * a, -DELTA_LIMIT_RAD, DELTA_LIMIT_RAD)
     else:
         smoothed = cfg.action_ema * tgt + (1 - cfg.action_ema) * (cfg.action_scale_rad * a)
     return tgt + np.clip(smoothed - tgt, -cfg.max_target_step_rad, cfg.max_target_step_rad)
+
+
+def hold_value(a: np.ndarray) -> float:
+    """The hold channel ``h`` in [0, 1] of a ``hold``-mode action (last entry, mapped from [-1, 1])."""
+    return float((float(np.clip(np.asarray(a, float)[-1], -1.0, 1.0)) + 1.0) / 2.0)
 
 
 @dataclass
@@ -80,7 +90,7 @@ class ObsBuilder:
         self.capacitive_off = float(cfg.task_params.get("capacitive_off", 0.0)) > 0.0      # ablation: zero the capacitive block
         self.imu_off = float(cfg.task_params.get("imu_off", 0.0)) > 0.0                    # ablation: zero the IMU channels (gravity direction + gyro)
         self.n_modules = cfg.n_modules
-        self.delta = cfg.action_mode == "delta"                                            # the current target vector (/ DELTA_LIMIT_RAD) is appended last
+        self.delta = cfg.action_mode in ("delta", "hold")                                  # the current target vector (/ DELTA_LIMIT_RAD) is appended last (delta and hold modes)
         self.size = (3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
                      + (9 * cfg.n_modules if self.capacitive else 0) + (nj if self.delta else 0))
         self._cap_ema = np.zeros(3 * cfg.n_modules)
