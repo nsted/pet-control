@@ -20,7 +20,7 @@ OUT = Path("data/rl/m1c_shape_feasibility")
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lengths", type=int, nargs="+", default=[8, 10])
-    ap.add_argument("--shapes", nargs="+", default=["cyl_r3", "cyl_r11", "square_8x8", "rect_5x14"])
+    ap.add_argument("--shapes", nargs="+", default=["cyl_r3", "cyl_r9", "square_8x8", "rect_5x14"])
     ap.add_argument("--budget", type=int, default=600, help="DE evaluations per (shape, n)")
     ap.add_argument("--polish", type=int, default=120)
     ap.add_argument("--workers", type=int, default=6)

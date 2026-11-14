@@ -3,7 +3,7 @@
 Family (``target_family`` task knob = 1): welded 0.4 m tall objects with a random yaw: cylinders r 2-12 cm (50 %), boxes 4-16 cm wide/deep with aspect <= 3:1 (35 %),
 rounded boxes (same sizes, corner radius 1-3 cm; 15 %). Size curriculum ``shape_phase`` 1: cylinders r 4-8 cm, boxes / rounded boxes 6-10 cm; phase 2: the full ranges.
 
-Held-out gate set (frozen): cyl r 3 cm; cyl r 11 cm; square 8x8 cm; rectangle 5x14 cm; rounded 12x12 cm r 2 cm; ``PER_SHAPE`` = 20 episodes each on seeds
+Held-out gate set (frozen; cyl r 11 cm was replaced by r 9 cm on 2026-11-14 after the feasibility data showed no tested length holds r11 with slack - a gate mis-calibration, see docs/plans/M1C_SHAPE_FEASIBILITY.md): cyl r 3 cm; cyl r 9 cm; square 8x8 cm; rectangle 5x14 cm; rounded 12x12 cm r 2 cm; ``PER_SHAPE`` = 20 episodes each on seeds
 ``GATE_SEED0`` + 0..99 (seed ``GATE_SEED0 + 20 i + j`` is shape ``i``, yaw drawn from that seed). Training never samples within ``MARGIN_M`` (1 cm) of a held-out size.
 """
 
@@ -27,7 +27,7 @@ RC_RANGE = (0.01, 0.03)
 # (name, kind, full dims (m) or radius, corner radius)
 HELD_OUT: tuple[tuple[str, str, tuple[float, ...], float], ...] = (
     ("cyl_r3", "cyl", (0.03,), 0.0),
-    ("cyl_r11", "cyl", (0.11,), 0.0),
+    ("cyl_r9", "cyl", (0.09,), 0.0),
     ("square_8x8", "box", (0.08, 0.08), 0.0),
     ("rect_5x14", "box", (0.05, 0.14), 0.0),
     ("rounded_12x12_r2", "rbox", (0.12, 0.12), 0.02),

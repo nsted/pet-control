@@ -44,6 +44,7 @@ class Stage:
     knobs: dict[str, tuple[float, float]] = field(default_factory=dict)   # tunable name -> (lo, hi); keys: ent_coef, dr_scale, steps, or any task_param
     max_iterations: int = 8
     log_std_init: float | None = None        # PPO initial log-std (None = train() default -1.0)
+    action_mode: str = "abs"                 # 'abs' (EMA of action_scale x a) | 'delta' (target += 0.25 rad x a, target vector observed); see EnvConfig.action_mode
 
 
 _COMMON_KNOBS = {"ent_coef": (0.0, 0.02), "dr_scale": (0.0, 1.0), "steps": (500_000, 4_000_000)}
@@ -240,6 +241,33 @@ STAGES["m2_hug5"] = Stage(
 M2V5_TASKS = ("m2_hug5",)
 M2V5_PHASE2_STEPS = 2_000_000          # driver hook: train with shape_phase 1 until here, then 2 (full size ranges)
 M2V5_GAMMA = 0.997                      # driver hook (as the other M2 recipes: PETCTL_GAMMA)
+
+
+# ---------------------------------------------------------------- M2 v6 (delta actions; self-bootstrapping hug starts; one-hour runs, driver scripts/rl/m2v6_driver.py)
+# Flat: m2_flat2 recipe with delta actions, 20 s episodes, goals 0.6-1.5 m. The driver runs a pilot with FLAT3_PILOT (bearing 45, goal 0.6-1.2, dr 0.3, ent 0.01) and the main with the stage as is.
+STAGES["m2_flat3"] = Stage(
+    "m2_flat3", "goal_reach", "M2 v6 flat: m2_flat2 recipe with DELTA actions (target += 0.25 rad x a per tick, clip +-1.2 rad, slew 0.35, no EMA; the target vector is observed), 20 s episodes, "
+    "goals 0.6-1.5 m any bearing, dr 0.6 (pilot: bearing 45, goal 0.6-1.2, dr 0.3, ent 0.01), ent 0.005; step budget set by the driver's one-hour rule.",
+    task_params={**_M2_FLAT, "goal_dist_min": 0.6, "goal_dist_max": 1.5}, gate=Gate(task_params=_gate_params({**_M2_FLAT, "goal_dist_min": 0.6, "goal_dist_max": 1.5}), episodes=100, dr_scale=0.6,
+                                                                                     min_success=0.0, episode_s=20.0),
+    steps=2_000_000, n_envs=8, dr_scale=0.6, episode_s=20.0, ent_coef=0.005, knobs=dict(_M2V2_KNOBS), action_mode="delta")
+FLAT3_PILOT = {"bearing_deg": 45.0, "goal_dist_min": 0.6, "goal_dist_max": 1.2, "dr_scale": 0.3}
+FLAT3_PILOT_ENT = 0.01
+
+# Hug v6: m2_hug5 reward / metric / shape family, delta actions, NO scripted start poses. Starts: straight (head 0.10-0.40 m from the object surface, bearing +-90 deg, random pose +-0.4 rad) until
+# the self-bootstrapping buffer (``hug_buffer``; states with run >= 3 and normal span >= 90 deg met in training, petctl.rl.hug_buffer) holds >= 20 states, then 30 % of the starts come from it
+# (+-0.1 rad joint perturbation). Episode: 20 s; ends on a held hug and after 8 s (``hug_stall_s``) without approach or span progress.
+_M2_HUG6 = {**{k: v for k, v in _M2_HUG5.items() if k not in ("hug_start_mix", "hug_mix_v3")}, "hug_gap_min": 0.10, "hug_gap_max": 0.40, "bearing_deg": 90.0, "start_pose_rad": 0.4,
+            "hug_buffer": 1.0, "hug_stall_s": 8.0, "shape_phase": 2.0}
+_M2_HUG6_GATE = {**_gate_params(_M2_HUG6, target_heldout=1.0), "hug_buffer": 0.0}
+STAGES["m2_hug6"] = Stage(
+    "m2_hug6", "goal_hug", "M2 v6 hug: m2_hug5 reward/metric/shape family with DELTA actions, no scripted start poses (straight starts, head 0.1-0.4 m from the surface, bearing +-90 deg, pose +-0.4 rad, "
+    "then 30 % from the self-bootstrapping buffer of run >= 3 / span >= 90 deg states), 20 s episodes ending on a held hug or 8 s without approach/span progress, log_std -1.2, ent 0.002, gamma 0.997; "
+    "warm start from the flat policy of the same length. Gate: held-out shape set (5 shapes x 20, seeds 10000+, dr 0.6), Wilson lo >= 0.70, per shape >= 0.50, capacitive_off drop >= 0.15.",
+    task_params=dict(_M2_HUG6), gate=Gate(task_params=_M2_HUG6_GATE, episodes=100, dr_scale=0.6, min_success=0.70, episode_s=20.0), steps=2_000_000, n_envs=8, dr_scale=0.6, episode_s=20.0,
+    ent_coef=0.002, knobs={**_M2V2_KNOBS, "shape_phase": (1.0, 2.0)}, log_std_init=-1.2, action_mode="delta")
+HUG6_PILOT = {"dr_scale": 0.3}
+M2V6_TASKS = ("m2_flat3", "m2_hug6")
 
 
 def get_stage(name: str) -> Stage:

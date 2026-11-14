@@ -51,6 +51,7 @@ def build_config(stage: Stage, overrides: dict[str, float]) -> EnvConfig:
     cfg.dr.scale = overrides.get("dr_scale", stage.dr_scale)
     cfg.dr.cap_nm = (stage.cap_nm, stage.cap_nm)
     cfg.episode_s = stage.episode_s
+    cfg.action_mode = stage.action_mode
     if stage.action_scale is not None:
         cfg.action_scale_rad = stage.action_scale
     if stage.action_ema is not None:

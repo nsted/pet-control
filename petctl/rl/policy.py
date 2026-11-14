@@ -7,13 +7,14 @@ loads that file and maps a ``Snapshot`` to joint-angle targets using the same ob
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import numpy as np
 
 from petctl.rl.config import N_JOINTS, EnvConfig
-from petctl.rl.obs import ObsBuilder, Snapshot
+from petctl.rl.obs import ObsBuilder, Snapshot, next_target
 
 POLICY_FILE = "policy.npz"
 
@@ -78,9 +79,9 @@ class GaitPolicy:
 
     def step(self, snap: Snapshot) -> np.ndarray:
         """Joint-angle targets (rad) for this control tick; mirrors ``PetEnv.step``'s EMA and slew limit."""
+        if self.cfg.action_mode == "delta":                     # the observation carries the policy's own commanded targets
+            snap = dataclasses.replace(snap, target=self._tgt.copy())
         a = self.action(self.obs.build(snap))
         self.obs.push_action(a)
-        c = self.cfg
-        smoothed = c.action_ema * self._tgt + (1 - c.action_ema) * c.action_scale_rad * a
-        self._tgt = self._tgt + np.clip(smoothed - self._tgt, -c.max_target_step_rad, c.max_target_step_rad)
+        self._tgt = next_target(self.cfg, self._tgt, a)
         return self._tgt.copy()

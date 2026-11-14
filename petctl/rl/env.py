@@ -14,7 +14,7 @@ from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
 from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.layout_cache import LayoutCache, uses_cache
-from petctl.rl.obs import ObsBuilder, Snapshot
+from petctl.rl.obs import ObsBuilder, Snapshot, next_target
 from petctl.rl.target_shapes import heldout_index, heldout_shape, sample_training_shape
 from petctl.rl.tasks import TASKS
 from petctl.sim.bus import BusClamp
@@ -173,12 +173,20 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
         self.task = TASKS[self.cfg.task](self.cfg)
         shape = None
-        if self.task.param("target_family", 0.0) > 0.0:                                 # shape-agnostic target (petctl.rl.target_shapes); drawn before the layout, which sizes the start gaps by it
+        pick = getattr(self.task, "pick_buffer_start", None)
+        bstart = pick(self._rng) if pick is not None else None                        # hug start buffer (task knob hug_buffer): a stored state fixes the object's shape and place
+        if bstart is not None:
+            from petctl.sim.shapes import TargetShape
+            shape = TargetShape(*bstart["shape"])
+            self.task.target_shape = shape  # type: ignore[attr-defined]
+        elif self.task.param("target_family", 0.0) > 0.0:                                 # shape-agnostic target (petctl.rl.target_shapes); drawn before the layout, which sizes the start gaps by it
             hi = heldout_index(seed) if (seed is not None and self.task.param("target_heldout", 0.0) > 0.0) else None
             shape = heldout_shape(hi, int(seed)) if hi is not None else sample_training_shape(self._rng, int(self.task.param("shape_phase", 2.0)))  # type: ignore[arg-type]
             self.task.target_shape = shape  # type: ignore[attr-defined]
         self.target_shape = shape
         walls, goal_xy = self._layout(seed)                                           # static geometry (walls) must exist before the sim is built
+        if bstart is not None and goal_xy is not None:
+            goal_xy = np.array([bstart["post"][0], bstart["post"][1], goal_xy[2]])
         obstacles = getattr(self.task, "obstacles", ())
         if walls or obstacles:
             params = BuildParams(**{**params.__dict__, "walls": walls, "obstacles": tuple(obstacles)})
@@ -205,7 +213,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         q0 = np.zeros(self.cfg.n_joints)
         arranged = False
         arrange = getattr(self.task, "arrange_start", None)
-        if arrange is not None:                                                      # task-arranged start (goal_hug coil starts): joints posed and the post placed by the task
+        restored: np.ndarray | None = None
+        if bstart is not None:
+            restored, arranged = self.task.restore_buffer_start(self.sim, self._rng), True      # type: ignore[attr-defined]
+        elif arrange is not None:                                                      # task-arranged start (goal_hug coil starts): joints posed and the post placed by the task
             new_goal = arrange(self.sim, self._rng)
             if new_goal is not None:
                 goal_xy, arranged = new_goal, True
@@ -243,7 +254,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             self._bus_peak = self._bus_peak_applied = 0.0
             self._bus_over = 0
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
-        self._tgt = self.sim.joint_pos().copy() if amp > 0 or arranged else np.zeros(self.cfg.n_joints)
+        self._tgt = restored if restored is not None else self.sim.joint_pos().copy() if amp > 0 or arranged else np.zeros(self.cfg.n_joints)
         self._term_sums: dict[str, float] = {}
         self._prev_action = np.zeros(self.cfg.n_joints)
         self._t = 0
@@ -256,9 +267,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         assert self.sim is not None
         a = np.clip(np.asarray(action, float), -1.0, 1.0)
         c = self.cfg
-        raw = c.action_scale_rad * a
-        smoothed = c.action_ema * self._tgt + (1 - c.action_ema) * raw
-        self._tgt = self._tgt + np.clip(smoothed - self._tgt, -c.max_target_step_rad, c.max_target_step_rad)
+        self._tgt = next_target(c, self._tgt, a)
         self.sim.step(self._tgt, self.dt)
         if not np.all(np.isfinite(self.sim.data.qpos)):
             raise FloatingPointError("simulation diverged (NaN)")
@@ -280,6 +289,9 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                 reward += terms["bus_peak"]
         self._prev_action = a
         self._t += 1
+        store = getattr(self.task, "maybe_store", None)
+        if store is not None:
+            store(self.sim, self._tgt)
         for k, v in terms.items():                                                    # per-term episode sums (logged as metrics term_<name> at the end of goal-task episodes)
             self._term_sums[k] = self._term_sums.get(k, 0.0) + float(v)
         if self.cap_sensor is not None:

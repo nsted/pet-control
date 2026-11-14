@@ -178,7 +178,7 @@ def test_env_shape_family_and_heldout_by_seed() -> None:
     cfg.task_params = {**st.gate.task_params}
     cfg.dr.scale = 0.6
     env = PetEnv(cfg)
-    for seed, name in [(10000, "cyl_r3"), (10025, "cyl_r11"), (10041, "square_8x8"), (10079, "rect_5x14"), (10099, "rounded_12x12_r2")]:
+    for seed, name in [(10000, "cyl_r3"), (10025, "cyl_r9"), (10041, "square_8x8"), (10079, "rect_5x14"), (10099, "rounded_12x12_r2")]:
         env.reset(seed=seed)
         want = HELD_OUT[HELD_OUT_NAMES.index(name)]
         sh = env.sim.p.post_shape

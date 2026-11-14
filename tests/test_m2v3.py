@@ -32,7 +32,7 @@ def test_stage_definition() -> None:
     assert (tp["squeeze_weight"], tp["speed_gain"], tp["bus_penalty"], tp["hug_v3"], tp["hug_mix_v3"]) == (0.0, 1.0, 1.0, 1.0, 1.0)
     assert (s.task, s.episode_s, s.steps, s.ent_coef, s.log_std_init, s.dr_scale) == ("goal_hug", 30.0, 3_000_000, 0.0, -1.6, 0.6)
     assert s.gate == get_stage("m2_hug2").gate
-    assert [n for n, st in STAGES.items() if st.log_std_init is not None] == ["m2_hug3", "m2_hug5"]
+    assert [n for n, st in STAGES.items() if st.log_std_init is not None] == ["m2_hug3", "m2_hug5", "m2_hug6"]
     h2 = get_stage("m2_hug2").task_params
     assert h2["coverage_weight"] == 30.0 and "hug_v3" not in h2 and "bus_peak_penalty" not in h2 and get_stage("m2_hug2").ent_coef == 0.005
 
