@@ -70,8 +70,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         d, rng = self.sim.data, self._rng
         dr = self.cfg.dr
         pos = self.sim.joint_pos() + self._joint_off + rng.normal(0, dr.pos_noise_rad * dr.scale, self.cfg.n_joints)
-        quat = _qmul(self._tilt, d.sensor("quat").data.copy())
-        gyro = d.sensor("gyro").data + rng.normal(0, dr.gyro_noise * dr.scale, 3)
+        quat = _qmul(self._tilt, self.sim.sensor("quat").copy())
+        gyro = self.sim.sensor("gyro") + rng.normal(0, dr.gyro_noise * dr.scale, 3)
         trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM * self._reply_mult, self.cfg.n_joints), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
         if self._reply_buf is not None:                                               # reply-frame DR (knob reply_dr): delay of 1-2 ticks, dropped frames hold the last delivered value
             if not self._reply_buf:
@@ -161,7 +161,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
 
     def _up_dot(self) -> float:
         assert self.sim is not None
-        return float(self.sim.data.site_xmat[self.sim.model.site("imu").id].reshape(3, 3)[2, 2])
+        return float(self.sim.data.site_xmat[self.sim.imu_id].reshape(3, 3)[2, 2])
 
     # ------------------------------------------------------------------ gym API
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:

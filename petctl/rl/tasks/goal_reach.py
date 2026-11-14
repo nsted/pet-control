@@ -135,7 +135,7 @@ class GoalReach(Locomote):
         assert sim is not None
         lo, hi = self.param("goal_dist_min", 0.25), self.param("goal_dist_max", 0.35)
         bearing = float(np.deg2rad(self._rng.uniform(-1.0, 1.0) * self.param("bearing_deg", 0.0)))
-        fwd = sim.data.site_xmat[sim.model.site("head").id].reshape(3, 3)[:, 0].copy()
+        fwd = sim.data.site_xmat[sim.head_id].reshape(3, 3)[:, 0].copy()
         yaw = float(np.arctan2(fwd[1], fwd[0])) + bearing
         dist = float(self._rng.uniform(lo, hi))
         self.goal = origin + dist * np.array([np.cos(yaw), np.sin(yaw), 0.0])
@@ -184,7 +184,7 @@ class GoalReach(Locomote):
         if self._delta_head:
             return self._delta_obs(sim)
         u, d = self._to_goal(self._head(sim))
-        r = sim.data.site_xmat[sim.model.site("imu").id].reshape(3, 3)
+        r = sim.data.site_xmat[sim.imu_id].reshape(3, 3)
         return np.concatenate([r.T @ u, [min(d / DIST_OBS_SCALE_M, 2.0)]]).astype(np.float32)
 
     def _delta_obs(self, sim: PetSim) -> np.ndarray:
@@ -198,7 +198,7 @@ class GoalReach(Locomote):
             v = self._d_hist[0] + self._d_bias
             v[:2] += self._drng.normal(0.0, self._d_sigma, 2)
         d = float(np.linalg.norm(v))
-        r = sim.data.site_xmat[sim.model.site("head").id].reshape(3, 3)
+        r = sim.data.site_xmat[sim.head_id].reshape(3, 3)
         return np.concatenate([r.T @ (v / max(d, 1e-9)), [min(d / DIST_OBS_SCALE_M, 2.0), min(d, NEAR_FIELD_M) / NEAR_FIELD_M]]).astype(np.float32)
 
     def markers(self, sim: PetSim) -> list[tuple[np.ndarray, float, tuple[float, float, float, float]]]:
@@ -226,14 +226,14 @@ class GoalReach(Locomote):
         terms["time"] = -self.param("time_penalty", 0.0) * dt          # per-second cost of not having arrived yet
         # Roll about the long axis from the tail IMU's gravity direction (deployable: quaternion/accelerometer), unwrapped step by step. The
         # earlier integral of gyro-x was exploitable (tail wobble gave 4.6 "turns" while the body never tipped); gyro is kept only as a diagnostic.
-        g = gravity_in_body(sim.data.sensor("quat").data)
+        g = gravity_in_body(sim.sensor("quat"))
         ang = float(np.arctan2(g[1], g[2]))
         dang = 0.0 if self._roll_ang is None else (ang - self._roll_ang + np.pi) % (2 * np.pi) - np.pi
         self._roll_ang = ang
         self._roll += dang
         self._roll_abs += abs(dang)
-        self._roll_gyro += float(sim.data.sensor("gyro").data[0]) * dt
-        Rh = sim.data.xmat[sim.model.body("m0").id].reshape(3, 3)                       # ground truth (not observed): head module orientation
+        self._roll_gyro += float(sim.sensor("gyro")[0]) * dt
+        Rh = sim.data.xmat[sim.m0_id].reshape(3, 3)                       # ground truth (not observed): head module orientation
         hang = float(np.arctan2(Rh[2, 1], Rh[2, 2]))
         self._roll_head += 0.0 if self._head_ang is None else (hang - self._head_ang + np.pi) % (2 * np.pi) - np.pi
         self._head_ang = hang

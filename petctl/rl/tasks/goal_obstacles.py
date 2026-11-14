@@ -256,6 +256,7 @@ class GoalObstacles(GoalReach):
         super().reset(sim, rng)
         self.contact_ticks = 0
         self._obs_ids = {sim.model.geom(f"obs{i}").id for i in range(len(self.obstacles))}
+        self._obs_arr = np.array(sorted(self._obs_ids), int)
         self._best_path = self._field.value(self._head(sim)[:2])
         self._last_gain_t = 0
         self._visited: set[tuple[int, int]] = set()
@@ -284,7 +285,8 @@ class GoalObstacles(GoalReach):
     def reward(self, sim: PetSim, action: np.ndarray, prev_action: np.ndarray) -> tuple[float, dict[str, float]]:
         """GoalReach reward; contact penalty per tick touching an obstacle; tracks the best path distance for the stall test."""
         total, terms = super().reward(sim, action, prev_action)
-        touching = any(c.geom1 in self._obs_ids or c.geom2 in self._obs_ids for c in sim.data.contact[:sim.data.ncon])
+        nc = int(sim.data.ncon)
+        touching = bool(self._obs_ids and nc and (np.isin(sim.data.contact.geom1[:nc], self._obs_arr).any() or np.isin(sim.data.contact.geom2[:nc], self._obs_arr).any()))
         self.contact_ticks += int(touching)
         terms["obstacle_contact"] = -self.param("contact_penalty", 0.0) if touching else 0.0
         hp = self._head(sim)[:2]

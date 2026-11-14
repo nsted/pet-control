@@ -107,7 +107,7 @@ class GoalWall(GoalReach):
         touching = any(c.geom1 in self._wall_ids or c.geom2 in self._wall_ids for c in sim.data.contact[:sim.data.ncon])
         self.contact_ticks += int(touching)
         terms["wall_contact"] = -self.param("contact_penalty", 0.0) if touching else 0.0       # discourages pushing into the wall
-        up = float(sim.data.site_xmat[sim.model.site("imu").id].reshape(3, 3)[2, 2])
+        up = float(sim.data.site_xmat[sim.imu_id].reshape(3, 3)[2, 2])
         terms["flip"] = -self.param("flip_penalty", 0.0) if up < self.cfg.flip_up_dot else 0.0  # the env ends the episode on this tick; make it cost something
         return total + terms["wall_contact"] + terms["flip"], terms
 

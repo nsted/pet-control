@@ -111,6 +111,18 @@ def _vec(v: np.ndarray) -> str:
     return " ".join(f"{x:.9g}" for x in v)
 
 
+_VEC_CACHE: dict[bytes, str] = {}
+
+
+def _vec_cached(v: np.ndarray) -> str:
+    """``_vec`` memoised on the array bytes (the hull vertex lists are identical every episode and take ~0.1 s to format)."""
+    key = np.ascontiguousarray(v, float).tobytes()
+    out = _VEC_CACHE.get(key)
+    if out is None:
+        out = _VEC_CACHE[key] = _vec(v)
+    return out
+
+
 def _box_inertia(m: float) -> np.ndarray:
     hx, hy, hz = BOX_HALF
     return m / 3.0 * np.array([hy ** 2 + hz ** 2, hx ** 2 + hz ** 2, hx ** 2 + hy ** 2])
@@ -286,7 +298,7 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
              '<material name="floor" texture="grid" texrepeat="40 40" reflectance="0.05"/></asset>')
     if hulls:
         L.append("<asset>" + "".join(
-            f'<mesh name="h{k}" maxhullvert="{p.max_hull_verts}" vertex="{_vec(h.reshape(-1))}"/>' for k, h in enumerate(hulls)) + "</asset>")
+            f'<mesh name="h{k}" maxhullvert="{p.max_hull_verts}" vertex="{_vec_cached(h.reshape(-1))}"/>' for k, h in enumerate(hulls)) + "</asset>")
     ter = p.terrain if not p.hanging else None
     if ter is not None:
         L.append("<asset>" + "".join(
@@ -379,6 +391,9 @@ class PetSim:
         if self.p.terrain is not None and not self.p.hanging:
             write_terrain(self.model, self.p.terrain)
         self.data = mujoco.MjData(self.model)
+        m, d = self.model, self.data                        # cached name lookups (model.site("imu") etc. are slow Python-side) and persistent views into the data buffers
+        self.imu_id, self.head_id, self.m0_id = int(m.site("imu").id), int(m.site("head").id), int(m.body("m0").id)
+        self._sens = {nm: d.sensordata[int(m.sensor(nm).adr[0]):int(m.sensor(nm).adr[0]) + int(m.sensor(nm).dim[0])] for nm in ("quat", "gyro", "head_pos")}
         self._delay_steps = max(0, int(round(self.p.delay_s / self.p.dt)))
         self._buf: deque[np.ndarray] = deque()
         self.bus: BusClamp | None = None                    # optional petctl.sim.bus.BusClamp (per-robot current estimate / spike clamp); None = off
@@ -425,16 +440,18 @@ class PetSim:
 
     def step(self, target: np.ndarray, seconds: float) -> None:
         """Advance ``seconds`` with the position target ``target`` (rad), delayed by ``delay_s``."""
+        tgt = np.asarray(target, float).copy()                 # one private copy per call: the buffer only ever reads its entries
+        buf, ctrl, model, data, bus, mj_step = self._buf, self.data.ctrl, self.model, self.data, self.bus, mujoco.mj_step
         for _ in range(max(1, int(round(seconds / self.p.dt)))):
-            self._buf.append(np.asarray(target, float).copy())
-            if len(self._buf) > self._delay_steps:
-                self._last_target = self._buf.popleft()
-            self.data.ctrl[:] = self._last_target
-            if self.bus is not None:
-                self.bus.before(self.model, self.data)
-            mujoco.mj_step(self.model, self.data)
-            if self.bus is not None:
-                self.bus.after(self.model, self.data)
+            buf.append(tgt)
+            if len(buf) > self._delay_steps:
+                self._last_target = buf.popleft()
+            ctrl[:] = self._last_target
+            if bus is not None:
+                bus.before(model, data)
+            mj_step(model, data)
+            if bus is not None:
+                bus.after(model, data)
 
     def joint_torque(self) -> np.ndarray:
         """Applied actuator torque (N.m) at the last step."""
@@ -442,4 +459,8 @@ class PetSim:
 
     def head_pos(self) -> np.ndarray:
         """Head site position in the world (m) - sim ground truth only."""
-        return self.data.sensor("head_pos").data.copy()
+        return self._sens["head_pos"].copy()
+
+    def sensor(self, name: str) -> np.ndarray:
+        """Live view of the ``quat``, ``gyro`` or ``head_pos`` sensor reading; copy before keeping it."""
+        return self._sens[name]

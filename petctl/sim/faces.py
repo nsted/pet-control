@@ -37,18 +37,23 @@ def _hull_vertices_body(model: mujoco.MjModel, k: int) -> np.ndarray:
 def _facets(v: np.ndarray) -> list[tuple[np.ndarray, float]]:
     """Planar facets of the convex hull of ``v`` as (outward unit normal, area), coplanar triangles merged (5 deg)."""
     h = ConvexHull(v)
-    groups: list[list] = []                     # [normal sum, area]
+    m = len(h.simplices)
+    gsum, garea, gnorm = np.zeros((m, 3)), np.zeros(m), np.ones(m)             # running normal sum, area and |normal sum| of each group (first-match, in simplex order)
+    ng = 0
     for s, e in zip(h.simplices, h.equations):
         area = 0.5 * float(np.linalg.norm(np.cross(v[s[1]] - v[s[0]], v[s[2]] - v[s[0]])))
         n = e[:3] / np.linalg.norm(e[:3])
-        for gp in groups:
-            if float(n @ gp[0] / np.linalg.norm(gp[0])) > GROUP_COS:
-                gp[0] = gp[0] + n * area
-                gp[1] += area
-                break
-        else:
-            groups.append([n * area, area])
-    return [(gp[0] / np.linalg.norm(gp[0]), float(gp[1])) for gp in groups]
+        if ng:
+            hit = np.flatnonzero(gsum[:ng] @ n / gnorm[:ng] > GROUP_COS)
+            if hit.size:
+                i = int(hit[0])
+                gsum[i] = gsum[i] + n * area
+                garea[i] += area
+                gnorm[i] = np.linalg.norm(gsum[i])
+                continue
+        gsum[ng], garea[ng], gnorm[ng] = n * area, area, np.linalg.norm(n * area)
+        ng += 1
+    return [(gsum[i] / np.linalg.norm(gsum[i]), float(garea[i])) for i in range(ng)]
 
 
 def module_faces(model: mujoco.MjModel, n_modules: int | None = None) -> np.ndarray:

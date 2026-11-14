@@ -20,7 +20,7 @@ class Locomote(Task):
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Record the heading (head forward axis projected on the floor) and the position window."""
         self.p0 = sim.head_pos().copy()
-        fwd = sim.data.site_xmat[sim.model.site("head").id].reshape(3, 3)[:, 0].copy()
+        fwd = sim.data.site_xmat[sim.head_id].reshape(3, 3)[:, 0].copy()
         fwd[2] = 0.0
         self.heading = fwd / max(np.linalg.norm(fwd), 1e-9)
         self.side = np.array([-self.heading[1], self.heading[0], 0.0])
@@ -52,7 +52,7 @@ class Locomote(Task):
         acc = (qd - self._prev_qd) / dt
         self._prev_qd = qd.copy()
         bus = 0.6 + BUS_A_PER_NM2 * float(np.sum(tau ** 2))             # idle ~0.6 A + fitted per-motor quadratic
-        up = sim.data.site_xmat[sim.model.site("imu").id].reshape(3, 3)[2, 2]
+        up = sim.data.site_xmat[sim.imu_id].reshape(3, 3)[2, 2]
         terms = {
             "progress": self.param("progress_weight", w.progress) * float(np.clip(v_prog, -0.5, 0.5)),
             "energy": -w.energy * float(np.sum(tau ** 2)) / self.cfg.len_norm,
@@ -60,7 +60,7 @@ class Locomote(Task):
             "joint_acc": -self.param("joint_acc_weight", w.joint_acc) * float(np.sum(acc ** 2)) / self.cfg.len_norm,
             "saturation": -w.saturation * float(np.mean(np.abs(tau) >= 0.98 * cap)),
             "lateral": -w.lateral * abs(v_lat),
-            "yaw": -self.param("yaw_weight", w.yaw) * abs(float(sim.data.sensor("gyro").data[2])),
+            "yaw": -self.param("yaw_weight", w.yaw) * abs(float(sim.sensor("gyro")[2])),
             "tilt": -self.param("tilt_weight", w.tilt) * (1.0 - float(up)),
             "current": -w.current * max(0.0, bus - BUS_LIMIT_A),
             "alive": w.alive,
