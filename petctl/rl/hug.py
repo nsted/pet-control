@@ -1,8 +1,9 @@
-"""Ground-truth hug metric and hug reward (Regimen v2 plan, sec 5.3). Privileged: reads MuJoCo contacts, never the sensor model.
+"""Ground-truth hug metric and hug reward (Regimen v2 plan, sec 5.3, proximity definition after M1). Privileged: reads the post probe, never the sensor model.
 
-A module "hugs" when any of its faces touches the post in at least ``DEBOUNCE_K`` of the last ``DEBOUNCE_N`` ticks. ``hug_modules`` is the longest
-chain-contiguous run of hugging modules; a tick is a hug tick when ``hug_modules >= H = max(5, ceil(0.4 n))``; the hug is *held* after ``hold_s`` seconds
-(default 3) of consecutive hug ticks. Contact of end caps / edges (no face) does not count.
+A module "hugs" when any of its faces is within ``D_PROX_M`` (15 mm) of the post surface in at least ``DEBOUNCE_K`` of the last ``DEBOUNCE_N`` ticks.
+``hug_modules`` is the longest chain-contiguous run of hugging modules; a tick is a hug tick when ``hug_modules >= H = max(5, ceil(0.4 n))``; the hug is
+*held* when, in the sliding ``hold_s`` (default 3 s) window, at least ``DUTY`` (90 %) of the ticks are hug ticks (dynamic holds with brief dropouts count).
+No squeeze/pressure condition. Encirclement (post axis inside the polygon of the hugging modules' centres), normal force and wrap angle are diagnostics only.
 """
 
 from __future__ import annotations
@@ -18,14 +19,27 @@ from petctl.sim.model_builder import POST_RADIUS_M, PetSim
 
 DEBOUNCE_N, DEBOUNCE_K = 5, 3
 HOLD_S = 3.0
-SQUEEZE_CAP_N = 1.0              # per-face normal force at which the squeeze term saturates
+DUTY = 0.9                       # fraction of the ticks of the hold window that must be hug ticks
+SQUEEZE_CAP_N = 1.0              # per-face normal force at which the (optional, default weight 0) squeeze term saturates
 PEN_VALID_M = 0.005              # post penetration beyond this is charged by the validity term
-DEFAULT_WEIGHTS = {"approach_weight": 5.0, "coverage_weight": 2.0, "squeeze_weight": 0.1, "hold_weight": 1.0, "hug_bonus": 100.0, "speed_gain": 1.0}
+DEFAULT_WEIGHTS = {"approach_weight": 5.0, "coverage_weight": 2.0, "squeeze_weight": 0.0, "hold_weight": 1.0, "hug_bonus": 100.0, "speed_gain": 1.0}
 
 
 def hug_threshold(n_modules: int) -> int:
     """Modules that must be in a contiguous run for a hug tick: ``max(5, ceil(0.4 n))``."""
     return max(5, math.ceil(0.4 * n_modules))
+
+
+def encircles(centres_xy: np.ndarray, post_xy: np.ndarray) -> bool:
+    """True if ``post_xy`` lies inside the polygon through ``centres_xy`` (chain order, closed): ray-casting point-in-polygon test (diagnostic)."""
+    if len(centres_xy) < 3:
+        return False
+    x, y = float(post_xy[0]), float(post_xy[1])
+    inside = False
+    for (x1, y1), (x2, y2) in zip(centres_xy, np.roll(centres_xy, -1, axis=0)):
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
 
 
 def longest_run(mask: np.ndarray) -> tuple[int, int]:
@@ -52,12 +66,14 @@ class HugState:
     run_start: int
     hug_tick: bool
     hold_ticks: int              # consecutive hug ticks so far
+    duty: float                  # fraction of hug ticks in the hold window (0 until the window is full)
     held: bool                   # hold completed (sticky)
     just_held: bool              # hold completed on this very tick
     force_n: float               # total normal force on the post from the hugging modules' faces
     face_force: np.ndarray       # (n, 3) per-face normal force
     wrap_deg: float              # diagnostic floor-plane angle swept by the run's module centres about the post axis
     coverage: float              # hugging modules / n_modules (debounced, any run)
+    encircled: bool = False      # diagnostic: post axis inside the polygon of the run's module centres
 
 
 class HugTracker:
@@ -67,7 +83,7 @@ class HugTracker:
         """``h_min`` overrides the default threshold (tests)."""
         self.n = n_modules
         self.h = int(h_min) if h_min is not None else hug_threshold(n_modules)
-        self.hold_need = max(1, int(round(hold_s * control_hz)))
+        self.hold_need = max(1, int(round(hold_s * control_hz)))       # ticks in the sliding hold window
         self.dt = 1.0 / control_hz
         self.reset()
 
@@ -75,6 +91,8 @@ class HugTracker:
         """Clear the debounce history and counters."""
         self._hist: deque[np.ndarray] = deque(maxlen=DEBOUNCE_N)
         self.hold_ticks = 0
+        self._win: deque[bool] = deque(maxlen=self.hold_need)
+        self.duty = 0.0
         self.held = False
         self.t = 0
         self.t_contact = float("nan")      # first tick any module touched the post (any contact, s)
@@ -83,7 +101,20 @@ class HugTracker:
         self.peak_modules = 0
         self.peak_wrap_deg = 0.0
         self.peak_force_n = 0.0
+        self.peak_duty = 0.0
+        self.ever_encircled = False
         self.last: HugState | None = None
+
+    def push_hug_tick(self, hug_tick: bool, now: float) -> bool:
+        """Advance the 3 s duty window with one hug tick; returns True on the tick the hold is first satisfied."""
+        self._win.append(bool(hug_tick))
+        self.hold_ticks = self.hold_ticks + 1 if hug_tick else 0
+        self.duty = float(np.mean(self._win)) if len(self._win) == self.hold_need else 0.0
+        self.peak_duty = max(self.peak_duty, self.duty)
+        if len(self._win) == self.hold_need and self.duty >= DUTY - 1e-9 and not self.held:
+            self.held, self.t_hug, self.t_hug_start = True, now, now - (self.hold_need - 1) * self.dt
+            return True
+        return False
 
     def update(self, read: PostRead, centres_xy: np.ndarray, post_xy: np.ndarray) -> HugState:
         """Advance one tick with the ground-truth contacts ``read``, the module centres (n, 2) and the post axis xy."""
@@ -96,15 +127,7 @@ class HugTracker:
         module_hug = np.sum(np.array(self._hist), axis=0) >= DEBOUNCE_K
         run, start = longest_run(module_hug)
         hug_tick = run >= self.h
-        just = False
-        if hug_tick:
-            if self.hold_ticks == 0:
-                self.t_hug_start = now
-            self.hold_ticks += 1
-            if self.hold_ticks >= self.hold_need and not self.held:
-                self.held, just, self.t_hug = True, True, now
-        else:
-            self.hold_ticks = 0
+        just = self.push_hug_tick(hug_tick, now)
         in_run = np.zeros(self.n, bool)
         in_run[start:start + run] = run > 0
         wrap = 0.0
@@ -112,11 +135,13 @@ class HugTracker:
             rel = centres_xy[in_run] - post_xy
             ang = np.unwrap(np.arctan2(rel[:, 1], rel[:, 0]))
             wrap = float(np.rad2deg(abs(ang[-1] - ang[0])))
+        enc = bool(run >= 3 and encircles(centres_xy[in_run], post_xy))
+        self.ever_encircled |= enc
         force = float(read.force[module_hug].sum())
         self.peak_modules = max(self.peak_modules, run)
         self.peak_wrap_deg = max(self.peak_wrap_deg, wrap)
         self.peak_force_n = max(self.peak_force_n, force)
-        self.last = HugState(module_hug, run, start, hug_tick, self.hold_ticks, self.held, just, force, read.force.copy(), wrap, float(module_hug.sum()) / self.n)
+        self.last = HugState(module_hug, run, start, hug_tick, self.hold_ticks, self.duty, self.held, just, force, read.force.copy(), wrap, float(module_hug.sum()) / self.n, enc)
         return self.last
 
 
@@ -124,7 +149,7 @@ class HugMixin:
     """Hug metric + reward for a goal task whose episode has a post (needs ``self.param``, ``self.cfg``; use with ``GoalReach`` descendants).
 
     Reward terms (weights are task params, defaults in ``DEFAULT_WEIGHTS``): ``approach`` (telescoping reduction of the mean module-to-post surface distance),
-    ``coverage`` (ratchet on the running peak of the longest contiguous run), ``squeeze`` (bounded mean per-face force, only on hug ticks), ``hold``
+    ``coverage`` (ratchet on the running peak of the longest contiguous run), ``squeeze`` (optional, default weight 0: no squeeze condition), ``hold``
     (per hug tick, growing with the consecutive count), terminal ``hug_bonus`` x (1 + speed_gain x remaining-time fraction), ``hug_validity`` (post
     penetration beyond 5 mm). Nothing here reads the sensor model or an angle.
     """
@@ -160,9 +185,11 @@ class HugMixin:
             terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * (st.hug_modules - self._hug_peak)
             self._hug_peak = st.hug_modules
         if st.hug_tick:
-            on = self._hug_probe.read().touch & st.module_hug[:, None]
-            f = np.minimum(st.face_force[on], SQUEEZE_CAP_N) / SQUEEZE_CAP_N
-            terms["squeeze"] = P("squeeze_weight", DEFAULT_WEIGHTS["squeeze_weight"]) * float(f.mean()) if f.size else 0.0
+            sq_w = P("squeeze_weight", DEFAULT_WEIGHTS["squeeze_weight"])
+            if sq_w != 0.0:
+                on = self._hug_probe.read().touch & st.module_hug[:, None]
+                f = np.minimum(st.face_force[on], SQUEEZE_CAP_N) / SQUEEZE_CAP_N
+                terms["squeeze"] = sq_w * float(f.mean()) if f.size else 0.0
             terms["hold"] = P("hold_weight", DEFAULT_WEIGHTS["hold_weight"]) * (1.0 + st.hold_ticks / self._hug.hold_need)
         if st.just_held:
             self.hug_success = True
@@ -176,5 +203,5 @@ class HugMixin:
         """Episode-level hug numbers (ground truth) for the gate / eval."""
         h, st = self._hug, self._hug.last
         return {"hug_success": float(self.hug_success), "hug_modules": float(h.peak_modules), "hug_modules_now": float(0 if st is None else st.hug_modules),
-                "hug_threshold": float(h.h), "wrap_deg": h.peak_wrap_deg, "post_force_n": h.peak_force_n, "coverage_frac": float(0 if st is None else st.coverage),
+                "hug_threshold": float(h.h), "hold_duty": h.peak_duty, "encircled": float(h.ever_encircled), "wrap_deg": h.peak_wrap_deg, "post_force_n": h.peak_force_n, "coverage_frac": float(0 if st is None else st.coverage),
                 "t_contact_s": h.t_contact, "t_hug_s": h.t_hug, "t_hug_start_s": h.t_hug_start}

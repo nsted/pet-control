@@ -137,8 +137,9 @@ the hug favours longer bodies.
    bus current <= 4 A at the held pose). Output per L: max contiguous hugging modules, joint angles needed, holding current. Cheap (~1 h total) and may
    already exclude the short lengths.
 
-**Sweep protocol (coarse, then refine):** feasibility for all 8..15; RL at **L in {8, 11, 14}** (3 tasks x 2 seeds x 2M steps each), then **refine at
-best +-1** (2 more lengths). Same reward weights (normalised), DR, action mapping, seeds, episode lengths, step budget; 100-episode gates. Tasks:
+**Sweep protocol (coarse, then refine; revised after M1):** M1 showed the static limit is geometric (pitch vs post radius), not current or length
+(bus 0.9-2.6 A; 14-15 modules no better than 8), so the long end is dropped: RL at **L in {8, 10, 12}** (3 tasks x 2 seeds x 2M steps each), then
+**refine at best +-1** (2 more lengths). 13-15 only if 12 is clearly best. Same reward weights (normalised), DR, action mapping, seeds, episode lengths, step budget; 100-episode gates. Tasks:
 (i) flat goal reach any bearing 1.5 m (median time-to-goal, energy/m, mean/peak bus current); (ii) terrain reach at `terrain_scale 1.0`;
 (iii) hug-from-contact (sec 4.2 D1 definition). Decision rule: the shortest L that is **statically comfortable** (>= 6 contiguous hugging modules with
 <= 0.75 rad per joint and <= 4 A holding) **and** within 20% of the fastest L on flat and terrain time-to-goal **within the current budget**. Budget:
@@ -203,19 +204,25 @@ are always a superset of the gate's. Each stage: at most 3 knob iterations, then
 - **Glitch/launch guard** (episode counts against the gate): CoM speed > 3 m/s (existing, `goal_reach.py:26`), any module z > 0.5 m above local terrain,
   any contact penetration > 1 cm.
 
-### 5.3 Hug: success metric and reward (face contact; no angles)
-- **Ground truth (privileged, eval + reward):** for each module k, `face_contact_gt[k,f]` = 1 if a MuJoCo contact between module hull `g_k` and the post
-  exists whose contact normal lies within 35 deg of face f's outward normal (faces defined in sec 5.4); `module_hug_gt[k]` = any face in contact in
-  >= 3 of the last 5 ticks (debounce). **Hug tick** = the longest chain-contiguous run of hugging modules has length **>= H = max(5, ceil(0.4 * n_modules))**
-  (5 for 8-12 modules, 6 for 13-15: five contiguous modules on a 10 cm post is ~200 deg of its circumference, which a straight body alongside the post
-  cannot achieve, so the criterion itself forces wrapping). **Hug held** = 60 consecutive hug ticks (**3 s**). Episode success = held at least once;
-  `t_hug` recorded.
+### 5.3 Hug: success metric and reward (face PROXIMITY contact; no angles)
+**Re-calibration after M1 (2026-11-13, `docs/plans/M1_HUG_FEASIBILITY.md`): demonstrated mis-calibration of the metric, not of a threshold.** With rigid
+convex hulls a flat 6 cm face can touch a 5 cm-radius cylinder only along a line, and a fixed-pitch chain is over-constrained, so geom-contact on
+>= 5 contiguous modules is geometrically unreachable for any length (M1: 2-3 modules held, 9 transient at n=11 with middle modules 1-10 mm off).
+Real capacitive pads respond to **proximity** (conductive object within ~5-20 mm) and the real body has compliant covers, so the physical model is:
+- **Ground truth (privileged, eval + reward):** `face_prox_gt[k,f]` = 1 if the minimum distance between face f's polygon of module k and the post surface
+  is **<= d_prox = 15 mm** (fixed in the ground truth; the sensor model randomises 8-20 mm). Implementation hint: `margin = gap = 0.015` on the post geom
+  makes MuJoCo *detect* contacts up to 15 mm without generating force - a proximity sensor with no physics change (Sonnet verifies margin/gap combine as max).
+  `module_hug_gt[k]` = any face within d_prox in >= 3 of the last 5 ticks. **Hug tick** = longest chain-contiguous run of hugging modules
+  **>= H = max(5, ceil(0.4 * n_modules))** (a straight body alongside the post gets <= 3 modules within 15 mm as measured in M1b, so wrapping is still forced).
+  **Hug held** = hug tick true in >= 90% of the ticks of a sliding **3 s** window (dynamic hold with torque is allowed; brief dropouts tolerated).
+  Episode success = held at least once; `t_hug` recorded. **No squeeze/pressure condition** (rigid hulls cannot squeeze; pressure stays an optional obs).
+  Cross-checks (reported only): post axis inside the polygon of hugging module centres (encirclement), total normal force on the post, wrap angle.
 - **Second measurements (reported, not criteria):** coverage from the *sensor model* (should agree with ground truth within the modelled noise);
   total normal force on the post from hugging modules (a hug squeezes; expected >= ~0.3 N per module); diagnostic floor-plane wrap angle and helix height.
 - **Reward (D1/D2/E, on top of the nav reward, which keeps paying until first post contact):**
   `approach`: reduction of the mean module-to-post surface distance (privileged, telescoping);
-  `coverage`: ratchet on the running peak of the number of hugging modules in the longest contiguous run (pays growth only; S7a lesson);
-  `squeeze`: small bounded term for mean per-face normal force on hugging faces, capped at 1 N per face (optional pressure use; energy/current terms bound it);
+  `coverage`: ratchet on the running peak of the number of hugging (proximity) modules in the longest contiguous run (pays growth only; S7a lesson);
+  (no squeeze term - dropped after M1; contact forces are an artefact of rigid hulls);
   `hold`: per tick while the hug tick holds, growing with consecutive hold ticks; terminal `hug_bonus x (1 + speed_gain x remaining-time fraction)` at 3 s;
   `validity`: penalty if any penetration > 5 mm; energy, action-rate and current terms unchanged.
 - **Exploit guards**: lying alongside the post (<= 2 modules touching) earns only the saturating `approach`; flinging the body round the post earns nothing
@@ -326,8 +333,9 @@ Risks (R):
 | M | Deliverable | Success criterion | Est. |
 |---|---|---|---|
 | M0 | Infra: `n_modules` (8..15), hfield terrain + friction tiles, post, **face-sensor model + `capacitive_off`**, **per-robot current model + spike clamp + gate metrics**, hug metric (contiguous faces, hold), asymmetric critic, gate CI/ablations/blind baseline, layout cache, contact sheets, stale cap default fixed, head-frame delta + near-field channel + delta DR | all tests green; 8-module MJCF identical; face labels verified on the settled robot; hug metric unit tests (5 contiguous modules touching -> hug tick; straight body alongside -> no); current metrics match the model on a saturated-joint test; throughput logged | 3-4 days Sonnet |
-| M1 | Static hug feasibility for L = 8..15 | table: max contiguous hugging modules, joint angles, holding current; Fable shortlist | 0.5 day |
-| M2 | RL sweep {8, 11, 14} then refine +-1 (flat, terrain, hug-from-contact; 2 seeds; 100-episode tables with CIs and current metrics) | L proposed with evidence; owner approves | 1.5-2 days compute |
+| M1 | Static hug feasibility for L = 8..15 (DONE, geom-contact def.: 2-3 modules for all L -> metric re-calibrated, sec 5.3) | table: max contiguous hugging modules, joint angles, holding current | done |
+| M1b | Re-score M1 best poses and the scripted coils under the proximity definition (no new search unless < H at n=8); **dynamic hold test**: scripted coil held by torque for 3 s under the 90%-duty rule at n = 8, 10, 12 | >= H modules held for the candidate lengths, or a documented failure before M2 | DONE 2026-11-13: H held at n=8, 9 (poses) and n=8, 10 (constant coil); n=12 only at the penetration/current limit (M1_HUG_FEASIBILITY.md) |
+| M2 | RL sweep {8, 10, 12} then refine +-1 (flat, terrain, hug-from-contact; 2 seeds; 100-episode tables with CIs and current metrics) | L proposed with evidence; owner approves | 1.5-2 days compute |
 | M3 | A1 + A2 passed at L | gates with CI; lateral metric; current budget met | 1 day |
 | M4 | B1 + B2 passed; imu_off drop shown | gates + ablation | 1-2 days |
 | M5 | C1 barrier passed **with touch_off drop >= 0.20 and blind baseline <= 0.30**; C2 | the key navigation result | 3-5 days (R2) |

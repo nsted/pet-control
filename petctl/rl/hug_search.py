@@ -1,7 +1,7 @@
 """Static hug-feasibility search (Regimen v2 plan sec 3, step 4; milestone M1). Sim only, no RL.
 
 For a body of ``n`` modules, find by differential evolution the static joint-angle pose (plus the post position relative to the body) that maximises the
-ground-truth hug metric (``petctl.rl.hug``: longest chain-contiguous run of modules with a *face* touching the 10 cm post, debounced) while the pose is
+ground-truth hug metric (``petctl.rl.hug``: longest chain-contiguous run of modules with a *face* within 15 mm of the 10 cm post, debounced; M1 used geom contact) while the pose is
 HELD for 3 s under the real PD actuators, the real torque cap and the per-robot bus-current model.
 
 Evaluation protocol of one candidate ``x = (q_1..q_{n-1}, dx, dy)``:
@@ -66,6 +66,9 @@ class EvalResult:
     post_xy: tuple[float, float] = (0.0, 0.0)
     q: list[float] = field(default_factory=list)
     x: list[float] = field(default_factory=list)      # the full candidate (q.., dx, dy, alpha)
+    duty: float = 0.0            # fraction of ticks of the 3 s hold window that are hug ticks (run >= H), plan sec 5.3 proximity definition
+    run_median: float = 0.0      # median over the hold window of the debounced longest run
+    hold_ok: bool = False        # duty >= 90 %
 
 
 def circle_centre(xy: np.ndarray) -> np.ndarray:
@@ -123,6 +126,7 @@ class HugSearchSim:
         trk = HugTracker(n, CONTROL_HZ, hold_s)
         n_set, n_hold = int(round(settle_s * CONTROL_HZ)), int(round(hold_s * CONTROL_HZ))
         runs: list[int] = []
+        ticks: list[bool] = []
         touch: list[float] = []
         cur: list[float] = []
         app: list[float] = []
@@ -142,6 +146,7 @@ class HugSearchSim:
                 record.append(sim.data.qpos.copy())
             if t >= n_ramp + n_set:
                 runs.append(st.hug_modules)
+                ticks.append(st.hug_tick)
                 touch.append(float(rd.any_contact.sum()))
                 cur.append(tick["mean"])
                 app.append(tick["applied_peak"])
@@ -159,7 +164,8 @@ class HugSearchSim:
         in_run[st.run_start:st.run_start + st.hug_modules] = st.hug_modules > 0
         zspan = float(np.ptp(self._centres()[in_run, 2])) if in_run.sum() >= 2 else 0.0
         return EvalResult(score, held, mean_run, float(np.mean(touch)), bus_mean, app_pk, dem_pk, pen_max, ok, float(np.max(np.abs(q))), st.wrap_deg, zspan, st.run_start,
-                          (float(post[0]), float(post[1])), [float(v) for v in q], [float(v) for v in x])
+                          (float(post[0]), float(post[1])), [float(v) for v in q], [float(v) for v in x],
+                          float(np.mean(ticks)), float(np.median(runs)), bool(np.mean(ticks) >= 0.9))
 
 
 _SIMS: dict[int, HugSearchSim] = {}

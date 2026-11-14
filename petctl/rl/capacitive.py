@@ -19,6 +19,8 @@ from petctl.sim.faces import module_faces
 from petctl.sim.model_builder import PetSim
 
 FACE_CONE_DEG = 35.0
+D_PROX_M = 0.015                 # ground-truth proximity: a face "touches" the post when its distance to the post surface is <= this (plan sec 5.3)
+D_DETECT_M = 0.02                # distances are measured up to this (>= the largest per-episode sensor threshold)
 PRESSURE_FULL_N = 2.0            # normal force (summed over a face) that reads as pressure 1.0
 PRESSURE_LEVELS = 255            # 8-bit pressure
 PRESSURE_ZERO_P = 0.3            # fraction of training episodes with the pressure block zeroed (FSRs may be deprecated)
@@ -33,6 +35,12 @@ class PostRead:
     force: np.ndarray            # (n, 3) normal force on each face from the post (N)
     any_contact: np.ndarray      # (n,) bool, any contact between the module hull and the post (including edges/end caps that map to no face)
     penetration: float           # deepest penetration into the post this tick (m, >= 0)
+    face_dist: np.ndarray | None = None   # (n, 3) distance from each face to the post surface (m, 0 in contact, D_DETECT_M if farther); None = derived from ``touch``
+
+    def __post_init__(self) -> None:
+        """Derive ``face_dist`` from ``touch`` when not given (synthetic reads in tests)."""
+        if self.face_dist is None:
+            self.face_dist = np.where(self.touch, 0.0, D_DETECT_M)
 
 
 class PostProbe:
@@ -45,10 +53,11 @@ class PostProbe:
         self.n = int(sim.p.n_modules)
         self.post_gid = int(m.geom("post").id)
         self.faces = module_faces(m, self.n)                                   # (n, 3, 3) body frame
-        self.gid_to_k = {int(m.geom(f"g{k}").id): k for k in range(self.n)}
+        self.hull_gids = [int(m.geom(f"g{k}").id) for k in range(self.n)]
+        self.gid_to_k = {g: k for k, g in enumerate(self.hull_gids)}
         self.body_ids = [int(m.body(f"m{k}").id) for k in range(self.n)]
         self._cos = float(np.cos(np.deg2rad(FACE_CONE_DEG)))
-        self._key: tuple[float, int, float] | None = None
+        self._key: tuple[float, int, float, float, float] | None = None
         self._read: PostRead | None = None
         self._f6 = np.zeros(6)
 
@@ -67,13 +76,28 @@ class PostProbe:
         """Face contacts with the post now (cached while the contact set is unchanged)."""
         d, m = self.sim.data, self.sim.model
         nc = int(d.ncon)
-        key = (float(d.time), nc, float(d.contact.dist[:nc].sum()) if nc else 0.0)
+        gp = m.geom_pos[self.post_gid]
+        key = (float(d.time), nc, float(d.contact.dist[:nc].sum()) if nc else 0.0, float(gp[0]), float(gp[1]))
         if key == self._key and self._read is not None:
             return self._read
-        touch = np.zeros((self.n, 3), bool)
+        fdist = np.full((self.n, 3), D_DETECT_M)
         force = np.zeros((self.n, 3))
         anyc = np.zeros(self.n, bool)
         pen = 0.0
+        ft = np.zeros(6)
+        for k, gid in enumerate(self.hull_gids):                                              # proximity: nearest hull point -> post surface, mapped to a face
+            if np.hypot(*(d.xipos[self.body_ids[k], :2] - d.geom_xpos[self.post_gid, :2])) > 0.3:
+                continue
+            dist = float(mujoco.mj_geomDistance(m, d, gid, self.post_gid, D_DETECT_M, ft))
+            if 0.0 <= dist < D_DETECT_M:
+                v = ft[3:] - ft[:3]
+                nv = float(np.linalg.norm(v))
+                if nv > 1e-9:
+                    R = d.xmat[self.body_ids[k]].reshape(3, 3)
+                    dots = (R @ self.faces[k].T).T @ (v / nv)
+                    f = int(np.argmax(dots))
+                    if dots[f] >= self._cos:
+                        fdist[k, f] = min(fdist[k, f], dist)
         for i in range(nc):
             c = d.contact[i]
             g1, g2 = int(c.geom1), int(c.geom2)
@@ -91,9 +115,9 @@ class PostProbe:
             f = int(np.argmax(dots))
             if dots[f] >= self._cos:
                 mujoco.mj_contactForce(m, d, i, self._f6)
-                touch[k, f] = True
+                fdist[k, f] = 0.0
                 force[k, f] += max(float(self._f6[0]), 0.0)
-        self._key, self._read = key, PostRead(touch, force, anyc, pen)
+        self._key, self._read = key, PostRead(fdist <= D_PROX_M, force, anyc, pen, fdist)
         return self._read
 
 
@@ -108,6 +132,7 @@ class CapParams:
     p_fp: float = 0.005              # per-face false positive
     pressure_noise: float = 0.10     # relative (1 sigma)
     pressure_zero: bool = False      # pressure block reads zero this episode
+    thresh_m: float = D_PROX_M       # proximity threshold of this episode's pads (the ground-truth metric stays at D_PROX_M)
 
 
 def sample_cap_params(dr: DomainRand, rng: np.random.Generator, training: bool) -> CapParams:
@@ -115,6 +140,7 @@ def sample_cap_params(dr: DomainRand, rng: np.random.Generator, training: bool) 
     s = dr.scale
     p = CapParams(rate_hz=_u(rng, *dr.cap_rate_hz, s), latency_s=_u(rng, *dr.cap_latency_s, s), p_drop=_u(rng, *dr.cap_dropout, s),
                   p_fn=_u(rng, *dr.cap_fn, s), p_fp=_u(rng, *dr.cap_fp, s), pressure_noise=_u(rng, *dr.cap_pressure_noise, s))
+    p.thresh_m = _u(rng, *dr.cap_thresh_m, s, D_PROX_M)
     p.pressure_zero = bool(training and s > 0.0 and rng.random() < PRESSURE_ZERO_P)
     return p
 
@@ -144,8 +170,13 @@ class CapacitiveSensor:
         self._acc = float(self.rng.random())
         self._out = (np.zeros((self.n_modules, 3)), np.zeros((self.n_modules, 3)))
 
-    def step(self, touch_gt: np.ndarray, force: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Advance one control tick with the ground-truth post contacts; returns the sensor output."""
+    def step(self, touch_gt: np.ndarray, force: np.ndarray, face_dist: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Advance one control tick with the ground-truth post contacts; returns the sensor output.
+
+        With ``face_dist`` (n, 3 distances to the post, m) the pads respond to proximity within this episode's ``params.thresh_m`` instead of ``touch_gt``.
+        """
+        if face_dist is not None:
+            touch_gt = np.asarray(face_dist) <= self.params.thresh_m
         self._tick += 1
         p = self.params
         if not self.enabled:

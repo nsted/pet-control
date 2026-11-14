@@ -222,16 +222,46 @@ def test_hold_timing(hold_s: float) -> None:
     need = int(round(hold_s * 20))
     for t in range(1, need + 40):
         s = h.update(_read(_faces([3, 4, 5, 6, 7])), xy, post)
-        assert s.held == (s.hold_ticks >= need and t >= need + 2)    # debounce delays the first hug tick by 2 ticks
+        assert s.held == (t >= need)                                  # window full at t = need; the 2 debounce ticks are only 2/need dropouts (<= 10 %)
         if s.just_held:
-            assert s.hold_ticks == need and t == need + 2 and h.t_hug == pytest.approx(t / 20.0)
+            assert t == need and h.t_hug == pytest.approx(t / 20.0) and s.duty >= 0.9
     assert h.held
     h = HugTracker(11, 20.0, hold_s=hold_s)
-    for t in range(need - 4):
+    for t in range(need // 2):
         h.update(_read(_faces([3, 4, 5, 6, 7])), xy, post)
-    for _ in range(5):                                                                    # a break (modules lose contact) resets the hold counter
-        h.update(_read(), xy, post)
+    for _ in range(need // 4):                                                                 # a break (modules lose contact) resets the consecutive counter
+        s = h.update(_read(), xy, post)
     assert not h.held and h.hold_ticks == 0
+
+
+def _duty(pattern: list[bool]) -> HugTracker:
+    h = HugTracker(11, 20.0, hold_s=3.0)                                                  # 60-tick window, needs >= 54 hug ticks
+    for i, on in enumerate(pattern):
+        h.push_hug_tick(on, (i + 1) / 20.0)
+    return h
+
+
+def test_duty_cycle_hold_logic_with_dropouts() -> None:
+    assert _duty([True] * 60).held                                                        # clean hold
+    assert _duty([i % 10 != 9 for i in range(60)]).held                                   # 6 dropouts in 60 = exactly 90 %: held
+    assert not _duty([i % 8 != 7 for i in range(60)]).held                                # 7 dropouts = 88 %: not held
+    assert _duty([i % 10 != 9 for i in range(200)]).held
+    assert not _duty([True] * 40 + [False] * 60).held                                     # 2 s of hug then nothing
+    assert not _duty([True] * 59).held                                                    # window not yet full
+    h = _duty([True] * 30 + [False] * 9 + [True] * 100)                                   # a 0.3 s dropout then a clean hold: held once a window is >= 90 %
+    assert h.held and h.t_hug > 3.0 and h.duty >= 0.9
+    h = _duty([True] * 60 + [False] * 30)
+    assert h.held and h.t_hug == pytest.approx(3.0)                                       # sticky: later dropouts do not un-hold
+    h = _duty([True] * 60)
+    assert h.t_hug_start == pytest.approx(h.t_hug - 59 / 20.0)
+
+
+def test_end_to_end_duty_with_input_dropouts() -> None:
+    xy, post = np.zeros((11, 2)), np.zeros(2)
+    h = HugTracker(11, 20.0)
+    for i in range(80):                                                                   # contact lost every 8th tick: the 3-of-5 debounce rides over single-tick losses
+        s = h.update(_read(_faces([3, 4, 5, 6, 7]) if i % 8 != 7 else _faces([])), xy, post)
+    assert s.held and h.peak_duty > 0.9
 
 
 def test_wrap_angle_diagnostic() -> None:
@@ -245,21 +275,94 @@ def test_wrap_angle_diagnostic() -> None:
 
 # ---------------------------------------------------------------- goal_hug task
 @needs_urdf
-def test_straight_body_alongside_post_is_no_hug() -> None:
-    n = 11
+@pytest.mark.parametrize("n", [8, 11, 15])
+def test_straight_body_alongside_post_is_no_hug(n: int) -> None:
+    """A straight body tangent to the post (0 to 3 mm penetration) has at most 3 modules (hull length 6 cm > pitch 5.1 cm) within 15 mm: never a hug tick for any H >= 5.
+
+    The plan says "<= 2"; the measured maximum is 3 (see M1_HUG_FEASIBILITY.md, M1b), still below H.
+    """
     sim = _sim(n, post=(1.5, 1.5))
     sim.step(np.zeros(n - 1), 1.5)
     pr = PostProbe.of(sim)
     worst = 0
-    for x in np.linspace(0.05, -0.38, 18):
-        for side in (1.0, -1.0):
-            _place_post(sim, x, side * (0.035 + 0.05 - 0.003))
-            worst = max(worst, int(pr.read().touch.any(1).sum()))
-            h = HugTracker(n, 20.0)
-            for _ in range(10):
-                s = h.update(pr.read(), sim.data.xipos[1:, :2], np.array([x, side * 0.082]))
-            assert s.hug_modules <= 2 and not s.hug_tick
-    assert 1 <= worst <= 2                                                  # a straight line touches a round post at one place (two modules at a joint)
+    for off in (0.0, -0.003):
+        for x in np.linspace(0.05, -0.05 * (n - 1) + 0.15, 20):
+            for side in (1.0, -1.0):
+                _place_post(sim, x, side * (0.035 + 0.05 + off))
+                worst = max(worst, int(pr.read().touch.any(1).sum()))
+                h = HugTracker(n, 20.0)
+                for _ in range(10):
+                    s = h.update(pr.read(), sim.data.xipos[1:n + 1, :2], np.array([x, side * 0.085]))
+                assert s.hug_modules <= 3 < hug_threshold(n) and not s.hug_tick
+    assert 2 <= worst <= 3
+
+
+@needs_urdf
+def test_proximity_is_force_free_and_ranges_15mm() -> None:
+    n = 11
+    sim = _sim(n, post=(1.5, 1.5))
+    sim.step(np.zeros(n - 1), 1.5)
+    pr = PostProbe.of(sim)
+    for gap, expect in ((0.030, False), (0.017, False), (0.012, True), (0.005, True)):
+        _place_post(sim, -0.15, 0.035 + 0.05 + gap)
+        r = pr.read()
+        assert bool(r.touch[:, LEFT].any()) == expect and r.force.sum() == 0.0 and r.penetration == 0.0
+        if expect:
+            assert 0.0 < r.face_dist[r.touch].max() <= 0.015
+    _place_post(sim, -0.15, 0.035 + 0.05 - 0.003)                                          # penetration: now a force and distance 0
+    r = pr.read()
+    assert r.force.sum() > 0.0 and r.penetration > 0.0 and r.face_dist.min() == 0.0
+
+
+@needs_urdf
+def test_proximity_does_not_change_dynamics() -> None:
+    """The probe only measures: stepping with and without reading it gives bit-identical trajectories."""
+    n = 11
+    out = []
+    for read in (False, True):
+        sim = _sim(n, post=(-0.15, 0.092))
+        pr = PostProbe.of(sim)
+        for _ in range(40):
+            sim.step(np.full(n - 1, 0.3), 0.05)
+            if read:
+                pr.read()
+        out.append(sim.data.qpos.copy())
+    assert np.array_equal(out[0], out[1])
+
+
+def test_five_contiguous_modules_within_15mm_make_a_hug_tick() -> None:
+    n, r0 = 11, 0.05 + 0.012
+    ang = np.deg2rad(np.linspace(0, 120, 5))
+    xy = np.zeros((n, 2)) + 5.0
+    xy[3:8] = r0 * np.c_[np.cos(ang), np.sin(ang)]
+    fd = np.full((n, 3), 0.02)
+    fd[3:8, 0] = 0.012
+    h = HugTracker(n, 20.0)
+    for _ in range(5):
+        s = h.update(PostRead(fd <= 0.015, np.zeros((n, 3)), np.zeros(n, bool), 0.0, fd), xy, np.zeros(2))
+    assert s.hug_tick and s.hug_modules == 5 and not s.encircled                      # 120 deg of wrap does not encircle
+    xy[3:8] = r0 * np.c_[np.cos(np.linspace(0, 2 * np.pi, 6)[:5]), np.sin(np.linspace(0, 2 * np.pi, 6)[:5])]
+    s = h.update(PostRead(fd <= 0.015, np.zeros((n, 3)), np.zeros(n, bool), 0.0, fd), xy, np.zeros(2))
+    assert s.encircled
+    fd[3:8, 0] = 0.018                                                                   # 18 mm: outside the ground-truth radius
+    h = HugTracker(n, 20.0)
+    for _ in range(5):
+        s = h.update(PostRead(fd <= 0.015, np.zeros((n, 3)), np.zeros(n, bool), 0.0, fd), xy, np.zeros(2))
+    assert s.hug_modules == 0
+
+
+def test_sensor_threshold_randomised_in_8_20_mm() -> None:
+    dr = DomainRand()
+    rng = np.random.default_rng(0)
+    th = np.array([sample_cap_params(dr, rng, True).thresh_m for _ in range(2000)])
+    assert th.min() >= 0.008 and th.max() <= 0.020 and th.min() < 0.0095 and th.max() > 0.0185 and th.mean() == pytest.approx(0.014, abs=0.001)
+    assert sample_cap_params(DomainRand(scale=0.0), rng, True).thresh_m == pytest.approx(0.015)
+    fd = np.full((2, 3), 0.02)
+    fd[0, 0], fd[1, 1] = 0.010, 0.016
+    for thr, want in ((0.008, (0, 0)), (0.012, (1, 0)), (0.018, (1, 1))):
+        s = CapacitiveSensor(2, 0.05, CapParams(rate_hz=20.0, latency_s=0.0, p_drop=0.0, p_fn=0.0, p_fp=0.0, thresh_m=thr), np.random.default_rng(1))
+        t, _ = s.step(fd <= 0.015, np.zeros((2, 3)), fd)
+        assert (int(t[0, 0]), int(t[1, 1])) == want
 
 
 @needs_urdf
@@ -299,7 +402,7 @@ def test_goal_hug_reward_terms_and_success_termination() -> None:
         if done:
             break
     assert done and t.hug_success and info["metrics"]["success"] == 1.0 and info["metrics"]["hug_modules"] == 3.0
-    assert seen["coverage"] == pytest.approx(2.0 * 3) and seen["hold"] > 0 and seen["squeeze"] > 0 and seen["hug_bonus"] > 100.0
+    assert seen["coverage"] == pytest.approx(2.0 * 3) and seen["hold"] > 0 and seen["squeeze"] == 0.0 and seen["hug_bonus"] > 100.0
     assert info["terms"]["hug_bonus"] > 100.0                                           # terminal bonus, speed scaled
     assert t._hug.t_contact == pytest.approx(0.05)                                      # progress stops paying from first contact
 

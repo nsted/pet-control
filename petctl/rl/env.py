@@ -260,7 +260,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             probe = PostProbe.of(self.sim)
             if probe is not None:
                 gt = probe.read()
-                self._cap_out = self.cap_sensor.step(gt.touch, gt.force)
+                self._cap_out = self.cap_sensor.step(gt.touch, gt.force, gt.face_dist)
         terminated = (self.task.terminate_on_flip and self._up_dot() < c.flip_up_dot) or self.task.terminated(self.sim)
         truncated = self._t >= self.max_steps
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}

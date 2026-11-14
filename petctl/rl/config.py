@@ -40,6 +40,7 @@ class DomainRand:
     cap_dropout: tuple[float, float] = (0.02, 0.05)         # whole sample lost, previous value held
     cap_fn: tuple[float, float] = (0.02, 0.05)              # per-face false negative
     cap_fp: tuple[float, float] = (0.005, 0.005)            # per-face false positive
+    cap_thresh_m: tuple[float, float] = (0.008, 0.020)      # per-episode proximity threshold of the face pads (ground truth stays 15 mm), plan sec 5.3
     cap_pressure_noise: tuple[float, float] = (0.10, 0.10)  # relative 1-sigma
     reply_noise_mult: tuple[float, float] = (0.5, 2.0)      # motor-reply torque noise multiplier (log-uniform about 1), task knob reply_dr, assumption A3
     reply_delay_ticks: tuple[float, float] = (1.0, 2.0)     # reply-frame delay in control ticks (rounded)

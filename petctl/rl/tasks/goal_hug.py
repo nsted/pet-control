@@ -2,8 +2,8 @@
 
 ``GoalObstacles`` with the target post always on (``post`` defaults to 1) plus the ground-truth hug metric and reward of ``petctl.rl.hug``. The navigation
 progress reward keeps paying until the first post contact, after which the hug terms take over; the episode ends successfully when the hug has been held
-(``hug_hold_s``, default 3 s). ``success`` in the metrics is the hug success. Knobs (besides those of GoalObstacles/GoalReach): ``hug_hold_s``, ``hug_h``
-(contiguous-module threshold; default max(5, ceil(0.4 n))), ``approach_weight``, ``coverage_weight``, ``squeeze_weight``, ``hold_weight``, ``hug_bonus``,
+(``hug_hold_s``, default 3 s window, 90 % duty). ``success`` in the metrics is the hug success. Knobs (besides those of GoalObstacles/GoalReach): ``hug_hold_s``, ``hug_h``
+(contiguous-module threshold; default max(5, ceil(0.4 n))), ``approach_weight``, ``coverage_weight``, ``squeeze_weight`` (default 0: no squeeze condition), ``hold_weight``, ``hug_bonus``,
 ``speed_gain``. Observation knobs ``capacitive_obs`` / ``capacitive_off`` apply as for any task (see obs.py).
 """
 

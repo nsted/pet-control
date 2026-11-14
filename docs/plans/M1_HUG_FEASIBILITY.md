@@ -52,3 +52,44 @@ Not on the number that matters. The scripted 11-module pose reached 9 contiguous
 - I did not log the transient peak of the search poses (the reference's 9 is a transient peak), so the comparison reference-vs-search is held-vs-transient; a like-for-like transient comparison was not done.
 - `HELIX_Z_M` was first set to 2.5 cm (below the 3 cm zig-zag) and mislabelled everything helical in the raw log lines; table.json was re-labelled from the stored z-span (planar everywhere). Helical poses may exist but were not found; the seed population contained no helical seeds beyond what the 45 deg joint axes give.
 - Bounds, alpha range, seeds, start protocol are my choices (no design decisions intended); the run log is `data/rl/m1_hug_feasibility/run.log`.
+
+
+## M1b: re-score under the proximity definition (2026-11-13)
+
+Why: the geom-contact metric of M1 was unreachable by construction (flat 6 cm faces vs a 5 cm-radius post, rigid hulls; table above). New definition (plan sec 5.3): face-to-post-surface distance <= 15 mm (ground truth, fixed; the capacitive sensor model randomises its own 8-20 mm threshold per episode), module hugs if in >= 3 of the last 5 ticks, hug tick = longest chain-contiguous run >= H, **held = hug tick on >= 90 % of the ticks of a sliding 3 s window**, no squeeze/pressure condition (encirclement, normal force, wrap are diagnostics). Code: `petctl/rl/capacitive.py` (`PostProbe`, `D_PROX_M`), `petctl/rl/hug.py`, script `scripts/rl/m1b_rescore.py`, raw `data/rl/m1_hug_feasibility/m1b_rescore.json`, `m1b_sweep.json`, `m1b_sweep_n12_fine.json`. Same protocol as M1 (ramp alpha*q -> q over 2 s, settle 1 s, hold 3 s, 0.5 N.m cap, bus model with 10 A clamp, delay 0.08 s, friction 1.0).
+
+**Implementation note (deviation from the hint).** MuJoCo `margin = gap = 0.015` on the post geom does NOT give force-free detection in MuJoCo 3.17: contacts reported `includemargin` = margin regardless of `gap` (tested gap 0 / 0.01 / 0.02 on post and hulls), so forces appeared at 10-15 mm separation and the trajectories changed. The proximity is therefore computed directly: `mj_geomDistance(hull_k, post, distmax 20 mm)` per module (about 0.01 ms for 11 modules), the nearest-point direction mapped to a face with the existing 35 deg cone; penetrating hulls still use the real contacts (force, penetration unchanged). Physics is unchanged (test: trajectories bit-identical with and without reading the probe); post geom margin/gap are not used.
+
+### M1 best poses re-scored (the saved `x` of table.json, same protocol)
+
+| pose | n | H | min / median run over 3 s hold | hug-tick duty | hold (>= 90 %) | bus mean / applied peak (A) | pen (mm) | wrap (deg) |
+|---|---|---|---|---|---|---|---|---|
+| M1 best n=8 | 8 | 5 | 5 / 5 | 1.00 | YES | 1.5 / 1.5 | 0.1 | 129 |
+| M1 best n=9 | 9 | 5 | 6 / 6 | 1.00 | YES | 2.41 / 2.5 | 0.1 | 158 |
+| M1 best n=10 | 10 | 5 | 3 / 3 | 0.00 | no | 1.24 / 1.2 | 0.0 | 59 |
+| M1 best n=11 | 11 | 5 | 4 / 4 | 0.00 | no | 1.07 / 1.1 | 0.2 | 92 |
+| M1 best n=12 | 12 | 5 | 4 / 4 | 0.00 | no | 0.87 / 0.9 | 0.0 | 94 |
+| M1 best n=13 | 13 | 6 | 3 / 3 | 0.00 | no | 2.33 / 2.4 | 0.0 | 61 |
+| M1 best n=14 | 14 | 6 | 5 / 5 | 0.00 | no | 2.25 / 2.3 | 0.1 | 131 |
+| M1 best n=15 | 15 | 6 | 2 / 2 | 0.00 | no | 2.55 / 2.6 | 0.0 | 30 |
+| scripted coil alpha=0.7 | 11 | 5 | 0 / 0 | 0.00 | no | 6.64 / 6.7 | 0.0 | 0 |
+| scripted coil alpha=0.85 | 11 | 5 | 1 / 1 | 0.00 | no | 4.56 / 4.6 | 0.0 | 0 |
+| scripted coil alpha=0.95 | 11 | 5 | 0 / 0 | 0.00 | no | 4.46 / 4.5 | 0.0 | 0 |
+| scripted coil alpha=1.0 | 11 | 5 | 1 / 1 | 0.00 | no | 3.46 / 3.5 | 0.0 | 0 |
+
+(M1 reported held 3, 3, 2, 2, 2, 2, 3, 2 modules for n = 8..15 under geom contact.) n=8 and n=9 poses already satisfy H with the 90 % duty rule (5 and 6 contiguous modules within 15 mm for the whole hold). n=10-15 poses were optimised for the old metric and are not hugs under the new one (run 2-5, duty 0). The scripted 11-module coil is not held: at the M1 placement protocol the post is pushed off / the body jams (bus 3.5-6.6 A, run 0-1), so it is only reachable dynamically (see below).
+
+### Dynamic hold test: scripted coil, all joints at one angle (ramp-in alpha*q -> q), post at the fitted-circle centre
+
+Angle grid 0.20..1.40 rad step 0.05, alpha in (0.7, 0.85, 0.95), n = 8, 10, 12 (75 evaluations per n). Feasible = bus mean <= 4 A, applied peak <= 10 A, penetration <= 10 mm.
+
+| n | angle range with duty >= 0.9 and bus mean <= 4 A, peak <= 10 A, pen <= 10 mm (alpha 0.85 / 0.95) | best (angle, alpha): run, duty, bus mean A |
+|---|---|---|
+| 8 | 0.8..1.05 rad (8 of 75 grid points) | (0.8, 0.95): 8, 1.0, 0.82 |
+| 10 | 0.85..1.0 rad (6 of 75 grid points) | (0.9, 0.95): 10, 1.0, 1.66 |
+| 12 | none | - |
+
+n=8: all 8 modules within 15 mm for the whole hold at angles 0.80-1.00 rad (alpha 0.85-0.95), bus 0.8-2.6 A, penetration 0.0 mm, wrap 200 deg. n=10: all 10 modules at 0.85-1.00 rad, bus 1.7-3.8 A, wrap 265 deg. n=12 (coarse grid): the only duty-1.0 points have bus 4.7-10 A or penetrate the post by ~10 mm; a finer 108-point grid (angle 0.70-1.10 step 0.025, alpha 0.86-0.98) gave 19 points with duty >= 0.9 but only 2 feasible, both with post penetration 9.9-11 mm (the coil closes on itself, wrap 383 deg, and the post sits in a rigid-hull overlap): the best feasible is angle 1.025, alpha 0.96, 12 modules, bus 3.46 A, pen 9.9 mm (at the 10 mm validity limit, i.e. borderline). So H is reached by a constant coil at n=8 and n=10 cleanly, at n=12 only at the penetration/current limits.
+
+Caveats: single-shot results, the duty-1.0 region is narrow in alpha (start looseness: alpha 0.7 fails at 8/10), post placement is at the fitted circle centre (no offset search), and the sweep did not test robustness to post offset or friction. Straight body alongside the post: up to 3 modules (not 2 as the plan states) are within 15 mm (hull length 6 cm > pitch 5.1 cm; test `test_straight_body_alongside_post_is_no_hug`), still below H >= 5.
+M1b outcome: H reachable under the proximity definition for n = 8, 9 (searched poses) and n = 8, 10 (constant coil, with margin); no new DE search was needed.
