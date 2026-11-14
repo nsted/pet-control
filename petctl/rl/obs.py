@@ -66,6 +66,7 @@ class ObsBuilder:
         self.n_joints = nj = cfg.n_joints
         self.capacitive = float(cfg.task_params.get("capacitive_obs", 0.0)) > 0.0         # post-only face sensors; block appended after everything else (9 per module)
         self.capacitive_off = float(cfg.task_params.get("capacitive_off", 0.0)) > 0.0      # ablation: zero the capacitive block
+        self.imu_off = float(cfg.task_params.get("imu_off", 0.0)) > 0.0                    # ablation: zero the IMU channels (gravity direction + gyro)
         self.n_modules = cfg.n_modules
         self.size = (3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
                      + (9 * cfg.n_modules if self.capacitive else 0))
@@ -98,7 +99,8 @@ class ObsBuilder:
         self._pos.append(snap.joint_pos.copy())
         w = len(self._pos) - 1
         vel = (self._pos[-1] - self._pos[0]) / (w * self.dt)
-        parts = [gravity_in_body(snap.quat), snap.gyro, snap.joint_pos, np.clip(vel, -10, 10), snap.cap_nm / 0.164,
+        grav, gyro = (np.zeros(3), np.zeros(3)) if self.imu_off else (gravity_in_body(snap.quat), snap.gyro)
+        parts = [grav, gyro, snap.joint_pos, np.clip(vel, -10, 10), snap.cap_nm / 0.164,
                  np.concatenate(list(self._act)), np.asarray(snap.extra, float).reshape(-1)[:self.extra_dim]]
         if self.touch:                                       # contact is inferred from the MIT reply: torque and tracking error, this tick and the previous one
             cur = np.concatenate([np.clip(snap.torque / np.maximum(snap.cap_nm, 1e-6), -1.5, 1.5), np.clip((snap.target - snap.joint_pos) * TOUCH_ERR_SCALE, -3.0, 3.0)])

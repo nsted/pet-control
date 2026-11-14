@@ -68,17 +68,18 @@ def _log_video(out: Path) -> None:
 
 def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds: float | None = None, seed: int = 0,
                  dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (960, 540), task_params: dict[str, float] | None = None, base: Any = None,
-                 distance: float = 0.9, azimuth: float = 130.0, label: str | None = None) -> dict[str, float]:
+                 distance: float = 0.9, azimuth: float = 130.0, label: str | None = None, replace_task_params: bool = False) -> dict[str, float]:
     """Roll out ``run/policy_file`` deterministically for one episode, write an MP4 to ``out``, return the episode metrics.
 
     ``task_params`` overrides entries of the run's ``EnvConfig.task_params`` (e.g. force a mid-route goal change for a demo).
+    ``replace_task_params=True`` uses ``task_params`` instead of merging it over the run's (replays a gate episode exactly).
     Every frame carries a caption saying what was being trained (``label``, default derived from the stage/task of the run).
     """
     if not video_budget_ok():
         raise RuntimeError(f"video budget reached ({VIDEO_BUDGET_PER_HOUR}/hour); set PETCTL_VIDEO_FORCE=1 only for an explicit owner request")
     pol = GaitPolicy(run, policy_file)
     pol.cfg.dr.scale = dr_scale
-    pol.cfg.task_params = {**pol.cfg.task_params, **(task_params or {})}
+    pol.cfg.task_params = dict(task_params or {}) if replace_task_params else {**pol.cfg.task_params, **(task_params or {})}
     if seconds is not None:
         pol.cfg.episode_s = seconds
     env = PetEnv(pol.cfg, base)

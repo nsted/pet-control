@@ -29,7 +29,9 @@ def export_policy(run: Path, model_file: str = "model", norm_file: str = "vecnor
         vn: VecNormalize = pickle.load(f)
     pol = model.policy
     layers = [m for m in pol.mlp_extractor.policy_net if hasattr(m, "weight")] + [pol.action_net]
-    arrays: dict[str, np.ndarray] = {"n_layers": np.array(len(layers)), "obs_mean": vn.obs_rms.mean, "obs_var": vn.obs_rms.var,
+    n_pol = getattr(pol.mlp_extractor, "n_policy", None)       # asymmetric critic (petctl.rl.asym): the actor reads only the leading deployable observation entries
+    n_obs = vn.obs_rms.mean.shape[0] if n_pol is None else int(n_pol)
+    arrays: dict[str, np.ndarray] = {"n_layers": np.array(len(layers)), "obs_mean": vn.obs_rms.mean[:n_obs], "obs_var": vn.obs_rms.var[:n_obs],
                                      "clip_obs": np.array(vn.clip_obs), "eps": np.array(vn.epsilon)}
     for i, lin in enumerate(layers):
         arrays[f"w{i}"] = lin.weight.detach().numpy().astype(np.float64)

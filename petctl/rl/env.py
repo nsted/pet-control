@@ -17,7 +17,7 @@ from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot
 from petctl.rl.tasks import TASKS
 from petctl.sim.bus import BusClamp
-from petctl.sim.model_builder import BuildParams, PetSim
+from petctl.sim.model_builder import POST_RADIUS_M, BuildParams, PetSim
 from petctl.sim.terrain import START_RADIUS_M, generate_terrain
 
 SETTLE_S = 0.75
@@ -124,6 +124,40 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             state, goal = cache.get(int(self._rng.integers(cache.n)), make)
             return self.task.restore_layout(state, goal)  # type: ignore[attr-defined, no-any-return]
         return self.task.layout(head, heading, self._rng)
+
+    def privileged_dim(self) -> int:
+        """Length of ``privileged_vector()`` for this env's module count: ``17 + 7 n_modules``."""
+        return 17 + 7 * self.cfg.n_modules
+
+    def privileged_vector(self) -> np.ndarray:
+        """Flat privileged state for an asymmetric critic (never observed by the actor; plan sec 2 "Privileged" list; blocks absent in this episode read zero).
+
+        Layout: plant (kp, delay_s, armature, coulomb_scale, cap_nm, floor_friction) 6 | terrain level, height under head, under CoM 3 | post present, head-to-post
+        dx, dy 3 | per-module distance to the post surface n | ground-truth face touch 3n | face normal force 3n | distance-field value at head, its gradient (2),
+        value at CoM 4 | last-tick bus current 1.
+        """
+        assert self.sim is not None
+        n, sim = self.cfg.n_modules, self.sim
+        pv = self.privileged
+        head, com = sim.head_pos(), sim.data.subtree_com[1].copy()
+        ter = sim.p.terrain
+        th = (0.0, 0.0, 0.0) if ter is None else (float(pv.get("terrain_level", 0.0)), float(ter.height_at(head[0], head[1])), float(ter.height_at(com[0], com[1])))
+        post = np.zeros(3 + n + 6 * n)
+        probe = PostProbe.of(sim)
+        if sim.p.post is not None and probe is not None:
+            px, py = sim.p.post
+            post[:3] = (1.0, px - head[0], py - head[1])
+            post[3:3 + n] = np.maximum(np.linalg.norm(sim.data.xipos[1:n + 1, :2] - np.array([px, py]), axis=1) - POST_RADIUS_M, 0.0)
+            r = probe.read()
+            post[3 + n:3 + 4 * n], post[3 + 4 * n:] = r.touch.reshape(-1).astype(float), r.force.reshape(-1)
+        fld = np.zeros(4)
+        field = getattr(self.task, "_field", None)
+        if field is not None:
+            g = field.direction(head)
+            fld[:] = (field.value(head), g[0], g[1], field.value(com))
+        bus = float(self._bus_means[-1]) if self.bus is not None and self._bus_means else 0.0
+        plant = [float(pv.get(k, 0.0)) for k in ("kp", "delay_s", "armature", "coulomb_scale", "cap_nm", "floor_friction")]
+        return np.concatenate([plant, th, post, fld, [bus]]).astype(np.float32)
 
     def _up_dot(self) -> float:
         assert self.sim is not None

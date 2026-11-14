@@ -22,11 +22,14 @@ def _git_hash() -> str:
         return "unknown"
 
 
-def make_env_fn(cfg: EnvConfig, rank: int, seed: int) -> Callable[[], Any]:
-    """Factory for vectorised envs: each worker gets its own seed stream."""
+def make_env_fn(cfg: EnvConfig, rank: int, seed: int, asymmetric: bool = False) -> Callable[[], Any]:
+    """Factory for vectorised envs: each worker gets its own seed stream. ``asymmetric``: append the privileged vector to the observation (see ``petctl.rl.asym``)."""
     def _f() -> Any:
         from stable_baselines3.common.monitor import Monitor
-        env = PetEnv(cfg)
+        env: Any = PetEnv(cfg)
+        if asymmetric:
+            from petctl.rl.asym import PrivilegedObsWrapper
+            env = PrivilegedObsWrapper(env)
         env.reset(seed=seed + rank)
         return Monitor(env)
     return _f
@@ -71,10 +74,11 @@ def warm_start(model: Any, venv: Any, src: Path) -> dict[str, int]:
 
 
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
-          ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None) -> Path:
+          ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None, asymmetric: bool = False) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``.
 
     ``init_from``: a PPO run directory to warm-start from (see ``warm_start``). ``video=False`` skips the end-of-run video in docs/media. ``stop_when_gate_passes``: a curriculum ``Stage``; training stops as soon as its gate passes.
+    ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
     """
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
@@ -87,14 +91,21 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     torch.set_num_threads(1)
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.json").write_text(json.dumps(cfg.to_dict(), indent=1))   # written first so best/checkpoint policies are replayable mid-run
-    fns = [make_env_fn(cfg, i, seed) for i in range(n_envs)]
+    fns = [make_env_fn(cfg, i, seed, asymmetric) for i in range(n_envs)]
     venv: Any = SubprocVecEnv(fns) if n_envs > 1 else DummyVecEnv(fns)
     venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0)
     model: Any
+    if asymmetric and algo != "ppo":
+        raise ValueError("asymmetric critic is implemented for PPO only")
+    policy: Any = "MlpPolicy"
+    pkw: dict[str, Any] = {"net_arch": [256, 256], "log_std_init": -1.0}
+    if asymmetric:
+        from petctl.rl.asym import AsymActorCriticPolicy
+        policy, pkw = AsymActorCriticPolicy, {**pkw, "n_policy": PetEnv(cfg).observation_space.shape[0]}
     if algo == "ppo":
-        model = sb3.PPO("MlpPolicy", venv, n_steps=int(os.environ.get("PETCTL_NSTEPS", "256")), batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=float(os.environ.get("PETCTL_GAMMA", "0.99")), gae_lambda=0.95,
+        model = sb3.PPO(policy, venv, n_steps=int(os.environ.get("PETCTL_NSTEPS", "256")), batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=float(os.environ.get("PETCTL_GAMMA", "0.99")), gae_lambda=0.95,
                         clip_range=0.2, ent_coef=ent_coef, learning_rate=lambda f: float(os.environ.get("PETCTL_LR", "3e-4")) * f, seed=seed, verbose=1,
-                        policy_kwargs={"net_arch": [256, 256], "log_std_init": -1.0}, tensorboard_log=str(out / "tb"))
+                        policy_kwargs=pkw, tensorboard_log=str(out / "tb"))
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))
     if init_from is not None:
@@ -117,7 +128,8 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     venv.save(str(out / "vecnormalize.pkl"))
     (out / "config.json").write_text(json.dumps(cfg.to_dict(), indent=1))
     (out / "meta.json").write_text(json.dumps({"git": _git_hash(), "mujoco": mujoco.__version__, "sb3": sb3.__version__, "torch": torch.__version__,
-                                               "steps": steps, "n_envs": n_envs, "seed": seed, "algo": algo, "wall_s": time.time() - t0}, indent=1))
+                                               "steps": steps, "n_envs": n_envs, "seed": seed, "algo": algo, "wall_s": time.time() - t0,
+                                               **({"asymmetric": True} if asymmetric else {})}, indent=1))
     venv.close()
     if algo == "ppo":
         from petctl.rl.policy import export_policy
@@ -136,7 +148,11 @@ def evaluate(out: Path, episodes: int = 20, dr_scale: float | None = None) -> di
     cfg = EnvConfig.from_dict(json.loads((out / "config.json").read_text()))
     if dr_scale is not None:
         cfg.dr.scale = dr_scale
-    env = PetEnv(cfg)
+    env: Any = PetEnv(cfg)
+    meta = out / "meta.json"
+    if meta.exists() and json.loads(meta.read_text()).get("asymmetric"):          # asymmetric critic: the model's observation carries the privileged tail
+        from petctl.rl.asym import PrivilegedObsWrapper
+        env = PrivilegedObsWrapper(env)
     venv: Any = VecNormalize.load(str(out / "vecnormalize.pkl"), DummyVecEnv([lambda: env]))
     venv.training, venv.norm_reward = False, False
     model = sb3.PPO.load(str(out / "model"))
