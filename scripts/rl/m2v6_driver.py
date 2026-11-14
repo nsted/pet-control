@@ -204,6 +204,10 @@ def main() -> int:
             take = m2v6.WallTakeoffCallback(TAKEOFF_AT_MIN * 60.0 * sc)
             log(f"flat pilot seed{k} -> {out}")
             info = train_phase("m2_flat3", out, L, FLAT3_PILOT, FLAT3_PILOT_ENT, k, None, PILOT_BUDGET_MIN, PILOT_CAP, n_envs, sc, extra=[take])
+            if take.checked_at is None:                                  # the pilot ended (step cap) before the 6-min check: apply the rule to its final rolling success
+                ok, take.rate = m2v6.takeoff_ok([float(r.get("success", 0.0)) for r in m2v6.read_episodes(out)])
+                take.checked_at, take.failed = info["steps"], not ok
+                log(f"[takeoff] pilot ended before the check time: rolling success {take.rate:.3f} over the last {m2v6.TAKEOFF_WINDOW} episodes: {'ok' if ok else 'FAIL'}")
             go = not take.failed or a.force_go
             record(root, {"phase": "flat_pilot", "seed": k, "go": go, "rolling_success": take.rate, "checked_at": take.checked_at, **info})
             if go:
