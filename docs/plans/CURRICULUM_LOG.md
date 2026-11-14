@@ -151,3 +151,8 @@ Selector on barrier (sel_bar1, low = S8 iter_10): 0.20 success, same as always-0
 
 ### Stopped by user (2026-11-13)
 All runs and the periodic video job stopped. Exported skills: models/skills/goal_obstacles/nav_obstacle_field_v2 (s8c_flat_v2 iter_01, robust 0.75, touch_off 0.70) and nav_field_roll_s9 (s9 iter_02, robust 0.75). Open: touch use not demonstrated on barrier; selector experiments unsuccessful.
+
+## Regimen v2 (branch feat/regimen-v2) - M0 infrastructure complete
+Commits: 794d3ec configurable n_modules 8..15 (8-module MJCF hash identical); 8b8700b video budget guard (10/hour, best-of-run only); 7e18091 heightfield terrain + friction tiles + post + layout cache (reset 206->34 ms; terrain halves throughput); 2c56109 capacitive face sensor (post-only), hug metric (contiguous face-contact modules >= max(5, ceil(.4 n)) held 3 s), goal_hug task, capacitive_off; 2604f6c bus-current model/10 A clamp/metrics, head-frame delta + near-field channel, delta DR, reply-noise DR; ec4693b gate2 (n=100, Wilson CI, paired ablations, blind baseline, VOID status), asymmetric critic, best-video helper. 304 tests pass; S8 iter_10 rollout byte-identical throughout.
+Serpenoid gait bus mean/peak-demand (A) at amp 0.5: n=8 1.73/8.2, n=11 2.29/11.4, n=15 3.05/16.8. A hand-posed 11-module body (all joints +0.88) gave 9 contiguous modules touching, peak wrap 274 deg, but not held 3 s (post pushes body off).
+Next: M1 static hug feasibility for n=8..15.
