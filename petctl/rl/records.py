@@ -15,7 +15,9 @@ saved best policy that beats the previous video by ``video_min_gain_m``), named 
 
 from __future__ import annotations
 
+import collections
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -25,7 +27,7 @@ from typing import Any
 
 from stable_baselines3.common.callbacks import BaseCallback
 
-from petctl.rl.policy import export_policy
+from petctl.rl.policy import export_live_policy, export_policy
 from petctl.rl.video import SESSIONS_DIR, finalize_session
 
 FLAT_TOP_M = 0.0803          # highest point above the floor at the flat start (m), for reporting absolute height
@@ -177,3 +179,46 @@ class EpisodeLogCallback(BaseCallback):
     def _on_training_end(self) -> None:
         self._log.close()
         self._write_status(True)
+
+
+class ProgressExportCallback(BaseCallback):
+    """Every ``period_s`` of training wall time write ``progress_policy.npz`` (inference policy of the CURRENT model, same format as ``policy.npz``)
+    and ``progress.json`` ``{timesteps, wall_s, rolling_success_100, time}`` into the run directory, atomically. Lets a watcher render an in-progress run.
+
+    Cheap (a few ms, no model.zip), never consumes RNG, never raises into training. ``period_s`` defaults to ``PETCTL_PROGRESS_EXPORT_S`` or 1200 s.
+    """
+
+    def __init__(self, out: Path, period_s: float | None = None) -> None:
+        """``out``: run directory; ``period_s``: seconds between exports (None: env var ``PETCTL_PROGRESS_EXPORT_S``, else 1200)."""
+        super().__init__()
+        self.out = out
+        self.period_s = float(os.environ.get("PETCTL_PROGRESS_EXPORT_S", "1200")) if period_s is None else float(period_s)
+        self._succ: collections.deque[float] = collections.deque(maxlen=100)
+
+    def _on_training_start(self) -> None:
+        self.t0 = self._last = time.time()
+
+    def rolling_success(self) -> float | None:
+        """Mean ``success`` over the last 100 finished episodes (None if the task reports no success metric or no episode finished)."""
+        return float(sum(self._succ) / len(self._succ)) if self._succ else None
+
+    def export(self) -> None:
+        """Write the progress files now."""
+        try:
+            export_live_policy(self.model, self.training_env, self.out)
+            tmp = self.out / "progress.json.tmp"
+            tmp.write_text(json.dumps({"timesteps": int(self.num_timesteps), "wall_s": time.time() - self.t0, "rolling_success_100": self.rolling_success(),
+                                       "time": time.time()}))
+            os.replace(tmp, self.out / "progress.json")
+        except Exception as e:  # noqa: BLE001 - a progress export must never stop training
+            print(f"[progress-export] failed: {e}", flush=True)
+        self._last = time.time()
+
+    def _on_step(self) -> bool:
+        for done, info in zip(self.locals["dones"], self.locals["infos"]):
+            m = info.get("metrics")
+            if done and m is not None and "success" in m:
+                self._succ.append(float(m["success"]))
+        if time.time() - self._last > self.period_s:
+            self.export()
+        return True

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -17,6 +19,31 @@ from petctl.rl.config import N_JOINTS, EnvConfig
 from petctl.rl.obs import ObsBuilder, Snapshot, next_target
 
 POLICY_FILE = "policy.npz"
+
+
+def policy_arrays(model: Any, vn: Any, run: Path) -> dict[str, np.ndarray]:
+    """Inference arrays (weights, observation normalisation, joint count) of a live PPO ``model`` + ``VecNormalize`` ``vn`` for the config in ``run``."""
+    pol = model.policy
+    layers = [m for m in pol.mlp_extractor.policy_net if hasattr(m, "weight")] + [pol.action_net]
+    n_pol = getattr(pol.mlp_extractor, "n_policy", None)       # asymmetric critic (petctl.rl.asym): the actor reads only the leading deployable observation entries
+    n_obs = vn.obs_rms.mean.shape[0] if n_pol is None else int(n_pol)
+    arrays: dict[str, np.ndarray] = {"n_layers": np.array(len(layers)), "obs_mean": np.array(vn.obs_rms.mean[:n_obs]), "obs_var": np.array(vn.obs_rms.var[:n_obs]),
+                                     "clip_obs": np.array(vn.clip_obs), "eps": np.array(vn.epsilon)}
+    for i, lin in enumerate(layers):
+        arrays[f"w{i}"] = lin.weight.detach().cpu().numpy().astype(np.float64)
+        arrays[f"b{i}"] = lin.bias.detach().cpu().numpy().astype(np.float64)
+    cfg_file = run / "config.json"
+    arrays["n_joints"] = np.array(EnvConfig.from_dict(json.loads(cfg_file.read_text())).n_joints if cfg_file.exists() else N_JOINTS)
+    return arrays
+
+
+def export_live_policy(model: Any, vn: Any, run: Path, out_file: str = "progress_policy.npz") -> Path:
+    """Atomically write the inference policy of the LIVE training ``model``/``vn`` to ``run/out_file`` (tmp file + rename; safe while training)."""
+    out = run / out_file
+    tmp = run / (out_file + ".tmp.npz")
+    np.savez(tmp, **policy_arrays(model, vn, run))
+    os.replace(tmp, out)
+    return out
 
 
 def export_policy(run: Path, model_file: str = "model", norm_file: str = "vecnormalize.pkl", out_file: str = POLICY_FILE) -> Path:
@@ -28,19 +55,8 @@ def export_policy(run: Path, model_file: str = "model", norm_file: str = "vecnor
     model = sb3.PPO.load(str(run / model_file), device="cpu")
     with open(run / norm_file, "rb") as f:
         vn: VecNormalize = pickle.load(f)
-    pol = model.policy
-    layers = [m for m in pol.mlp_extractor.policy_net if hasattr(m, "weight")] + [pol.action_net]
-    n_pol = getattr(pol.mlp_extractor, "n_policy", None)       # asymmetric critic (petctl.rl.asym): the actor reads only the leading deployable observation entries
-    n_obs = vn.obs_rms.mean.shape[0] if n_pol is None else int(n_pol)
-    arrays: dict[str, np.ndarray] = {"n_layers": np.array(len(layers)), "obs_mean": vn.obs_rms.mean[:n_obs], "obs_var": vn.obs_rms.var[:n_obs],
-                                     "clip_obs": np.array(vn.clip_obs), "eps": np.array(vn.epsilon)}
-    for i, lin in enumerate(layers):
-        arrays[f"w{i}"] = lin.weight.detach().numpy().astype(np.float64)
-        arrays[f"b{i}"] = lin.bias.detach().numpy().astype(np.float64)
-    cfg_file = run / "config.json"
-    arrays["n_joints"] = np.array(EnvConfig.from_dict(json.loads(cfg_file.read_text())).n_joints if cfg_file.exists() else N_JOINTS)
     out = run / out_file
-    np.savez(out, **arrays)
+    np.savez(out, **policy_arrays(model, vn, run))
     return out
 
 

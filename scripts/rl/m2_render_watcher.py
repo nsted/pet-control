@@ -71,13 +71,13 @@ def render_stage(task: str, rows: list[dict[str, Any]]) -> Path | None:
 
 
 def main() -> None:
-    """Poll; render each v2 stage once when its runs are done and the 10/hour budget allows."""
+    """Poll; render each v2 stage once when its runs are done."""
     done: set[str] = set()
     final = False
     while True:
         lines = _lines()
         for task in ("m2_hug2", "m2_flat2"):
-            if task in done or not video.video_budget_ok():
+            if task in done:
                 continue
             rows = candidates(task, lines)
             if rows is None:

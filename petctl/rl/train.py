@@ -196,9 +196,9 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
 
             from petctl.rl.curriculum.early_stop import GateStopCallback
             callback = CallbackList([callback, GateStopCallback(out, stop_when_gate_passes)])
-    if extra_callbacks:
-        from stable_baselines3.common.callbacks import CallbackList
-        callback = CallbackList([callback, *extra_callbacks])
+    from stable_baselines3.common.callbacks import CallbackList
+    from petctl.rl.records import ProgressExportCallback
+    callback = CallbackList([callback, ProgressExportCallback(out), *(extra_callbacks or [])])      # progress_policy.npz / progress.json every 20 min (PETCTL_PROGRESS_EXPORT_S)
     model.learn(total_timesteps=steps, progress_bar=False, callback=callback)
     model.save(str(out / "model"))
     venv.save(str(out / "vecnormalize.pkl"))

@@ -346,7 +346,7 @@ def _gate_episode(run: Path, stage_name: str, seed: int | None) -> tuple[dict[st
 
 def render_best(run: Path, stage: str, out: Path | None = None, policy_file: str = "policy.npz") -> Path:
     """Render ONLY the best successful gate episode of ``run`` (highest return among successes, from ``gate2_<stage>.json``) with ``record_video`` (captioned
-    with the stage/task; raises if the 10/hour render budget is used up). Returns the mp4 path."""
+    with the stage/task). Returns the mp4 path."""
     import time
 
     from petctl.rl import video

@@ -37,8 +37,6 @@ def main() -> None:
     for best in sorted(rows, key=lambda d: (d["success"], d.get("hold_duty_median") or 0.0), reverse=True):
         if best["success"] <= 0.0:
             break
-        while not video.video_budget_ok():
-            time.sleep(300)
         run = ROOT / str(best["L"]) / STAGE / f"seed{best['seed']}"
         res, seed = _gate_episode(run, STAGE, None)
         st = get_stage(STAGE)

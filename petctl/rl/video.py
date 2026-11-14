@@ -5,7 +5,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import mujoco
 import numpy as np
@@ -41,22 +41,12 @@ def burn_caption(frame: np.ndarray, text: str) -> np.ndarray:
     return np.asarray(img)
 
 
-VIDEO_BUDGET_PER_HOUR = 10                 # owner rule: at most this many videos per hour (override with PETCTL_VIDEO_FORCE=1 for an explicit owner request)
-_VIDEO_LOG = Path(__file__).resolve().parents[2] / "docs" / "media" / ".video_log.jsonl"
+_VIDEO_LOG = Path(__file__).resolve().parents[2] / "docs" / "media" / ".video_log.jsonl"      # bookkeeping only: there is NO render cap (owner rule: 30-min progress videos per active stage)
 
 
 def video_budget_ok(now: float | None = None) -> bool:
-    """True if fewer than ``VIDEO_BUDGET_PER_HOUR`` videos were rendered in the last hour (renders are logged to docs/media/.video_log.jsonl)."""
-    import os
-    import time as _t
-    if os.environ.get("PETCTL_VIDEO_FORCE") == "1":
-        return True
-    now = _t.time() if now is None else now
-    try:
-        stamps = [float(json.loads(line)["t"]) for line in _VIDEO_LOG.read_text().splitlines() if line.strip()]
-    except (OSError, ValueError, KeyError):
-        stamps = []
-    return sum(1 for t in stamps if now - t < 3600.0) < VIDEO_BUDGET_PER_HOUR
+    """Always True: the old 10-videos/hour cap was removed (renders are still logged to docs/media/.video_log.jsonl). ``PETCTL_VIDEO_FORCE`` is accepted and ignored."""
+    return True
 
 
 def _log_video(out: Path) -> None:
@@ -68,15 +58,16 @@ def _log_video(out: Path) -> None:
 
 def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds: float | None = None, seed: int = 0,
                  dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (960, 540), task_params: dict[str, float] | None = None, base: Any = None,
-                 distance: float = 0.9, azimuth: float = 130.0, label: str | None = None, replace_task_params: bool = False) -> dict[str, float]:
+                 distance: float = 0.9, azimuth: float = 130.0, label: str | None = None, replace_task_params: bool = False,
+                 final_note: Callable[[dict[str, float], bool], str] | None = None) -> dict[str, float]:
     """Roll out ``run/policy_file`` deterministically for one episode, write an MP4 to ``out``, return the episode metrics.
 
     ``task_params`` overrides entries of the run's ``EnvConfig.task_params`` (e.g. force a mid-route goal change for a demo).
     ``replace_task_params=True`` uses ``task_params`` instead of merging it over the run's (replays a gate episode exactly).
     Every frame carries a caption saying what was being trained (``label``, default derived from the stage/task of the run).
+    ``final_note(metrics, reached)`` (optional) returns the caption of the 2 s final hold frames, built from the metrics of THE recorded episode itself
+    (so captions can state measured numbers); the returned metrics are exactly those passed to it.
     """
-    if not video_budget_ok():
-        raise RuntimeError(f"video budget reached ({VIDEO_BUDGET_PER_HOUR}/hour); set PETCTL_VIDEO_FORCE=1 only for an explicit owner request")
     pol = GaitPolicy(run, policy_file)
     pol.cfg.dr.scale = dr_scale
     pol.cfg.task_params = dict(task_params or {}) if replace_task_params else {**pol.cfg.task_params, **(task_params or {})}
@@ -104,18 +95,40 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
             cam.lookat[:] = env.sim.data.subtree_com[1]
             rend.update_scene(env.sim.data, camera=cam)
             draw_markers(rend.scene, env.task.markers(env.sim))
-            ff.stdin.write(burn_caption(rend.render(), f"{caption[:92]}  t={t:4.1f}s").tobytes())
+            ff.stdin.write(burn_caption(rend.render(), f"{caption[:118]}  t={t:4.1f}s").tobytes())
             next_frame += frame_dt
     reached = bool(getattr(env.task, "reached", False))
+    metrics = {k: float(x) for k, x in info.get("metrics", {}).items()}
+    hold_caption = final_note(metrics, reached) if final_note is not None else None
     tag = "TARGET REACHED" if reached else "episode ended (target not reached)"
     for _ in range(2 * fps):                                    # hold the final state for 2 s: the episode ends the moment the target is reached, so the green marker would otherwise flash by
         cam.lookat[:] = env.sim.data.subtree_com[1]
         rend.update_scene(env.sim.data, camera=cam)
         draw_markers(rend.scene, env.task.markers(env.sim))
-        ff.stdin.write(burn_caption(rend.render(), f"{caption[:70]}  {tag}  t={t:4.1f}s").tobytes())
+        ff.stdin.write(burn_caption(rend.render(), hold_caption or f"{caption[:70]}  {tag}  t={t:4.1f}s").tobytes())
     ff.stdin.close()
     ff.wait()
     _log_video(out)
+    return metrics
+
+
+def rollout_metrics(run: Path, policy_file: str = "policy.npz", seed: int = 0, dr_scale: float = 0.0, seconds: float | None = None,
+                    task_params: dict[str, float] | None = None, base: Any = None) -> dict[str, float]:
+    """Render-free deterministic episode with exactly ``record_video``'s setup (same config handling and ``reset(seed)``): returns the episode metrics.
+
+    Used to pick a showcase seed cheaply; ``record_video`` with the same arguments reproduces these metrics.
+    """
+    pol = GaitPolicy(run, policy_file)
+    pol.cfg.dr.scale = dr_scale
+    pol.cfg.task_params = {**pol.cfg.task_params, **(task_params or {})}
+    if seconds is not None:
+        pol.cfg.episode_s = seconds
+    env = PetEnv(pol.cfg, base)
+    obs, _ = env.reset(seed=seed)
+    done, info = False, {}
+    while not done:
+        obs, _, term, trunc, info = env.step(pol.action(obs))
+        done = term or trunc
     return {k: float(x) for k, x in info.get("metrics", {}).items()}
 
 

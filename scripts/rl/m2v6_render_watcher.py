@@ -34,8 +34,6 @@ def _render(root: Path, stage: str, run: Path) -> None:
     if mark.exists():
         return
     try:
-        while not video.video_budget_ok():
-            time.sleep(300)
         out = render_best(run, stage)
         print("rendered", out, flush=True)
     except ValueError as e:                                  # no successful episode to show

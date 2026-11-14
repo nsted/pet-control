@@ -191,10 +191,7 @@ def test_render_best_uses_record_video_and_budget(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(video, "record_video", lambda run, out, pf, **kw: calls.append((out, kw)) or {})
     p = gate2.render_best(tmp_path, stage.name)
     assert len(calls) == 1 and calls[0][1]["seed"] == 10_042 and calls[0][1]["replace_task_params"] and stage.name in calls[0][1]["label"] and p == calls[0][0]
-    monkeypatch.undo()
-    monkeypatch.setattr(video, "video_budget_ok", lambda now=None: False)
-    with pytest.raises(RuntimeError, match="budget"):
-        gate2.render_best(tmp_path, stage.name)
+    assert video.video_budget_ok() is True                       # no render cap any more
 
 
 # ---------------------------------------------------------------- env: imu_off knob, privileged vector
