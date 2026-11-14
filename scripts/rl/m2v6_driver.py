@@ -58,8 +58,8 @@ def finished(out: Path) -> bool:
 
 
 def train_phase(stage_name: str, out: Path, length: int, overrides: dict[str, float], ent: float, seed: int, init_from: Path | None, budget_min: float, cap: int, n_envs: int,
-                scale: float, extra: list[Any] | None = None, buffer: Path | None = None, copy_ret: bool = False, action_mode: str | None = None) -> dict[str, Any]:
-    """Train one phase under the wall-budget rule; returns ``{steps, wall_s, sps, budget...}`` (read back from ``phase.json`` when already finished)."""
+                scale: float, extra: list[Any] | None = None, buffer: Path | None = None, copy_ret: bool = False, action_mode: str | None = None, keep_log_std: bool = False) -> dict[str, Any]:
+    """Train one phase under the wall-budget rule (``keep_log_std``: with ``init_from``, keep the source's trained log-std instead of re-applying the stage's); returns ``{steps, wall_s, sps, budget...}`` (read back from ``phase.json`` when already finished)."""
     from petctl.rl.train import train
 
     info_f = out / "phase.json"
@@ -75,7 +75,7 @@ def train_phase(stage_name: str, out: Path, length: int, overrides: dict[str, fl
     t0 = time.time()
     try:
         train(cfg, cap, n_envs, out, seed, "ppo", None, ent, init_from, video=False, asymmetric=True, extra_callbacks=[health, budget, *(extra or [])], warm_copy_ret=copy_ret,
-              log_std_init=stage.log_std_init)
+              log_std_init=None if keep_log_std else stage.log_std_init)
     finally:
         os.environ.pop(BUFFER_ENV, None)
     wall = time.time() - t0

@@ -182,7 +182,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             self.task.target_shape = shape  # type: ignore[attr-defined]
         elif self.task.param("target_family", 0.0) > 0.0:                                 # shape-agnostic target (petctl.rl.target_shapes); drawn before the layout, which sizes the start gaps by it
             hi = heldout_index(seed) if (seed is not None and self.task.param("target_heldout", 0.0) > 0.0) else None
-            shape = heldout_shape(hi, int(seed)) if hi is not None else sample_training_shape(self._rng, int(self.task.param("shape_phase", 2.0)))  # type: ignore[arg-type]
+            shape = (heldout_shape(hi, int(seed), self.cfg.n_modules) if hi is not None
+                     else sample_training_shape(self._rng, float(self.task.param("shape_phase", 2.0)), self.cfg.n_modules))  # type: ignore[arg-type]
             self.task.target_shape = shape  # type: ignore[attr-defined]
         self.target_shape = shape
         walls, goal_xy = self._layout(seed)                                           # static geometry (walls) must exist before the sim is built

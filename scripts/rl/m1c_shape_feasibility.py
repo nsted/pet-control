@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from petctl.rl.shape_search import render_tile, search
-from petctl.rl.target_shapes import EXTREMES, HELD_OUT, make_shape
+from petctl.rl.target_shapes import EXTREMES, HELD_OUT_L8, HELD_OUT_L10, make_shape
 
 OUT = Path("data/rl/m1c_shape_feasibility")
 
@@ -30,7 +30,7 @@ def main() -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     table_p = a.out / "table.json"
     rows = {(r["shape_name"], r["n_modules"]): r for r in json.loads(table_p.read_text())["rows"]} if table_p.exists() else {}
-    catalog = {nm: (kind, dims, rc) for nm, kind, dims, rc in (*HELD_OUT, *EXTREMES)}
+    catalog = {nm: (kind, dims, rc) for nm, kind, dims, rc in (*HELD_OUT_L10, *HELD_OUT_L8, *EXTREMES)}
     t0 = time.time()
     for n in a.lengths:
         for nm in a.shapes:

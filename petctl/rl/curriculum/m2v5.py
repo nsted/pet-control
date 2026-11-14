@@ -6,6 +6,8 @@ current budget (median mean bus current <= 4 A, <= 5 % of episodes over the 10 A
 
 from __future__ import annotations
 
+from functools import partial
+
 from petctl.rl.curriculum.gate2 import Ablation, Gate2Spec
 from petctl.rl.target_shapes import heldout_group
 
@@ -13,7 +15,8 @@ MIN_SHAPE_SUCCESS = 0.50
 CAP_OFF_MIN_DROP = 0.15
 
 
-def gate2_spec_hug5() -> Gate2Spec:
-    """The gate2 spec of ``m2_hug5``: 100 held-out episodes (5 shapes x 20, seeds 10000+, dr 0.6), per-shape floor, capacitive_off ablation."""
+def gate2_spec_hug5(n_modules: int = 10) -> Gate2Spec:
+    """The gate2 spec of ``m2_hug5``: 100 held-out episodes (5 shapes x 20, seeds 10000+, dr 0.6), per-shape floor, capacitive_off ablation. ``n_modules`` picks the length's held-out set
+    (8: cyl r3 / r7, square 8x8, rect 5x14, rounded 8x8 r2; otherwise the L = 10 set)."""
     return Gate2Spec(n=100, dr_scale=0.6, nominal=False, ablations=(Ablation("capacitive_off", {"capacitive_off": 1.0}, min_drop=CAP_OFF_MIN_DROP),),
-                     group_of=heldout_group, min_group_success=MIN_SHAPE_SUCCESS)
+                     group_of=partial(heldout_group, n_modules=n_modules), min_group_success=MIN_SHAPE_SUCCESS)

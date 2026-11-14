@@ -138,13 +138,21 @@ def warm_start(model: Any, venv: Any, src: Path, new_cfg: EnvConfig | None = Non
     return n
 
 
+def lr_schedule(lr_const: bool = False) -> Any:
+    """PPO learning-rate schedule (f = remaining progress 1 -> 0): ``PETCTL_LR`` (default 3e-4) x f, or CONSTANT ``PETCTL_LR`` when ``lr_const`` or ``PETCTL_LR_CONST`` is 1 / true / yes (read per call)."""
+    def schedule(f: float) -> float:
+        base = float(os.environ.get("PETCTL_LR", "3e-4"))
+        return base if lr_const or os.environ.get("PETCTL_LR_CONST", "0").strip().lower() in ("1", "true", "yes") else base * f
+    return schedule
+
+
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
           ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None, asymmetric: bool = False,
-          extra_callbacks: list[Any] | None = None, warm_copy_ret: bool = False, log_std_init: float | None = None) -> Path:
+          extra_callbacks: list[Any] | None = None, warm_copy_ret: bool = False, log_std_init: float | None = None, lr_const: bool = False) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``.
 
     ``init_from``: a PPO run directory to warm-start from (see ``warm_start``). ``video=False`` skips the end-of-run video in docs/media. ``stop_when_gate_passes``: a curriculum ``Stage``; training stops as soon as its gate passes.
-    ``warm_copy_ret``: with ``init_from``, also copy the reward-normalisation statistics (continuing the same task). ``log_std_init``: initial policy log-std (default -1.0; with ``init_from`` it is re-applied after the warm start, which would otherwise copy the source's). ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
+    ``warm_copy_ret``: with ``init_from``, also copy the reward-normalisation statistics (continuing the same task). ``log_std_init``: initial policy log-std (default -1.0; with ``init_from`` it is re-applied after the warm start, which would otherwise copy the source's; None with ``init_from`` keeps the source's trained value). ``lr_const`` (or env ``PETCTL_LR_CONST`` = 1): constant learning rate ``PETCTL_LR`` (default 3e-4) instead of the linear decay to 0, so a continuation does not restart the decay. ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
     """
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
@@ -168,9 +176,10 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     if asymmetric:
         from petctl.rl.asym import AsymActorCriticPolicy
         policy, pkw = AsymActorCriticPolicy, {**pkw, "n_policy": PetEnv(cfg).observation_space.shape[0]}
+    learning_rate = lr_schedule(lr_const)
     if algo == "ppo":
         model = sb3.PPO(policy, venv, n_steps=int(os.environ.get("PETCTL_NSTEPS", "256")), batch_size=2048 if n_envs >= 8 else 256, n_epochs=8, gamma=float(os.environ.get("PETCTL_GAMMA", "0.99")), gae_lambda=float(os.environ.get("PETCTL_GAE", "0.95")),
-                        clip_range=0.2, ent_coef=ent_coef, learning_rate=lambda f: float(os.environ.get("PETCTL_LR", "3e-4")) * f, seed=seed, verbose=1,
+                        clip_range=0.2, ent_coef=ent_coef, learning_rate=learning_rate, seed=seed, verbose=1,
                         policy_kwargs=pkw, tensorboard_log=str(out / "tb"))
     else:
         model = sb3.SAC("MlpPolicy", venv, seed=seed, verbose=1, tensorboard_log=str(out / "tb"))

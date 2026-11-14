@@ -33,3 +33,11 @@ Raw: `data/rl/m1c_shape_feasibility/table.json`; contact sheets (top row oblique
 
 ## Addendum 2026-11-14: cyl r9 at n = 10 (replacement held-out shape)
 Same protocol as above (static DE + polish search, single seed 0, 600 evaluations, run >= 4, normal span >= 180 deg, held 3 s, penetration < 5 mm; `python scripts/rl/m1c_shape_feasibility.py --lengths 10 --shapes cyl_r9 --out data/rl/m1c_r9`, raw `data/rl/m1c_r9/table.json`): **feasible** - held run 10 of 10 modules, held span 201 deg (peak 202), wrap duty 1.00, bus 1.9 A, max penetration 0.15 mm, max joint 0.73 rad. Margin over the 180 deg threshold: 21 deg (cyl r3 302, square 270, rectangle 180). Cyl r9 replaces cyl r11 in the frozen held-out gate set (see CURRICULUM_LOG); r11-12 remain diagnostics only.
+
+## Addendum 2026-11-14: L=8 gate set, cyl r7 at n = 8 (gate calibration for the 8-module body)
+Rule (frozen before the run): `gate_r_max` = the largest cylinder radius with >= 1 module of slack in this table for the length (i.e. a held run of >= H + 1 = 5 modules, span >= 180 deg, duty >= 0.9, penetration < 5 mm). The table shows n = 8 cannot wrap cyl r11 (best held span 139 deg) and, by the same ordering, r9 (between r7 and r11) was not tested at n = 8; 12x12 rounded is beyond slack at L = 8 as well. The L = 8 held-out set is therefore cyl r3, cyl r7, square 8x8, rect 5x14, rounded 8x8 r2 (the L = 10 set is unchanged: r3, r9, 8x8, 5x14, rounded 12x12 r2).
+Confirmation run (same protocol as above: static DE + polish search, single seed 0, 7008 evaluations, run >= 4, normal span >= 180 deg, held 3 s, penetration < 5 mm, 6 processes; `python scripts/rl/m1c_shape_feasibility.py --lengths 8 --shapes cyl_r7 --budget 6000 --polish 1000 --workers 6 --out data/rl/m1c_L8_r7`, raw `data/rl/m1c_L8_r7/table.json`, wall 188 s):
+| shape | n | held run | held span (deg) | wrap duty | 180 deg held | bus mean / applied peak (A) | pen (mm) | max abs joint (rad) |
+|---|---|---|---|---|---|---|---|---|
+| cyl r7.0 | 8 | 8 | 190 | 1.00 | yes | 2.09 / 2.10 | 0.06 | 1.13 |
+Reading: feasible, held run 8 (>= 5, so the fallback r6 was not needed); the margin over the 180 deg threshold is 10 deg and all 8 modules are in the run (cf. r9 at n = 10: run 10 of 10, 21 deg; cyl r3 at n = 8: run 8, 291 deg). Not run: the rounded 8x8 r2 shape at n = 8 (square 8x8 at n = 8 holds 216 deg with a run of 7).

@@ -290,6 +290,19 @@ HUG7_PILOT = {"dr_scale": 0.3}
 M2V7_TASKS = ("m2_flat4", "m2_hug7")
 
 
+# ---------------------------------------------------------------- hug_long_01 (Regimen v2 long hug run at L = 8; driver scripts/rl/hug_long_driver.py)
+# Continues the m2_hug7 hold-weight-6 pilot policy (action_mode hold, absolute EMA mapping): m2_hug7 with hold_weight 10, shape draws 50 % from the phase-1 size ranges and 50 % from the full ranges
+# (shape_phase 1.5; fractional phase = probability of the full ranges), dr 0.3, constant learning rate 1.5e-4 (driver), buffer starts 30 % (hug_buffer_p default), 20 s episodes, 8 s stall stop.
+# The held-out gate set follows the body length (``petctl.rl.target_shapes.held_out_set``): at L = 8 cyl r3 / r7, square 8x8, rect 5x14, rounded 8x8 r2.
+_HUG_LONG_01 = {**_M2_HUG7, "shape_phase": 1.5, "hold_weight": 10.0}
+STAGES["hug_long_01"] = dataclasses.replace(
+    STAGES["m2_hug7"], name="hug_long_01", task_params=dict(_HUG_LONG_01), dr_scale=0.3, steps=5_000_000, n_envs=10,
+    description="Regimen v2 long hug run (L=8): m2_hug7 continued from the hold-weight-6 pilot with hold_weight 10, shape draws 50 % phase-1 ranges (cyl r 4-8, boxes 6-10 cm) / 50 % full ranges, dr 0.3, "
+    "straight starts 70 % (head 0.1-0.4 m from the surface, bearing +-90 deg, pose +-0.4 rad) / buffer starts 30 %, 20 s episodes, 8 s stall stop, action_mode hold, ent 0.002, gamma 0.997, "
+    "constant lr 1.5e-4; gate: the length's held-out set (L=8: cyl r3, r7, square 8x8, rect 5x14, rounded 8x8 r2), 20 episodes each at dr 0.6.")
+HUG_LONG_TASKS = ("hug_long_01",)
+
+
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:
     """The stage ``name`` with its ``action_mode`` replaced (``abs`` | ``hold`` | ``delta``); None keeps the stage's own."""
     stage = get_stage(name)
