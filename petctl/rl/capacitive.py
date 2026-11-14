@@ -16,7 +16,8 @@ import numpy as np
 from petctl.rl.config import DomainRand
 from petctl.rl.domain_rand import _u
 from petctl.sim.faces import module_faces
-from petctl.sim.model_builder import PetSim
+from petctl.sim.model_builder import PetSim, post_geom_ids
+from petctl.sim.shapes import shape_of
 
 FACE_CONE_DEG = 35.0
 D_PROX_M = 0.015                 # ground-truth proximity: a face "touches" the post when its distance to the post surface is <= this (plan sec 5.3)
@@ -36,6 +37,7 @@ class PostRead:
     any_contact: np.ndarray      # (n,) bool, any contact between the module hull and the post (including edges/end caps that map to no face)
     penetration: float           # deepest penetration into the post this tick (m, >= 0)
     face_dist: np.ndarray | None = None   # (n, 3) distance from each face to the post surface (m, 0 in contact, D_DETECT_M if farther); None = derived from ``touch``
+    normal_ang: np.ndarray | None = None  # (n,) world angle (rad, about the vertical) of the outward object normal at the nearest surface point of each module's nearest face; NaN = none
 
     def __post_init__(self) -> None:
         """Derive ``face_dist`` from ``touch`` when not given (synthetic reads in tests)."""
@@ -51,7 +53,10 @@ class PostProbe:
         m = sim.model
         self.sim = sim
         self.n = int(sim.p.n_modules)
-        self.post_gid = int(m.geom("post").id)
+        self.post_gids = post_geom_ids(m)                                     # all primitives of the target (cylinder / box / rounded box)
+        self.post_gid = self.post_gids[0]                                     # the centred primitive
+        self.shape = shape_of(sim.p.post_shape)
+        self._reach = 0.25 + self.shape.bound_radius                          # modules farther than this (centre to target centre) cannot touch it
         self.faces = module_faces(m, self.n)                                   # (n, 3, 3) body frame
         self.hull_gids = [int(m.geom(f"g{k}").id) for k in range(self.n)]
         self.gid_to_k = {g: k for k, g in enumerate(self.hull_gids)}
@@ -81,43 +86,53 @@ class PostProbe:
         if key == self._key and self._read is not None:
             return self._read
         fdist = np.full((self.n, 3), D_DETECT_M)
+        nang = np.full(self.n, np.nan)
+        centre = d.geom_xpos[self.post_gid, :2]
         force = np.zeros((self.n, 3))
         anyc = np.zeros(self.n, bool)
         pen = 0.0
         ft = np.zeros(6)
         for k, gid in enumerate(self.hull_gids):                                              # proximity: nearest hull point -> post surface, mapped to a face
-            if np.hypot(*(d.xipos[self.body_ids[k], :2] - d.geom_xpos[self.post_gid, :2])) > 0.3:
+            if np.hypot(*(d.xipos[self.body_ids[k], :2] - centre)) > self._reach:
                 continue
-            dist = float(mujoco.mj_geomDistance(m, d, gid, self.post_gid, D_DETECT_M, ft))
-            if 0.0 <= dist < D_DETECT_M:
-                v = ft[3:] - ft[:3]
+            dist, best = D_DETECT_M, None
+            for pg in self.post_gids:                                                         # nearest primitive of the target
+                dd = float(mujoco.mj_geomDistance(m, d, gid, pg, D_DETECT_M, ft))
+                if 0.0 <= dd < dist:
+                    dist, best = dd, ft.copy()
+            if best is not None:
+                v = best[3:] - best[:3]
                 nv = float(np.linalg.norm(v))
                 if nv > 1e-9:
                     R = d.xmat[self.body_ids[k]].reshape(3, 3)
                     dots = (R @ self.faces[k].T).T @ (v / nv)
                     f = int(np.argmax(dots))
                     if dots[f] >= self._cos:
+                        if dist < fdist[k, f]:
+                            nang[k] = self.shape.sdf_normal(best[:2] - centre)[1]
                         fdist[k, f] = min(fdist[k, f], dist)
         for i in range(nc):
             c = d.contact[i]
             g1, g2 = int(c.geom1), int(c.geom2)
-            if g1 != self.post_gid and g2 != self.post_gid:
+            p1, p2 = g1 in self.post_gids, g2 in self.post_gids
+            if not (p1 or p2):
                 continue
-            other = g2 if g1 == self.post_gid else g1
+            other = g2 if p1 else g1
             k = self.gid_to_k.get(other)
             if k is None:
                 continue
             anyc[k] = True
             pen = max(pen, -float(c.dist))
-            n_to_post = np.asarray(c.frame[:3]) * (1.0 if g2 == self.post_gid else -1.0)      # contact normal points geom1 -> geom2
+            n_to_post = np.asarray(c.frame[:3]) * (1.0 if p2 else -1.0)      # contact normal points geom1 -> geom2
             R = d.xmat[self.body_ids[k]].reshape(3, 3)
             dots = (R @ self.faces[k].T).T @ n_to_post                                        # cosine to each face's world outward normal
             f = int(np.argmax(dots))
             if dots[f] >= self._cos:
                 mujoco.mj_contactForce(m, d, i, self._f6)
                 fdist[k, f] = 0.0
+                nang[k] = self.shape.sdf_normal(np.asarray(c.pos[:2]) - centre)[1]
                 force[k, f] += max(float(self._f6[0]), 0.0)
-        self._key, self._read = key, PostRead(fdist <= D_PROX_M, force, anyc, pen, fdist)
+        self._key, self._read = key, PostRead(fdist <= D_PROX_M, force, anyc, pen, fdist, nang)
         return self._read
 
 

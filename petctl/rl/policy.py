@@ -64,7 +64,7 @@ class GaitPolicy:
     def reset(self, first: Snapshot) -> None:
         """Start a new run: clear histories and targets."""
         self.obs.reset(first)
-        random_start = float(self.cfg.task_params.get("start_pose_rad", 0.0)) > 0.0      # mirrors PetEnv.reset
+        random_start = float(self.cfg.task_params.get("start_pose_rad", 0.0)) > 0.0 or float(self.cfg.task_params.get("hug_start_mix", 0.0)) > 0.0      # mirrors PetEnv.reset (random / coil starts)
         self._tgt = np.asarray(first.joint_pos, float).copy() if random_start else np.zeros(self.cfg.n_joints)
 
     def action(self, obs: np.ndarray) -> np.ndarray:

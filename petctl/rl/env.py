@@ -15,9 +15,11 @@ from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot
+from petctl.rl.target_shapes import heldout_index, heldout_shape, sample_training_shape
 from petctl.rl.tasks import TASKS
 from petctl.sim.bus import BusClamp
-from petctl.sim.model_builder import POST_RADIUS_M, BuildParams, PetSim
+from petctl.sim.model_builder import BuildParams, PetSim
+from petctl.sim.shapes import shape_of
 from petctl.sim.terrain import START_RADIUS_M, generate_terrain
 
 SETTLE_S = 0.75
@@ -147,7 +149,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if sim.p.post is not None and probe is not None:
             px, py = sim.p.post
             post[:3] = (1.0, px - head[0], py - head[1])
-            post[3:3 + n] = np.maximum(np.linalg.norm(sim.data.xipos[1:n + 1, :2] - np.array([px, py]), axis=1) - POST_RADIUS_M, 0.0)
+            post[3:3 + n] = shape_of(sim.p.post_shape).dist_xy(sim.data.xipos[1:n + 1, :2], np.array([px, py]))
             r = probe.read()
             post[3 + n:3 + 4 * n], post[3 + 4 * n:] = r.touch.reshape(-1).astype(float), r.force.reshape(-1)
         fld = np.zeros(4)
@@ -170,6 +172,12 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._rng = self.np_random
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
         self.task = TASKS[self.cfg.task](self.cfg)
+        shape = None
+        if self.task.param("target_family", 0.0) > 0.0:                                 # shape-agnostic target (petctl.rl.target_shapes); drawn before the layout, which sizes the start gaps by it
+            hi = heldout_index(seed) if (seed is not None and self.task.param("target_heldout", 0.0) > 0.0) else None
+            shape = heldout_shape(hi, int(seed)) if hi is not None else sample_training_shape(self._rng, int(self.task.param("shape_phase", 2.0)))  # type: ignore[arg-type]
+            self.task.target_shape = shape  # type: ignore[attr-defined]
+        self.target_shape = shape
         walls, goal_xy = self._layout(seed)                                           # static geometry (walls) must exist before the sim is built
         obstacles = getattr(self.task, "obstacles", ())
         if walls or obstacles:
@@ -177,7 +185,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if self.task.param("post", 0.0) > 0.0:                                         # heavy immovable target post on the goal point
             if goal_xy is None:
                 raise ValueError(f"task '{self.cfg.task}' lays out no target, so it cannot have a post")
-            params = BuildParams(**{**params.__dict__, "post": (float(goal_xy[0]), float(goal_xy[1]))})
+            params = BuildParams(**{**params.__dict__, "post": (float(goal_xy[0]), float(goal_xy[1])), "post_shape": shape})
         level = self.task.param("terrain_level", 0.0)
         lmin = self.task.param("terrain_level_min", -1.0)
         if level > 0.0 and 0.0 <= lmin < level:                                         # training: level drawn per episode in [min, level] (gates fix the level)

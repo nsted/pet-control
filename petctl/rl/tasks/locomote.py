@@ -62,7 +62,7 @@ class Locomote(Task):
             "lateral": -w.lateral * abs(v_lat),
             "yaw": -self.param("yaw_weight", w.yaw) * abs(float(sim.sensor("gyro")[2])),
             "tilt": -self.param("tilt_weight", w.tilt) * (1.0 - float(up)),
-            "current": -w.current * max(0.0, bus - BUS_LIMIT_A),
+            "current": -self.param("current_weight", w.current) * max(0.0, bus - BUS_LIMIT_A),
             "alive": w.alive,
         }
         return float(sum(terms.values())), terms

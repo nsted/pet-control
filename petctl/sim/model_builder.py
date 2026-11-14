@@ -26,6 +26,7 @@ from petctl.config import MOTOR_LIMITS
 from petctl.gravity_model import A, G, P, Q, ghat
 from petctl.sim.bus import BusClamp
 from petctl.sim.mujoco_model import COULOMB_NM, MODULE_MASS_KG, PEAK_TORQUE_NM
+from petctl.sim.shapes import TARGET_HEIGHT_M, TargetShape
 from petctl.sim.terrain import BASE_M, CELL_M, ELEV_MAX_M, HALF_M, Terrain, tile_slices
 
 N_JOINTS = 7                                # the CAD robot (8 modules); ``BuildParams.n_modules`` lengthens it in simulation
@@ -64,6 +65,7 @@ class BuildParams:
     walls: tuple[tuple[float, float, float, float], ...] = ()    # static vertical walls: (centre x, centre y, yaw rad, half length m); 2 cm thick, 16 cm tall
     terrain: Terrain | None = None          # per-episode heightfield + friction tiles (None = flat plane, byte-identical to before)
     post: tuple[float, float] | None = None  # world xy of the target post (static cylinder POST_RADIUS_M x POST_HEIGHT_M standing on the terrain)
+    post_shape: TargetShape | None = None   # target shape (petctl.sim.shapes) replacing the cylindrical post; None = the legacy 10 cm post. Geoms 'post', 'post1', ... (first one at the centre)
     extra: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -328,9 +330,17 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
                  f'condim="4" rgba=".85 .55 .25 1"/>')
     if p.post is not None:
         px, py = p.post
-        pz = (ter.support_height(px, py, POST_RADIUS_M) if ter is not None else 0.0) + POST_HEIGHT_M / 2
-        L.append(f'<geom name="post" type="cylinder" size="{POST_RADIUS_M} {POST_HEIGHT_M / 2}" pos="{px} {py} {pz}" friction="{p.floor_friction} {p.torsional_friction} '
-                 f'{p.rolling_friction}" condim="4" rgba=".9 .2 .2 1"/>')
+        fr = f'friction="{p.floor_friction} {p.torsional_friction} {p.rolling_friction}" condim="4" rgba=".9 .2 .2 1"'
+        if p.post_shape is None:
+            pz = (ter.support_height(px, py, POST_RADIUS_M) if ter is not None else 0.0) + POST_HEIGHT_M / 2
+            L.append(f'<geom name="post" type="cylinder" size="{POST_RADIUS_M} {POST_HEIGHT_M / 2}" pos="{px} {py} {pz}" friction="{p.floor_friction} {p.torsional_friction} '
+                     f'{p.rolling_friction}" condim="4" rgba=".9 .2 .2 1"/>')
+        else:
+            sh = p.post_shape
+            pz = (ter.support_height(px, py, sh.bound_radius) if ter is not None else 0.0) + TARGET_HEIGHT_M / 2
+            for gi, (gtype, dx, dy, size) in enumerate(sh.prims()):
+                euler = f' euler="0 0 {sh.yaw:.6f}"' if gtype == "box" else ""
+                L.append(f'<geom name="post{"" if gi == 0 else gi}" type="{gtype}" size="{" ".join(f"{v:.6f}" for v in size)}" pos="{px + dx:.6f} {py + dy:.6f} {pz}"{euler} {fr}/>')
     if ter is not None:                                           # the lying body must not start inside the terrain (the start disk is flat, so normally 0)
         foot = max(float(np.hypot(c[0], c[1])) for c in centres) + 0.15
         z0 += ter.footprint_height(foot)
@@ -378,6 +388,25 @@ def write_terrain(model: mujoco.MjModel, terrain: Terrain, floor_friction: float
             model.hfield_data[adr:adr + n] = (terrain.heights[ylo:yhi + 1, xlo:xhi + 1] / ELEV_MAX_M).ravel()
             if floor_friction is not None:
                 model.geom_friction[model.geom(f"terr{ty}{tx}").id, 0] = terrain.tile_friction(floor_friction)[ty, tx]
+
+
+def post_geom_ids(model: mujoco.MjModel) -> list[int]:
+    """Ids of the target geoms ('post', 'post1', ...), first (centred) one first; empty if the model has no post."""
+    ids: list[int] = []
+    k = 0
+    while True:
+        gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "post" if k == 0 else f"post{k}")
+        if gid < 0:
+            return ids
+        ids.append(int(gid))
+        k += 1
+
+
+def set_post_xy(model: mujoco.MjModel, xy: tuple[float, float] | np.ndarray) -> None:
+    """Move the target (all its geoms, keeping their offsets) so that its centre is at floor-plane ``xy`` (call ``mj_forward`` afterwards)."""
+    ids = post_geom_ids(model)
+    rel = model.geom_pos[ids, :2] - model.geom_pos[ids[0], :2]
+    model.geom_pos[ids, :2] = np.asarray(xy, float) + rel
 
 
 class PetSim:

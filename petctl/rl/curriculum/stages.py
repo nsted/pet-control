@@ -223,6 +223,24 @@ STAGES["m2_hug3"] = Stage(
     task_params=dict(_M2_HUG3), gate=STAGES["m2_hug2"].gate, steps=3_000_000, n_envs=8, dr_scale=0.6, episode_s=30.0, ent_coef=0.0, knobs=dict(_M2V2_KNOBS), log_std_init=-1.6)
 M2V3_TASKS = ("m2_hug3",)
 
+# ---------------------------------------------------------------- M2 v5 hug (shape-agnostic target family + hug metric v2, plan sec 5.3 revised)
+# Target: random welded cylinder / box / rounded box (target_family 1; size curriculum shape_phase 1 -> 2, set by the driver). Wrap tick = chain run >= H = 4 AND normal span >= 180 deg
+# (hug_span_deg); held = 3 s window, 90 % wrap ticks. Reward: coverage 1/tick x min(run/4,1) x min(span/180,1), approach 200, hold 3/wrap tick, bonus 300 on held, post-force (>5 N), bus mean/peak
+# penalties, legacy current term off (current_weight 0), time 0.2, action rate 0.02, joint_acc/tilt/yaw 0, energy 0.05 (default). Delta actions + reverse-curriculum buffer come later (hooks only).
+_M2_HUG5 = {**{k: v for k, v in _M2_HUG3.items() if k != "coverage_ratchet"}, "coverage_weight": 1.0, "hold_weight": 3.0, "hug_bonus": 300.0, "approach_weight": 200.0, "current_weight": 0.0,
+            "time_penalty": 0.2, "action_rate_weight": 0.02, "joint_acc_weight": 0.0, "tilt_weight": 0.0, "yaw_weight": 0.0, "hug_v3": 1.0, "hug_v5": 1.0, "hug_h": 4.0, "hug_span_deg": 180.0,
+            "target_family": 1.0, "shape_phase": 1.0}
+_M2_HUG5_GATE = {**_gate_params(_M2_HUG5, target_heldout=1.0), "hug_start_mix": 0.0, "hug_mix_v3": 0.0}       # held-out shapes by seed, ordinary (straight) start, as the m2_hug gates
+STAGES["m2_hug5"] = Stage(
+    "m2_hug5", "goal_hug", "M2 v5 hug: shape-agnostic target (cylinder r 2-12 cm / box 4-16 cm / rounded box, random yaw; size phase 1 then 2) and hug metric v2 (chain run >= 4 AND outward-normal span "
+    ">= 180 deg; held = 3 s, 90 % wrap ticks); coverage 1 x min(run/4,1) x min(span/180,1), approach 200, hold 3, bonus 300, post-force/bus penalties, log_std -1.2, ent 0.002, gamma 0.997, "
+    "4M steps; warm start from the length's flat policy. Gate D1: held-out set (5 shapes x 20, seeds 10000+, dr 0.6) Wilson lo >= 0.70, each shape >= 0.50, capacitive_off drop >= 0.15, current budget, glitch 0.",
+    task_params=dict(_M2_HUG5), gate=Gate(task_params=_M2_HUG5_GATE, episodes=100, dr_scale=0.6, min_success=0.70, episode_s=30.0), steps=4_000_000, n_envs=8, dr_scale=0.6, episode_s=30.0,
+    ent_coef=0.002, knobs={**_M2V2_KNOBS, "shape_phase": (1.0, 2.0)}, log_std_init=-1.2)
+M2V5_TASKS = ("m2_hug5",)
+M2V5_PHASE2_STEPS = 2_000_000          # driver hook: train with shape_phase 1 until here, then 2 (full size ranges)
+M2V5_GAMMA = 0.997                      # driver hook (as the other M2 recipes: PETCTL_GAMMA)
+
 
 def get_stage(name: str) -> Stage:
     """Look a stage up by name (raises with the valid names)."""

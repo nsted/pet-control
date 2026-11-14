@@ -43,8 +43,9 @@ class Task(ABC):
         if post is None:
             return None
         ter = sim.p.terrain
-        z = 0.0 if ter is None else ter.support_height(post[0], post[1], POST_RADIUS_M)
-        return {"x": float(post[0]), "y": float(post[1]), "z": float(z), "radius": POST_RADIUS_M, "height": POST_HEIGHT_M}
+        r = POST_RADIUS_M if sim.p.post_shape is None else sim.p.post_shape.bound_radius
+        z = 0.0 if ter is None else ter.support_height(post[0], post[1], r)
+        return {"x": float(post[0]), "y": float(post[1]), "z": float(z), "radius": r, "height": POST_HEIGHT_M}
 
     def markers(self, sim: PetSim) -> list[tuple[np.ndarray, float, tuple[float, float, float, float]]]:
         """Visual-only markers (world position, radius, rgba) drawn in videos/viewer, e.g. the goal. Never seen by the policy."""

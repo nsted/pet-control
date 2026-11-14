@@ -20,7 +20,7 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 from petctl.rl.hug_search import FREE_S, LIFT_M, START_PEN_M, circle_centre
-from petctl.sim.model_builder import PetSim
+from petctl.sim.model_builder import PetSim, post_geom_ids, set_post_xy
 
 MODES = ("straight", "coil", "half")
 MIX_EARLY = (0.3, 0.3)          # (coil, half) probabilities; the rest is straight
@@ -79,8 +79,8 @@ def _lay_down(sim: PetSim, q: np.ndarray) -> np.ndarray | None:
     """Lay the body down in pose ``q`` with the post far away, put the post at the centre of the curled modules, hold; the post xy, or None if it would start inside the body."""
     from petctl.rl.capacitive import PostProbe
 
-    n, gid = int(sim.p.n_modules), int(sim.model.geom("post").id)
-    sim.model.geom_pos[gid, :2] = (5.0, 5.0)
+    n = int(sim.p.n_modules)
+    set_post_xy(sim.model, (5.0, 5.0))
     sim.reset(q)
     sim.data.qpos[2] += LIFT_M
     mujoco.mj_forward(sim.model, sim.data)
@@ -90,7 +90,7 @@ def _lay_down(sim: PetSim, q: np.ndarray) -> np.ndarray | None:
     for j in np.flatnonzero(big):
         sel[j:j + 2] = True
     post = circle_centre(sim.data.xipos[1:n + 1][sel, :2].copy())
-    sim.model.geom_pos[gid, :2] = post
+    set_post_xy(sim.model, post)
     mujoco.mj_forward(sim.model, sim.data)
     probe = PostProbe.of(sim)
     if probe is None or probe.read().penetration > START_PEN_M or not np.all(np.isfinite(sim.data.qpos)):
@@ -105,8 +105,8 @@ def arrange_coil(sim: PetSim, rng: np.random.Generator, mode: str, perturb: floa
     Returns the new post position as a goal vector ``(x, y, head z)``, or None if no coil could be placed (post would start inside the body even unperturbed; the post is
     restored to where the layout put it and the caller uses the ordinary straight start). Retries with the perturbation halved each time; ``perturb`` scales the +-0.2 rad (0 = exact coil).
     """
-    n, gid = int(sim.p.n_modules), int(sim.model.geom("post").id)
-    orig = sim.model.geom_pos[gid, :2].copy()
+    n = int(sim.p.n_modules)
+    orig = sim.model.geom_pos[post_geom_ids(sim.model)[0], :2].copy()
     for scale in (1.0, 0.5, 0.25, 0.0):
         post = _lay_down(sim, coil_angles(n, mode, rng, scale * perturb))
         if post is not None:
@@ -115,7 +115,7 @@ def arrange_coil(sim: PetSim, rng: np.random.Generator, mode: str, perturb: floa
             return np.array([post[0], post[1], float(sim.head_pos()[2])])
         if mode != "coil":
             break
-    sim.model.geom_pos[gid, :2] = orig
+    set_post_xy(sim.model, orig)
     sim.reset()
     mujoco.mj_forward(sim.model, sim.data)
     return None

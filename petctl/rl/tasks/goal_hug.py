@@ -2,7 +2,8 @@
 
 ``GoalObstacles`` with the target post always on (``post`` defaults to 1) plus the ground-truth hug metric and reward of ``petctl.rl.hug``. The navigation
 progress reward keeps paying until the first post contact, after which the hug terms take over; the episode ends successfully when the hug has been held
-(``hug_hold_s``, default 3 s window, 90 % duty). ``success`` in the metrics is the hug success. Knobs (besides those of GoalObstacles/GoalReach): ``hug_hold_s``, ``hug_h``
+(``hug_hold_s``, default 3 s window, 90 % duty). ``target_family`` > 0: the post is replaced by a random cylinder / box / rounded box (``petctl.rl.target_shapes``; ``shape_phase``
+1|2, ``target_heldout`` 1 = the frozen held-out gate set by seed) and ``hug_span_deg`` (180) switches on hug metric v2 (normal span). ``success`` in the metrics is the hug success. Knobs (besides those of GoalObstacles/GoalReach): ``hug_hold_s``, ``hug_h``
 (contiguous-module threshold; default max(5, ceil(0.4 n))), ``approach_weight``, ``coverage_weight``, ``squeeze_weight`` (default 0: no squeeze condition), ``hold_weight``, ``hug_bonus``,
 ``speed_gain``. Start distribution knob ``hug_start_mix`` (> 0: per episode a start mode is drawn: coil round the post / half coil / straight, see ``petctl.rl.hug_start``; mix 30/30/40
 until the switch flag exists, then 10/20/70; ``hug_mix_switched`` > 0 forces the later mix; ``hug_force_mode`` 1/2 forces coil/half). Observation knobs ``capacitive_obs`` / ``capacitive_off`` apply as for any task (see obs.py).
@@ -16,7 +17,8 @@ from petctl.rl.hug import HugMixin
 from petctl.rl.hug_start import MIX_V3_EARLY, MIX_V3_LATE, MODES, PERTURB_V3_EARLY, PERTURB_V3_LATE, arrange_coil, mix_probs, mix_switched, sample_start_mode
 from petctl.rl.tasks.goal_obstacles import DistanceField, GoalObstacles
 from petctl.rl.tasks.goal_reach import GLITCH_PENALTY, GLITCH_PENETRATION_M
-from petctl.sim.model_builder import POST_RADIUS_M, PetSim
+from petctl.sim.model_builder import PetSim
+from petctl.sim.shapes import shape_of
 
 
 class GoalHug(HugMixin, GoalObstacles):
@@ -29,6 +31,7 @@ class GoalHug(HugMixin, GoalObstacles):
     _start_placed = False
     _mode_params: dict[str, float] = {}
     _v3_switched = False
+    target_shape = None             # set by the env before ``layout`` when ``target_family`` > 0 (petctl.rl.target_shapes)
 
     def param(self, key: str, default: float) -> float:
         """Task knob with this task's own defaults (``post`` is on); the start mode of this episode overrides the layout knobs."""
@@ -50,7 +53,7 @@ class GoalHug(HugMixin, GoalObstacles):
             if self.param("hug_force_mode", 0.0) > 0.0:                                       # tests / scripted-policy checks: 1 = coil, 2 = half, 0 = draw
                 self._start_mode = MODES[int(self.param("hug_force_mode", 0.0))]
             if self._start_mode == "straight":
-                self._mode_params = {"goal_dist_min": POST_RADIUS_M + 0.05, "goal_dist_max": POST_RADIUS_M + 0.20, "bearing_deg": 60.0}
+                self._mode_params = {"goal_dist_min": shape_of(self.target_shape).bound_radius + 0.05, "goal_dist_max": shape_of(self.target_shape).bound_radius + 0.20, "bearing_deg": 60.0}
             else:
                 self._mode_params = {"goal_dist_min": 0.3, "goal_dist_max": 0.3, "bearing_deg": 0.0}
         return super().layout(head, heading, rng)

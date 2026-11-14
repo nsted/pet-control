@@ -115,6 +115,8 @@ class Gate2Spec:
     max_frac_ticks_over: float = 0.05
     max_glitch: float = 0.0
     min_median: dict[str, float] = field(default_factory=dict)
+    group_of: Callable[[int], str] | None = None          # seed -> group name (e.g. held-out shape); per-group success is reported
+    min_group_success: float | None = None                # every group's success rate (point estimate) must reach this
 
     def jsonable(self) -> dict[str, Any]:
         """Serialisable summary of the spec."""
@@ -123,7 +125,7 @@ class Gate2Spec:
                 "blind_overrides": self.blind_overrides, "blind_ceiling": self.blind_ceiling, "blind_run": None if self.blind_run is None else str(self.blind_run),
                 "leak_test": self.leak_test, "leak_move_m": self.leak_move_m, "leak_max_success": self.leak_max_success, "bus_model": self.bus_model,
                 "max_bus_mean_a": self.max_bus_mean_a, "max_frac_ticks_over": self.max_frac_ticks_over, "max_glitch": self.max_glitch, "second_metrics": sorted(self.second_metrics),
-                "min_median": self.min_median}
+                "min_median": self.min_median, "min_group_success": self.min_group_success, "grouped": self.group_of is not None}
 
 
 # ---------------------------------------------------------------- evaluator
@@ -131,13 +133,15 @@ def move_post(env: PetEnv, distance: float) -> None:
     """Shift the (static) post ``distance`` metres away from the body's centre of mass in the floor plane (the leak test)."""
     import mujoco
 
+    from petctl.sim.model_builder import set_post_xy
+
     sim = env.sim
     assert sim is not None and sim.p.post is not None
     post = np.array(sim.p.post, float)
     away = post - sim.data.subtree_com[1][:2]
     away = away / max(float(np.linalg.norm(away)), 1e-9)
     new = post + distance * away
-    sim.model.geom_pos[sim.model.geom("post").id, :2] = new
+    set_post_xy(sim.model, new)
     sim.p.post = (float(new[0]), float(new[1]))
     mujoco.mj_forward(sim.model, sim.data)
 
@@ -255,6 +259,15 @@ def run_gate2(run: Path, stage: Stage, spec: Gate2Spec | None = None, policy_fil
         res["nominal"] = _condition(ev({}, seeds, dr_scale=0.0), key)
     res["robust"] = robust
 
+    if spec.group_of is not None:
+        groups: dict[str, list[float]] = {}
+        for r, sv in zip(base_rows, base_s):
+            groups.setdefault(spec.group_of(int(r["seed"])), []).append(float(sv))
+        res["groups"] = {g: success_summary(np.array(v)) for g, v in groups.items()}
+        if spec.min_group_success is not None:
+            for g, sm in res["groups"].items():
+                if sm["rate"] < spec.min_group_success:
+                    reasons.append(f"group {g}: success {sm['rate']:.2f} < required {spec.min_group_success:.2f}")
     cur = current_budget(base_rows, spec)
     res["current"] = cur
     if not cur["ok"]:

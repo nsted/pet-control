@@ -1,5 +1,9 @@
 """Ground-truth hug metric and hug reward (Regimen v2 plan, sec 5.3, proximity definition after M1). Privileged: reads the post probe, never the sensor model.
 
+Hug metric v2 (task knob ``hug_span_deg`` = 180, shape-agnostic): a wrap tick additionally needs the unwrapped angular span (about the object's vertical axis) of the outward
+surface normals at the nearest surface points of the run's hugging faces to be >= 180 deg (flat side: 0; one corner: 90; half-way round anything: 180); ``hug_modules >= H``
+(``hug_h``, 4 for v2) as before. Held = 3 s window with >= 90 % wrap ticks. Encirclement, normal force and the old wrap angle stay diagnostics.
+
 A module "hugs" when any of its faces is within ``D_PROX_M`` (15 mm) of the post surface in at least ``DEBOUNCE_K`` of the last ``DEBOUNCE_N`` ticks.
 ``hug_modules`` is the longest chain-contiguous run of hugging modules; a tick is a hug tick when ``hug_modules >= H = max(5, ceil(0.4 n))``; the hug is
 *held* when, in the sliding ``hold_s`` (default 3 s) window, at least ``DUTY`` (90 %) of the ticks are hug ticks (dynamic holds with brief dropouts count).
@@ -15,7 +19,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from petctl.rl.capacitive import PostProbe, PostRead
-from petctl.sim.model_builder import POST_RADIUS_M, PetSim
+from petctl.sim.model_builder import PetSim
+from petctl.sim.shapes import shape_of, span_deg
 
 DEBOUNCE_N, DEBOUNCE_K = 5, 3
 HOLD_S = 3.0
@@ -75,13 +80,15 @@ class HugState:
     wrap_deg: float              # diagnostic floor-plane angle swept by the run's module centres about the post axis
     coverage: float              # hugging modules / n_modules (debounced, any run)
     encircled: bool = False      # diagnostic: post axis inside the polygon of the run's module centres
+    span_deg: float = 0.0        # hug v2: unwrapped angular span of the outward object normals at the nearest surface points of the run's hugging faces
 
 
 class HugTracker:
     """Per-episode state of the hug metric. Call ``update`` once per control tick."""
 
-    def __init__(self, n_modules: int, control_hz: float, hold_s: float = HOLD_S, h_min: int | None = None) -> None:
-        """``h_min`` overrides the default threshold (tests)."""
+    def __init__(self, n_modules: int, control_hz: float, hold_s: float = HOLD_S, h_min: int | None = None, span_min_deg: float | None = None) -> None:
+        """``h_min`` overrides the default threshold (tests). ``span_min_deg`` (hug metric v2, shape-agnostic): a hug tick additionally needs the normal span of the run >= this (None = v1)."""
+        self.span_min = span_min_deg
         self.n = n_modules
         self.h = int(h_min) if h_min is not None else hug_threshold(n_modules)
         self.hold_need = max(1, int(round(hold_s * control_hz)))       # ticks in the sliding hold window
@@ -101,6 +108,8 @@ class HugTracker:
         self.t_hug_start = float("nan")    # start of the final continuous hug (s)
         self.peak_modules = 0
         self.peak_wrap_deg = 0.0
+        self.peak_span_deg = 0.0
+        self._ang = np.full(self.n, np.nan)       # last known outward-normal angle per module (a debounced hugging module keeps it through single-tick dropouts)
         self.peak_force_n = 0.0
         self.peak_duty = 0.0
         self.ever_encircled = False
@@ -127,10 +136,18 @@ class HugTracker:
         self._hist.append(face_contact)
         module_hug = np.sum(np.array(self._hist), axis=0) >= DEBOUNCE_K
         run, start = longest_run(module_hug)
-        hug_tick = run >= self.h
-        just = self.push_hug_tick(hug_tick, now)
         in_run = np.zeros(self.n, bool)
         in_run[start:start + run] = run > 0
+        span = 0.0
+        if self.span_min is not None:
+            if read.normal_ang is not None:
+                cur = np.asarray(read.normal_ang, float)
+                self._ang = np.where(np.isfinite(cur), cur, self._ang)
+                self._ang[~module_hug] = np.nan
+            vals = self._ang[in_run]
+            span = span_deg(vals[np.isfinite(vals)])
+        hug_tick = run >= self.h and (self.span_min is None or span >= self.span_min - 1e-6)
+        just = self.push_hug_tick(hug_tick, now)
         wrap = 0.0
         if run >= 2:
             rel = centres_xy[in_run] - post_xy
@@ -141,8 +158,9 @@ class HugTracker:
         force = float(read.force[module_hug].sum())
         self.peak_modules = max(self.peak_modules, run)
         self.peak_wrap_deg = max(self.peak_wrap_deg, wrap)
+        self.peak_span_deg = max(self.peak_span_deg, span)
         self.peak_force_n = max(self.peak_force_n, force)
-        self.last = HugState(module_hug, run, start, hug_tick, self.hold_ticks, self.duty, self.held, just, force, read.force.copy(), wrap, float(module_hug.sum()) / self.n, enc)
+        self.last = HugState(module_hug, run, start, hug_tick, self.hold_ticks, self.duty, self.held, just, force, read.force.copy(), wrap, float(module_hug.sum()) / self.n, enc, span)
         return self.last
 
 
@@ -162,15 +180,15 @@ class HugMixin:
     def hug_reset(self, sim: PetSim) -> None:
         """Start the tracker for this episode (call from ``reset``)."""
         self._hug_probe = PostProbe.of(sim)
-        self._hug = HugTracker(int(sim.p.n_modules), self.cfg.control_hz, self.param("hug_hold_s", HOLD_S), None if self.param("hug_h", 0.0) <= 0 else int(self.param("hug_h", 0.0)))  # type: ignore[attr-defined]
+        self._hug = HugTracker(int(sim.p.n_modules), self.cfg.control_hz, self.param("hug_hold_s", HOLD_S), None if self.param("hug_h", 0.0) <= 0 else int(self.param("hug_h", 0.0)),
+                                None if self.param("hug_span_deg", 0.0) <= 0 else self.param("hug_span_deg", 0.0))  # type: ignore[attr-defined]
         self._hug_peak = 0
         self._hug_prev_dist = self._hug_mean_dist(sim) if self._hug_probe is not None else 0.0
         self.hug_success = False
 
     def _hug_mean_dist(self, sim: PetSim) -> float:
-        post = np.array(sim.p.post)
-        d = np.linalg.norm(sim.data.xipos[1:self._hug.n + 1, :2] - post, axis=1) - POST_RADIUS_M
-        return float(np.mean(np.maximum(d, 0.0)))
+        d = shape_of(sim.p.post_shape).dist_xy(sim.data.xipos[1:self._hug.n + 1, :2], np.array(sim.p.post))
+        return float(np.mean(d))
 
     def hug_step(self, sim: PetSim) -> tuple[float, dict[str, float]]:
         """Update the metric for the tick just simulated; returns (reward, logged terms)."""
@@ -184,7 +202,10 @@ class HugMixin:
         self._hug_prev_dist = dist
         v3 = P("hug_v3", 0.0) > 0.0
         if v3:                                                  # v3: dense per-tick coverage (pays for STAYING), small discovery ratchet on the running peak
-            terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * st.hug_modules / self._hug.h
+            if P("hug_v5", 0.0) > 0.0:                          # v5 (shape-agnostic): per tick x min(run/H, 1) x min(normal span / 180 deg, 1)
+                terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * min(st.hug_modules / self._hug.h, 1.0) * min(st.span_deg / 180.0, 1.0)
+            else:
+                terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * st.hug_modules / self._hug.h
             terms["coverage_ratchet"] = P("coverage_ratchet", 0.0) * max(0, st.hug_modules - self._hug_peak)
             self._hug_peak = max(self._hug_peak, st.hug_modules)
             terms["post_force"] = -P("post_force_penalty", 0.0) * max(0.0, float(self._hug_probe.read().force.sum()) - POST_FORCE_FREE_N)
@@ -210,5 +231,5 @@ class HugMixin:
         """Episode-level hug numbers (ground truth) for the gate / eval."""
         h, st = self._hug, self._hug.last
         return {"hug_success": float(self.hug_success), "hug_modules": float(h.peak_modules), "hug_modules_now": float(0 if st is None else st.hug_modules),
-                "hug_threshold": float(h.h), "hold_duty": h.peak_duty, "encircled": float(h.ever_encircled), "wrap_deg": h.peak_wrap_deg, "post_force_n": h.peak_force_n, "coverage_frac": float(0 if st is None else st.coverage),
+                "hug_threshold": float(h.h), "hold_duty": h.peak_duty, "encircled": float(h.ever_encircled), "wrap_deg": h.peak_wrap_deg, "normal_span_deg": h.peak_span_deg, "post_force_n": h.peak_force_n, "coverage_frac": float(0 if st is None else st.coverage),
                 "t_contact_s": h.t_contact, "t_hug_s": h.t_hug, "t_hug_start_s": h.t_hug_start}
