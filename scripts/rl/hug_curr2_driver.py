@@ -104,12 +104,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", type=Path, default=Path("data/rl/hug_curr2"))
     ap.add_argument("--init", type=Path, default=INIT)
+    ap.add_argument("--init-levels", type=Path, default=None, help="hug_level.json of a previous run (continuation keeps its per-family levels)")
     ap.add_argument("--init-buffer", type=Path, default=INIT_BUFFER)
     ap.add_argument("--n-envs", type=int, default=0, help="0: the best n_envs of data/rl/m2v5/benchmark.json")
     ap.add_argument("--scale", type=float, default=1.0, help="multiplies every wall budget and check time (smoke tests)")
     ap.add_argument("--screen-n", type=int, default=hl.SCREEN_N)
     ap.add_argument("--final-n", type=int, default=100)
     ap.add_argument("--eval-workers", type=int, default=4)
+    ap.add_argument("--hold-ramp", type=float, default=0.0, help="hold_ramp task knob (1: hold pays hold_weight x min(2, 1 + hold_ticks / hold_need)); 0 = unchanged")
     ap.add_argument("--force-go", action="store_true", help="smoke tests only: record the check values but never stop on them")
     a = ap.parse_args()
     root, sc = a.root, a.scale
@@ -134,13 +136,16 @@ def main() -> int:
             shutil.copy(a.init_buffer, buf)
             log(f"[buffer] initial buffer copied from {a.init_buffer} ({len(json.loads(buf.read_text()))} states)")
         out.mkdir(parents=True, exist_ok=True)
+        if a.init_levels is not None and a.init_levels.exists() and not (out / LEVEL_FILE).exists():              # continuation: keep the per-family levels reached so far
+            shutil.copy(a.init_levels, out / LEVEL_FILE)
+            log(f"[levels] initial per-family levels copied from {a.init_levels}")
         checks = hc2.Curr2Checks(out, hc2.CHECK1_MIN * 60.0 * sc, sc)
         levels = HugFamilyLevelCallback(out)
         old_env = {k: os.environ.get(k) for k in ("PETCTL_LR", "PETCTL_LR_CONST", "PETCTL_PROGRESS_EXPORT_S")}
         os.environ.update({"PETCTL_LR": str(hl.LR), "PETCTL_LR_CONST": "1"})
         os.environ.setdefault("PETCTL_PROGRESS_EXPORT_S", "900")
         try:
-            info = d6.train_phase(STAGE, out, L, {}, get_stage(STAGE).ent_coef, 300, a.init, BUDGET_MIN, CAP_STEPS, n_envs, sc, extra=[levels, checks], buffer=buf, copy_ret=True, keep_log_std=True)
+            info = d6.train_phase(STAGE, out, L, {"hold_ramp": a.hold_ramp}, get_stage(STAGE).ent_coef, 300, a.init, BUDGET_MIN, CAP_STEPS, n_envs, sc, extra=[levels, checks], buffer=buf, copy_ret=True, keep_log_std=True)
         finally:
             for k, v in old_env.items():
                 if v is None:

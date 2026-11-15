@@ -219,3 +219,17 @@ Consequence: the "cylinder span is free" part of the expert's explanation does n
 ## 2026-11-14 hug_curr_02 launched (per-family curriculum, wider cylinder training range, trend-based checks)
 Stage `hug_curr_02` (driver `scripts/rl/hug_curr2_driver.py`, data `data/rl/hug_curr2/`), warm start hug_curr_01 (model, vecnormalize, log-std, reward-norm stats, start buffer), L=8, hold channel, 10 envs, DR 0.3, constant lr 1.5e-4, ent 0.002, hold_weight 10, no reward change.
 Per-family levels (training only, state in hug_level.json, advance at rolling success >= 0.30 over the family's last 100 episodes, never demote): cylinders / rounded boxes C0 span 100 / run 4 / hold 1.0 s -> C1 125 / 4 / 1.5 s -> L2 150 / 4 / 2 s -> L3 (gate); boxes L1 120 / 3 / 1.5 s -> L2 -> L3. Shape mix cyl 0.50 / box 0.20 / rbox 0.30, cyl r 1.5-9 cm, exclusion margin 0.5 cm (was 1 cm). New episode fields: shape_a, shape_b, shape_rc, contact, bend_run_deg. Checks: trend rule at 20 min (see REGIMEN_V2_PLAN sec 7), box safety stop, n=30 screen at L3 at the end.
+
+## 2026-11-15 hug_curr_02 hours 1-2 results and the expert's stopping rule (written before the hour-3 result is known)
+Results (data/rl/hug_curr4 continuation chain, L=8, n=30 screen at L3, 6 per shape):
+- Hour 1: screen 0.033 (square 1/6, all other shapes 0); hold_duty 0.088, span 139, run 5.27; family levels cyl c1, box l2, rbox c1.
+- Hour 2: screen 0.067 (square 0.33, all other shapes 0); hold_duty 0.144, span 144, run 5.57; levels cyl c1, box l2, rbox l2. End-of-hour-2 training success per family: cyl c1 0.21, box l2 0.24, rbox l2 0.01.
+- Rate: about +0.033 screen per hour, so a 0.55 screen is about 15 hours away at this pace. Cyl r7 needs all 8 modules in the run with only 10 deg of margin (M1c confirmation: span 190 deg).
+
+Stopping rule (Opus expert; fixed before the hour-3 screen):
+1. Hour-3 screen >= 0.15 AND at least one curved gate shape (cylinder / rounded box) > 0: run hour 4 with `hold_ramp=1` and nothing else changed. Stop L=8 hug training if the hour-4 screen is < 0.30.
+2. Hour-3 screen < 0.15: stop L=8 hug training now (keep the best checkpoint).
+3. Then static feasibility checks: rounded 8x8 r2 at n=8; L=9 and L=11 gate candidates cyl r3 / r7 / r8, square 8x8, rect 5x14, rounded 8x8 r2 on the generated URDF bodies.
+4. Then an L=9 study: flat P1 25 min (go if >= 0.15); hug with `hold_ramp=1`, two 45-min hours; continue only if the hour-2 screen >= 0.15 or a curved gate shape >= 2/6, else n=11; escalate to the owner if n=11 fails.
+
+Code: task knob `hold_ramp` (default 0, stage knob of hug_curr_02, driver flag `--hold-ramp`): with 1 the hold term pays `hold_weight x min(2, 1 + hold_ticks / hold_need)` per hug tick, hold_need of the family's current level. Note: hug_curr_02 runs `hug_v3` (flat hold), so the ramp replaces the flat factor under v3 too; with hold_ramp 0 behaviour is unchanged (identity tests pass).

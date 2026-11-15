@@ -249,7 +249,10 @@ class HugMixin:
                 on = read.touch & st.module_hug[:, None]
                 f = np.minimum(st.face_force[on], SQUEEZE_CAP_N) / SQUEEZE_CAP_N
                 terms["squeeze"] = sq_w * float(f.mean()) if f.size else 0.0
-            terms["hold"] = P("hold_weight", DEFAULT_WEIGHTS["hold_weight"]) * (1.0 if v3 else 1.0 + st.hold_ticks / self._hug.hold_need)
+            hold_f = 1.0 if v3 else 1.0 + st.hold_ticks / self._hug.hold_need
+            if P("hold_ramp", 0.0) > 0.0:                       # hold_ramp: per hug tick hold_weight x min(2, 1 + hold_ticks / hold_need) (hold_need of the family's current level), also under v3; off = unchanged
+                hold_f = min(2.0, 1.0 + st.hold_ticks / self._hug.hold_need)
+            terms["hold"] = P("hold_weight", DEFAULT_WEIGHTS["hold_weight"]) * hold_f
         if st.just_held:
             self.hug_success = True
             max_steps = max(1, int(round(self.cfg.episode_s * self.cfg.control_hz)))

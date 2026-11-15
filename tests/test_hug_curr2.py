@@ -199,3 +199,30 @@ def test_callback_records_table_and_stops(tmp_path) -> None:
     cb = hc2.Curr2Checks(tmp_path, 1.0)
     assert not cb.run_check1() and cb.results["check1"]["table"]["cyl"]["n"] == 100 and (tmp_path / "check1.json").exists() and (tmp_path / "checks.jsonl").exists()
     assert cb.run_safety() and cb.results["safety"]["n_box"] == 0
+
+
+@needs
+def test_hold_ramp_value_cap_default_off_and_level_keyed() -> None:
+    stage = get_stage("hug_curr_02")
+    assert stage.task_params["hold_ramp"] == 0.0
+
+    def holds(ramp: float | None, fam: str, idx: int, ticks: int) -> list[float]:
+        cfg = build_config(stage, {"n_modules": 8, **({} if ramp is None else {"hold_ramp": ramp})})
+        env = PetEnv(cfg)
+        env.set_hug_family_levels({fam: idx})
+        env.reset(seed=_seed_of_kind("hug_curr_02", fam))
+        t = env.task
+        t._hug_probe.read = lambda: _stub_read(190.0)           # type: ignore[method-assign]
+        return [t.hug_step(env.sim)[1]["hold"] for _ in range(ticks)], t._hug.hold_need, t.param("hold_weight", 1.0)
+
+    for fam, idx in (("cyl", 0), ("box", 1)):
+        off, need, w = holds(0.0, fam, idx, 3 * 30)
+        on, need2, _ = holds(1.0, fam, idx, 3 * 30)
+        dflt, _, _ = holds(None, fam, idx, 3 * 30)
+        assert need == need2 and off == dflt                                    # off by default, bit-identical
+        i0 = next(k for k, v in enumerate(off) if v > 0)                        # first paying hug tick (the tracker debounces the start)
+        assert abs(on[i0] - w * (1 + 1 / need)) < 1e-9                        # first hug tick: hold_ticks = 1 (hold_ticks 0 would pay hold_weight)
+        assert on[i0 + 1] > on[i0] and abs(on[i0 + 5] - w * (1 + 6 / need)) < 1e-9         # the ramp grows by hold_weight / hold_need per tick
+        assert abs(on[i0 + need - 1] - w * 2.0) < 1e-9                          # at hold_need hold ticks: 2x
+        assert max(on) <= w * 2.0 + 1e-12 and abs(on[-1] - w * 2.0) < 1e-9 and max(off) == w   # capped at 2x; off = the flat v3 hold
+    assert holds(1.0, "cyl", 0, 1)[1] != holds(1.0, "cyl", 2, 1)[1]            # hold_need follows the family's current level
