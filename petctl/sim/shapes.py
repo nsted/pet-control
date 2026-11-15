@@ -101,6 +101,11 @@ def shape_of(post_shape: TargetShape | None) -> TargetShape:
     return post_shape if post_shape is not None else TargetShape("cyl", POST_R_M)
 
 
+def vnorm(x: np.ndarray) -> float:
+    """Euclidean norm of a small 1-D float vector, bit-identical to ``float(np.linalg.norm(x))`` without its wrapper overhead."""
+    return math.sqrt(float(x.dot(x)))
+
+
 def span_deg(angles: np.ndarray) -> float:
     """Unwrapped angular span (degrees, max - min) of a chain-ordered sequence of angles (< 2 values: 0)."""
     a = np.asarray(angles, float)

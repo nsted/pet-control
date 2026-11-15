@@ -98,6 +98,7 @@ class HugTracker:
     def reset(self) -> None:
         """Clear the debounce history and counters."""
         self._hist: deque[np.ndarray] = deque(maxlen=DEBOUNCE_N)
+        self._cnt = np.zeros(self.n, int)             # per-module count of contact ticks in the debounce history
         self.hold_ticks = 0
         self._win: deque[bool] = deque(maxlen=self.hold_need)
         self.duty = 0.0
@@ -133,9 +134,12 @@ class HugTracker:
         face_contact = read.touch.any(axis=1)
         if bool(read.any_contact.any()) and math.isnan(self.t_contact):
             self.t_contact = now
+        if len(self._hist) == DEBOUNCE_N:
+            self._cnt -= self._hist[0]
         self._hist.append(face_contact)
-        module_hug = np.sum(np.array(self._hist), axis=0) >= DEBOUNCE_K
-        run, start = longest_run(module_hug)
+        self._cnt += face_contact
+        module_hug = self._cnt >= DEBOUNCE_K
+        run, start = longest_run(module_hug) if module_hug.any() else (0, 0)
         in_run = np.zeros(self.n, bool)
         in_run[start:start + run] = run > 0
         span = 0.0
@@ -196,7 +200,8 @@ class HugMixin:
         if self._hug_probe is None:
             return 0.0, terms
         P = self.param
-        st = self._hug.update(self._hug_probe.read(), sim.data.xipos[1:self._hug.n + 1, :2], np.array(sim.p.post))
+        read = self._hug_probe.read()
+        st = self._hug.update(read, sim.data.xipos[1:self._hug.n + 1, :2], np.array(sim.p.post))
         dist = self._hug_mean_dist(sim)
         terms["approach"] = P("approach_weight", DEFAULT_WEIGHTS["approach_weight"]) * (self._hug_prev_dist - dist)
         self._hug_prev_dist = dist
@@ -208,14 +213,14 @@ class HugMixin:
                 terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * st.hug_modules / self._hug.h
             terms["coverage_ratchet"] = P("coverage_ratchet", 0.0) * max(0, st.hug_modules - self._hug_peak)
             self._hug_peak = max(self._hug_peak, st.hug_modules)
-            terms["post_force"] = -P("post_force_penalty", 0.0) * max(0.0, float(self._hug_probe.read().force.sum()) - POST_FORCE_FREE_N)
+            terms["post_force"] = -P("post_force_penalty", 0.0) * max(0.0, float(read.force.sum()) - POST_FORCE_FREE_N)
         elif st.hug_modules > self._hug_peak:
             terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * (st.hug_modules - self._hug_peak)
             self._hug_peak = st.hug_modules
         if st.hug_tick:
             sq_w = P("squeeze_weight", DEFAULT_WEIGHTS["squeeze_weight"])
             if sq_w != 0.0:
-                on = self._hug_probe.read().touch & st.module_hug[:, None]
+                on = read.touch & st.module_hug[:, None]
                 f = np.minimum(st.face_force[on], SQUEEZE_CAP_N) / SQUEEZE_CAP_N
                 terms["squeeze"] = sq_w * float(f.mean()) if f.size else 0.0
             terms["hold"] = P("hold_weight", DEFAULT_WEIGHTS["hold_weight"]) * (1.0 if v3 else 1.0 + st.hold_ticks / self._hug.hold_need)
@@ -223,7 +228,7 @@ class HugMixin:
             self.hug_success = True
             max_steps = max(1, int(round(self.cfg.episode_s * self.cfg.control_hz)))
             terms["hug_bonus"] = P("hug_bonus", DEFAULT_WEIGHTS["hug_bonus"]) * (1.0 + P("speed_gain", DEFAULT_WEIGHTS["speed_gain"]) * (1.0 - self._hug.t / max_steps))
-        pen = self._hug_probe.read().penetration
+        pen = read.penetration
         terms["hug_validity"] = -self.cfg.reward.validity * max(0.0, pen - PEN_VALID_M)
         return float(sum(terms.values())), terms
 

@@ -22,6 +22,7 @@ import numpy as np
 from petctl.rl.obs import gravity_in_body
 from petctl.rl.tasks.locomote import Locomote
 from petctl.sim.model_builder import PetSim
+from petctl.sim.shapes import vnorm
 
 GLITCH_COM_SPEED = 3.0       # m/s; no real PET motion is anywhere near this, so it is a physics blow-up
 GLITCH_PENALTY = 300.0
@@ -169,7 +170,7 @@ class GoalReach(Locomote):
     def _to_goal(self, com: np.ndarray) -> tuple[np.ndarray, float]:
         v = self.goal - com
         v[2] = 0.0
-        d = float(np.linalg.norm(v))
+        d = vnorm(v)
         return v / max(d, 1e-9), d
 
     def _point_at_goal(self, com: np.ndarray) -> float:
@@ -197,7 +198,7 @@ class GoalReach(Locomote):
             self._d_hist.append(v.copy())
             v = self._d_hist[0] + self._d_bias
             v[:2] += self._drng.normal(0.0, self._d_sigma, 2)
-        d = float(np.linalg.norm(v))
+        d = vnorm(v)
         r = sim.data.site_xmat[sim.head_id].reshape(3, 3)
         return np.concatenate([r.T @ (v / max(d, 1e-9)), [min(d / DIST_OBS_SCALE_M, 2.0), min(d, NEAR_FIELD_M) / NEAR_FIELD_M]]).astype(np.float32)
 
@@ -215,7 +216,7 @@ class GoalReach(Locomote):
         dt = 1.0 / self.cfg.control_hz
         com = self._com(sim)
         self._t += 1
-        step = float(np.linalg.norm((com - self._last)[:2]))
+        step = vnorm((com - self._last)[:2])
         self.path_m += step
         self.energy += float(np.sum(sim.joint_torque() ** 2)) * dt
         self._last = com

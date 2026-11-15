@@ -207,7 +207,10 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
             callback = CallbackList([callback, GateStopCallback(out, stop_when_gate_passes)])
     from stable_baselines3.common.callbacks import CallbackList
     from petctl.rl.records import ProgressExportCallback
-    callback = CallbackList([callback, ProgressExportCallback(out), *(extra_callbacks or [])])      # progress_policy.npz / progress.json every 20 min (PETCTL_PROGRESS_EXPORT_S)
+    from petctl.rl.hug_buffer import BUFFER_ENV
+    from petctl.rl.records import HugBufferCallback
+    buf_cbs = [HugBufferCallback(os.environ[BUFFER_ENV])] if os.environ.get(BUFFER_ENV) else []     # hug start buffer: merged / persisted / broadcast once per rollout
+    callback = CallbackList([callback, ProgressExportCallback(out), *buf_cbs, *(extra_callbacks or [])])      # progress_policy.npz / progress.json every 20 min (PETCTL_PROGRESS_EXPORT_S)
     model.learn(total_timesteps=steps, progress_bar=False, callback=callback)
     model.save(str(out / "model"))
     venv.save(str(out / "vecnormalize.pkl"))

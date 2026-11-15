@@ -27,6 +27,8 @@ from typing import Any
 
 from stable_baselines3.common.callbacks import BaseCallback
 
+from petctl.rl.hug_buffer import CAPACITY as BUFFER_CAPACITY
+from petctl.rl.hug_buffer import HugStartBuffer
 from petctl.rl.policy import export_live_policy, export_policy
 from petctl.rl.video import SESSIONS_DIR, finalize_session
 
@@ -222,3 +224,32 @@ class ProgressExportCallback(BaseCallback):
         if time.time() - self._last > self.period_s:
             self.export()
         return True
+
+
+class HugBufferCallback(BaseCallback):
+    """Once per rollout: collect the start states every env stored (``drain_start_buffer``), merge them into the 500-state FIFO, persist the file (atomic) and broadcast the merged buffer back to
+    the envs (``set_start_buffer``). The merged copy is initialised from the buffer file (resume); the file is also written at the end of training."""
+
+    def __init__(self, path: Path | str, capacity: int = BUFFER_CAPACITY) -> None:
+        """``path``: the buffer file (``$PETCTL_HUG_BUFFER``)."""
+        super().__init__()
+        self.buf = HugStartBuffer(path, capacity)
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _merge(self) -> None:
+        new = [e for part in self.training_env.env_method("drain_start_buffer") for e in part]
+        if not new:
+            return
+        items = self.buf.load()
+        items.extend(new)
+        del items[:-self.buf.capacity]
+        self.buf.write_file()
+        self.training_env.env_method("set_start_buffer", items)
+
+    def _on_rollout_end(self) -> None:
+        self._merge()
+
+    def _on_training_end(self) -> None:
+        self._merge()

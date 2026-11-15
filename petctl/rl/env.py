@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from typing import Any
 
@@ -13,6 +14,7 @@ from petctl.config import REGIMEN_BUS_MEAN_A, REGIMEN_BUS_PEAK_A
 from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
 from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
+from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
 from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot, hold_value, next_target
 from petctl.rl.target_shapes import heldout_index, heldout_shape, sample_training_shape
@@ -66,6 +68,27 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.cap_sensor: CapacitiveSensor | None = None
         self._reply_mult, self._reply_buf = 1.0, None
         self.bus: BusClamp | None = None
+        self._start_buf: HugStartBuffer | None = None
+        self._start_buf_path: str | None = None
+
+    # ------------------------------------------------------------------ hug start buffer (in memory; merged by the training callback once per rollout)
+    def start_buffer(self) -> HugStartBuffer | None:
+        """This env's in-memory hug start buffer on the file named by ``$PETCTL_HUG_BUFFER`` (created on first use; None when the variable is unset)."""
+        p = os.environ.get(BUFFER_ENV) or None
+        if p != self._start_buf_path:
+            self._start_buf_path, self._start_buf = p, (HugStartBuffer(p) if p else None)
+        return self._start_buf
+
+    def drain_start_buffer(self) -> list[dict[str, Any]]:
+        """New start states stored by this env since the last call (for the callback's merge)."""
+        b = self.start_buffer()
+        return [] if b is None else b.drain()
+
+    def set_start_buffer(self, items: list[dict[str, Any]]) -> None:
+        """Install the merged start buffer broadcast by the callback."""
+        b = self.start_buffer()
+        if b is not None:
+            b.replace(items)
 
     # ------------------------------------------------------------------ helpers
     def _snapshot(self) -> Snapshot:
@@ -175,6 +198,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.task = TASKS[self.cfg.task](self.cfg)
         shape = None
         pick = getattr(self.task, "pick_buffer_start", None)
+        if pick is not None:
+            self.task.start_buffer = self.start_buffer()  # type: ignore[attr-defined]
         bstart = pick(self._rng) if pick is not None else None                        # hug start buffer (task knob hug_buffer): a stored state fixes the object's shape and place
         if bstart is not None:
             from petctl.sim.shapes import TargetShape

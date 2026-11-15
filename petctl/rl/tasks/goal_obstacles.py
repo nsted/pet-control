@@ -18,6 +18,7 @@ import numpy as np
 
 from petctl.rl.tasks.goal_reach import GoalReach
 from petctl.sim.model_builder import PetSim
+from petctl.sim.shapes import vnorm
 
 GRID_RES_M = 0.05
 PLAN_MARGIN_M = 0.13          # clearance kept round obstacles when planning (about half the body's swing width)
@@ -46,6 +47,10 @@ def bounding_radius(ob: tuple) -> float:
     return a if kind == "cyl" else float(np.hypot(a, b)) if kind == "box" else max(a, b)
 
 
+FREE_FIELDS_MAX = 128
+_FREE_FIELDS: dict[tuple[int, int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}   # obstacle-free fields by (nx, ny, goal cell); process-wide memo
+
+
 class DistanceField:
     """Shortest-path distance (m) to ``goal`` over a 2-D grid with the inflated obstacles blocked; blocked cells take the nearest free cell's value plus the gap."""
 
@@ -53,6 +58,21 @@ class DistanceField:
         """Build the field over the box ``lo``..``hi`` (world xy)."""
         self.lo = lo.copy()
         self.nx, self.ny = (np.ceil((hi - lo) / GRID_RES_M).astype(int) + 1)
+        if not obstacles:                                                         # no obstacle: the field depends on the grid size and the goal cell only (shared read-only arrays)
+            key = (int(self.nx), int(self.ny)) + self._ij(goal)
+            hit = _FREE_FIELDS.get(key)
+            if hit is None:
+                self._build(obstacles, goal, lo)
+                if len(_FREE_FIELDS) >= FREE_FIELDS_MAX:
+                    _FREE_FIELDS.pop(next(iter(_FREE_FIELDS)))                  # oldest first
+                _FREE_FIELDS[key] = (self.field, self.reachable, self.gx, self.gy)
+            else:
+                self.field, self.reachable, self.gx, self.gy = hit
+            return
+        self._build(obstacles, goal, lo)
+
+    def _build(self, obstacles: tuple, goal: np.ndarray, lo: np.ndarray) -> None:
+        """Plan the field (grid Dijkstra from the goal, blocked cells filled from the nearest free cell)."""
         xs = lo[0] + GRID_RES_M * np.arange(self.nx)
         ys = lo[1] + GRID_RES_M * np.arange(self.ny)
         X, Y = np.meshgrid(xs, ys, indexing="ij")
@@ -112,7 +132,7 @@ class DistanceField:
         """Unit vector of steepest descent (towards the goal along the shortest path) at ``p``, or zeros on a plateau."""
         i, j = self._ij(p)
         g = np.array([self.gx[i, j], self.gy[i, j]])
-        n = float(np.linalg.norm(g))
+        n = vnorm(g)
         return -g / n if n > 1e-9 else np.zeros(2)
 
 

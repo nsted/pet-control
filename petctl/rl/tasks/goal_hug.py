@@ -36,6 +36,7 @@ class GoalHug(HugMixin, GoalObstacles):
     _v3_switched = False
     _bstart: dict | None = None     # buffer start of this episode (``pick_buffer_start``), restored by ``restore_buffer_start``
     _buffer: HugStartBuffer | None = None
+    start_buffer: HugStartBuffer | None = None   # the env's in-memory buffer (set by the env before ``pick_buffer_start``)
     _stored = False
     _stalled = False
     target_shape = None             # set by the env before ``layout`` when ``target_family`` > 0 (petctl.rl.target_shapes)
@@ -89,7 +90,7 @@ class GoalHug(HugMixin, GoalObstacles):
         self._bstart, self._buffer, self._stored, self._stalled = None, None, False, False
         if self.param("hug_buffer", 0.0) <= 0.0 or self.param("target_family", 0.0) <= 0.0:
             return None
-        self._buffer = HugStartBuffer.from_env()
+        self._buffer = self.start_buffer
         if self._buffer is None:
             return None
         r = np.random.default_rng(int(rng.integers(2 ** 31 - 1)))

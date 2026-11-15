@@ -122,6 +122,29 @@ def test_buffer_fill_fifo_and_sampler(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir() if "tmp" in p.name) == []        # atomic writes leave no temp files
 
 
+def test_buffer_merge_broadcast_and_persist(tmp_path: Path) -> None:
+    """Callback protocol: envs drain their new states, the merged FIFO is written once and replaces every env's copy (no duplicates, oldest dropped beyond the capacity)."""
+    f = tmp_path / "b.json"
+    a, b = HugStartBuffer(f, capacity=5), HugStartBuffer(f, capacity=5)
+    for i in range(3):
+        a.add(_entry(i))
+    for i in range(10, 14):
+        b.add(_entry(i))
+    assert not f.exists() and len(a) == 3 and len(b) == 4                                  # each env samples its own copy until the merge
+    merged = HugStartBuffer(f, capacity=5)
+    items = merged.load()
+    for part in (a.drain(), b.drain()):
+        items.extend(part)
+    del items[:-5]
+    merged.write_file()
+    for e in (a, b):
+        e.replace(items)
+    assert [e["span"] for e in json.loads(f.read_text())] == [122.0, 130.0, 131.0, 132.0, 133.0] == [e["span"] for e in a.load()] == [e["span"] for e in b.load()]
+    assert a.drain() == [] and b.drain() == []
+    a.add(_entry(20))
+    assert len(a.drain()) == 1 and len(HugStartBuffer(f, capacity=5)) == 5               # a fresh copy resumes from the file
+
+
 @needs_urdf
 def test_buffer_store_and_restore_reproduces_run_and_span(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A state stored during an episode (scripted coil used here only to reach a hug) is restored by a buffer start with the same run / span, shape and targets; knob off = no buffer."""
@@ -137,7 +160,9 @@ def test_buffer_store_and_restore_reproduces_run_and_span(tmp_path: Path, monkey
             env.step(np.zeros(nj))
         if env.task._stored:
             stored.append((env.task._hug.last.hug_modules, env.task._hug.last.span_deg))
-    assert len(stored) >= 2 and len(HugStartBuffer.from_env()) == len(stored)
+    assert len(stored) >= 2 and len(env.start_buffer()) == len(stored) and not (tmp_path / "b.json").exists()      # in memory only: no file IO on the step path
+    env.start_buffer().flush()                                                                                        # (the training callback persists it once per rollout)
+    assert len(HugStartBuffer.from_env()) == len(stored)
     cfg2 = build_config(get_stage("m2_hug6"), {"n_modules": 10.0})
     cfg2.task_params.update({"hug_buffer_min": 1.0, "hug_buffer_p": 1.0, "hug_buffer_perturb": 0.0, "hug_buffer_min_run": 99.0})
     cfg2.dr.scale = 0.0
