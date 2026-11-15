@@ -50,12 +50,28 @@ HELD_OUT_L8: tuple[tuple[str, str, tuple[float, ...], float], ...] = (
     ("rect_5x14", "box", (0.05, 0.14), 0.0),
     ("rounded_8x8_r2", "rbox", (0.08, 0.08), 0.02),
 )
+# Odd lengths (M1d, docs/plans/M1D_ODD_LENGTH_FEASIBILITY.md; same rule: gate_r_max = largest tested cylinder radius with >= 1 module of slack, i.e. held run >= 5):
+# L = 9: r8 has slack (run 9, 195 deg; r9 untested); L = 11: r9 has slack (run 11, 229 deg), r11 does not (144 deg). Rounded shape 8x8 r2 (the one searched at n = 9, 11).
+HELD_OUT_L9: tuple[tuple[str, str, tuple[float, ...], float], ...] = (
+    ("cyl_r3", "cyl", (0.03,), 0.0),
+    ("cyl_r8", "cyl", (0.08,), 0.0),
+    ("square_8x8", "box", (0.08, 0.08), 0.0),
+    ("rect_5x14", "box", (0.05, 0.14), 0.0),
+    ("rounded_8x8_r2", "rbox", (0.08, 0.08), 0.02),
+)
+HELD_OUT_L11: tuple[tuple[str, str, tuple[float, ...], float], ...] = (
+    ("cyl_r3", "cyl", (0.03,), 0.0),
+    ("cyl_r9", "cyl", (0.09,), 0.0),
+    ("square_8x8", "box", (0.08, 0.08), 0.0),
+    ("rect_5x14", "box", (0.05, 0.14), 0.0),
+    ("rounded_8x8_r2", "rbox", (0.08, 0.08), 0.02),
+)
 HELD_OUT_NAMES = tuple(h[0] for h in HELD_OUT)
 
 
 def held_out_set(n_modules: int = 10) -> tuple[tuple[str, str, tuple[float, ...], float], ...]:
-    """The frozen held-out gate set of a body length: the L = 8 set for 8 modules, the L = 10 set otherwise."""
-    return HELD_OUT_L8 if int(n_modules) == 8 else HELD_OUT_L10
+    """The frozen held-out gate set of a body length: the L = 8, 9 and 11 sets for 8, 9 and 11 modules, the L = 10 set otherwise."""
+    return {8: HELD_OUT_L8, 9: HELD_OUT_L9, 11: HELD_OUT_L11}.get(int(n_modules), HELD_OUT_L10)
 
 
 def held_out_names(n_modules: int = 10) -> tuple[str, ...]:

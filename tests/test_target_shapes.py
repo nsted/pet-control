@@ -203,3 +203,20 @@ def test_stage_and_gate_spec_frozen() -> None:
     assert st.gate.min_success == 0.70 and st.gate.episodes == 100 and st.gate.dr_scale == 0.6 and st.gate.task_params["target_heldout"] == 1.0
     sp = gate2_spec_hug5()
     assert sp.n == 100 and sp.min_group_success == 0.5 and sp.ablations[0].name == "capacitive_off" and sp.ablations[0].min_drop == 0.15 and sp.max_glitch == 0.0 and sp.bus_model
+
+
+def test_odd_length_gate_sets_deterministic_and_disjoint_from_training() -> None:
+    from petctl.rl.target_shapes import HELD_OUT_L9, HELD_OUT_L10, HELD_OUT_L11, V2_SAMPLER, held_out_names, held_out_set
+
+    assert held_out_set(9) is HELD_OUT_L9 and held_out_set(11) is HELD_OUT_L11 and held_out_set(10) is HELD_OUT_L10
+    assert held_out_names(9) == ("cyl_r3", "cyl_r8", "square_8x8", "rect_5x14", "rounded_8x8_r2")
+    assert held_out_names(11) == ("cyl_r3", "cyl_r9", "square_8x8", "rect_5x14", "rounded_8x8_r2")
+    for n in (9, 11):
+        assert [heldout_shape(i, 10_000 + 20 * i + 3, n) for i in range(5)] == [heldout_shape(i, 10_000 + 20 * i + 3, n) for i in range(5)]
+        assert [heldout_group(GATE_SEED0 + i, n) for i in range(0, 100, 20)] == list(held_out_names(n)) and heldout_group(5, n) == "other"
+        for i in range(5):
+            assert near_heldout(heldout_shape(i, 1, n), n)
+        for kw in ({}, {"mix": V2_SAMPLER["mix"], "cyl_r": V2_SAMPLER["cyl_r"], "margin": V2_SAMPLER["margin"]}):
+            rng = np.random.default_rng(0)
+            shapes = [sample_training_shape(rng, 2, n, **kw) for _ in range(3000)]  # type: ignore[arg-type]
+            assert not any(near_heldout(s, n, kw.get("margin", 0.01)) for s in shapes)  # type: ignore[arg-type]
