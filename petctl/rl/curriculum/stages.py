@@ -342,7 +342,12 @@ STAGES["hug_long_ep"] = dataclasses.replace(
 STAGES["hug_long15"] = dataclasses.replace(
     STAGES["hug_long_ep"], name="hug_long15", action_scale=1.5, action_obs_scale=1.5,
     description="hug_long_ep (30 s episodes, start-buffer probability 0.5, buffer span >= 120 deg) with action_scale_rad 1.5; warm start from a hug_scale15 hour (no actor rescale); gate unchanged.")
-HUG_RANGE_TASKS = ("hug_scale15", "hug_long_ep", "hug_long15")
+# hug_anneal: late-stage fine-tune of hug_scale15 (driver scripts/rl/hug_anneal_driver.py): policy log-std reset to -2.0 at the warm start (then learned), ent_coef 0, learning rate annealed linearly
+# 1.5e-4 -> 2e-5 (env PETCTL_LR_FINAL), hold-break diagnostic on (``hold_diag``). Everything else as hug_scale15 (no actor rescale).
+STAGES["hug_anneal"] = dataclasses.replace(
+    STAGES["hug_scale15"], name="hug_anneal", ent_coef=0.0, log_std_init=-2.0, task_params={**STAGES["hug_scale15"].task_params, "hold_diag": 1.0},
+    description="hug_scale15 late-stage fine-tune: log-std reset to -2.0 at the warm start (learned), ent_coef 0, lr 1.5e-4 -> 2e-5 linear; hold-break diagnostic logged; gate unchanged.")
+HUG_RANGE_TASKS = ("hug_scale15", "hug_long_ep", "hug_long15", "hug_anneal")
 
 
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:

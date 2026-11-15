@@ -153,10 +153,16 @@ def warm_start(model: Any, venv: Any, src: Path, new_cfg: EnvConfig | None = Non
 
 
 def lr_schedule(lr_const: bool = False) -> Any:
-    """PPO learning-rate schedule (f = remaining progress 1 -> 0): ``PETCTL_LR`` (default 3e-4) x f, or CONSTANT ``PETCTL_LR`` when ``lr_const`` or ``PETCTL_LR_CONST`` is 1 / true / yes (read per call)."""
+    """PPO learning-rate schedule (f = remaining progress 1 -> 0): ``PETCTL_LR`` (default 3e-4) x f; with ``PETCTL_LR_FINAL`` set (and no constant lr) lr = lr0 x (f x (1 - r) + r), r = lr_final / lr0 (linear lr0 -> lr_final); or CONSTANT ``PETCTL_LR`` when ``lr_const`` or ``PETCTL_LR_CONST`` is 1 / true / yes (read per call)."""
     def schedule(f: float) -> float:
         base = float(os.environ.get("PETCTL_LR", "3e-4"))
-        return base if lr_const or os.environ.get("PETCTL_LR_CONST", "0").strip().lower() in ("1", "true", "yes") else base * f
+        if lr_const or os.environ.get("PETCTL_LR_CONST", "0").strip().lower() in ("1", "true", "yes"):
+            return base
+        final = os.environ.get("PETCTL_LR_FINAL")
+        if final:
+            r = float(final) / base
+            return base * (f * (1.0 - r) + r)
+        return base * f
     return schedule
 
 

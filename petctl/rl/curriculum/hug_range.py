@@ -173,3 +173,37 @@ def post_hour_decision(series: str, hour: int, screen: float, per_shape: dict[st
     if series == "scale15" and hour <= 2:
         return "next" if (screen >= GO_SCREEN - 1e-9 or cm >= GO_CURVED_SHAPE - 1e-9 or rising) else "C15"
     return "escalate" if (screen < ESC_SCREEN - 1e-9 and cm < ESC_CURVED - 1e-9) else "extra"
+
+
+class AnnealChecks(StartSuccessChecks):
+    """``hug_anneal`` checks: the box safety rule is recorded but NEVER stops; the 20-min rule stops only if training success (last ``window`` episodes) is more than 0.05 below the run's own start
+    value (mean of its first ``window`` episodes)."""
+
+    def run_safety(self) -> bool:
+        """Record the box safety numbers; always ok (non-fatal)."""
+        rows = self._rows()
+        stop, sig = hc2.box_safety_stop(rows)
+        self._record("safety", {"ok": True, "box_would_stop": bool(stop), **sig, "table": hc2.family_table(rows, hc2.read_family_levels(self.out))})
+        print(f"[safety] box success_l1 {sig['box_last']} vs baseline {sig['box_baseline']} (n_box {sig['n_box']}): {'would fail (non-fatal)' if stop else 'ok'}", flush=True)
+        return True
+
+    def run_check1(self) -> bool:
+        """Success-fall rule only (box ignored); True = ok."""
+        import json
+
+        rows = self._rows()
+        if len(rows) >= self.window:
+            self.base_success = float(np.mean([float(r.get("success", 0.0)) for r in rows[: self.window]]))
+        cur = train_success(rows)
+        stop = bool(cur is not None and cur < self.base_success - SUCCESS_FALL - 1e-12)
+        levels = hc2.read_family_levels(self.out)
+        self._record("check1", {"ok": not stop, "train_success": cur, "base_success": self.base_success, "success_stop": stop, "levels": levels, "table": hc2.family_table(rows, levels)})
+        print(f"[check1] 20 min: train_success {cur} base {self.base_success}: {'STOP' if stop else 'ok'}", flush=True)
+        return not stop
+
+
+def anneal_go(success: float, per_shape: dict[str, float], n_modules: int = 8) -> tuple[bool, dict[str, Any]]:
+    """``hug_anneal`` screen rule: GO if success >= 0.25 OR any curved gate shape other than cyl_r3 has success > 0."""
+    others = {n: per_shape.get(n, 0.0) for n in curved_shape_names(n_modules) if n != "cyl_r3"}
+    by_screen, by_curved = success >= 0.25 - 1e-9, any(v > 0 for v in others.values())
+    return bool(by_screen or by_curved), {"screen": success, "curved_other_than_cyl_r3": others, "by_screen": by_screen, "by_curved": by_curved}

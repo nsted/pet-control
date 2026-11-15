@@ -14,6 +14,7 @@ from petctl.config import REGIMEN_BUS_MEAN_A, REGIMEN_BUS_PEAK_A
 from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
 from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
+from petctl.rl.hold_diag import TORQUE_FRAC, HoldBreakTracker
 from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
 from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot, hold_value, next_target
@@ -311,6 +312,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._h_wrap_n = 0
         self._h_wrap1_sum, self._h_wrap1_n = 0.0, 0
         self._range_on = hasattr(self.task, "_hug") and self.task.param("range_diag", 0.0) > 0.0         # task knob ``range_diag``: log the action-range metrics (off: older stages' logs unchanged)
+        self._hd = HoldBreakTracker(self.cfg.control_hz) if (hasattr(self.task, "_hug") and self.task.param("hold_diag", 0.0) > 0.0) else None      # task knob ``hold_diag``: hold-break diagnostic (default off)
         self._range = {"n": 0.0, "any": 0.0, "all": 0.0, "frac": 0.0, "gap": 0.0, "tmax": 0.0}      # action-range diagnostic sums over wrap-attempt ticks (hug run >= 3)
         self._prev_action = np.zeros(self.cfg.n_joints)
         self._t = 0
@@ -351,6 +353,17 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         r["frac"] += float(sat.mean())
         r["gap"] += float(np.mean(np.abs(self._tgt[idx] - self.sim.joint_pos()[idx])))
         r["tmax"] = max(r["tmax"], float(np.max(np.abs(self._tgt[idx]))))
+
+    def _hold_diag_step(self, bus_a: float) -> None:
+        """Hold-break diagnostic bookkeeping for this tick (``hold_diag`` knob): feeds the hug tracker's state and the joint torques / bus current to ``HoldBreakTracker``."""
+        st = getattr(getattr(self.task, "_hug", None), "last", None)
+        if st is None or self._hd is None:
+            return
+        hug = self.task._hug
+        cap = np.asarray(self.sim.model.actuator_forcerange[:, 1], float)
+        at_cap = np.abs(self.sim.joint_torque()) >= TORQUE_FRAC * cap
+        self._hd.update(hug_tick=bool(st.hug_tick), just_held=bool(st.just_held), held=bool(st.held), run=int(st.hug_modules), run_start=int(st.run_start), h=int(hug.h), span_deg=float(st.span_deg),
+                        span_min=hug.span_min, at_cap=at_cap, bus_a=bus_a, n_joints=self.cfg.n_joints)
 
     def _range_metrics(self) -> dict[str, float]:
         """Episode metrics of the action range: ``wrap_attempt_ticks`` and, when there were any, ``saturated_frac`` (mean over those ticks of the fraction of in-run joints with |action| >= 0.95), ``sat_any_frac`` (ticks with at least one
@@ -401,6 +414,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._prev_action = a
         if self._range_on:
             self._range_step(a)
+        if self._hd is not None:
+            self._hold_diag_step(float(tick["mean"]) if self.bus is not None else 0.0)
         if c.action_mode == "hold":
             self._hold_step(hold_value(a_full))
         self._t += 1
@@ -428,6 +443,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             info.setdefault("metrics", {}).update(self._hold_metrics())
         if self._range_on:
             info.setdefault("metrics", {}).update(self._range_metrics())
+        if self._hd is not None:
+            info.setdefault("metrics", {}).update(self._hd.metrics())
         if (terminated or truncated) and hasattr(self.task, "pose"):
             info["pose"] = self.task.pose()
         return self.obs_builder.build(self._snapshot()), reward, terminated, truncated, info
