@@ -360,9 +360,9 @@ _CHAIN_KNOBS = {**_M2_KNOBS, "goal_dist_min": (0.2, 3.0), "terrain_level": (0.0,
 CHAIN_STAGES = ("flat_nav", "flat_omni", "terrain_easy", "terrain_full")
 CHAIN_PARAMS: dict[str, dict[str, float]] = {
     "flat_nav": {**_CHAIN_BASE, "goal_dist_min": 0.8, "goal_dist_max": 2.0},
-    "flat_omni": {**_CHAIN_BASE, "goal_dist_min": 0.3, "goal_dist_max": 0.8},
-    "terrain_easy": {**_CHAIN_BASE, "goal_dist_min": 0.3, "goal_dist_max": 0.8, "terrain_level": 0.6, "terrain_level_min": 0.3},
-    "terrain_full": {**_CHAIN_BASE, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 0.6},
+    "flat_omni": {**_CHAIN_BASE, "goal_dist_min": 0.3, "goal_dist_max": 0.8, "bus_peak_penalty": 2.0},
+    "terrain_easy": {**_CHAIN_BASE, "goal_dist_min": 0.3, "goal_dist_max": 0.8, "terrain_level": 0.6, "terrain_level_min": 0.3, "bus_peak_penalty": 2.0},
+    "terrain_full": {**_CHAIN_BASE, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 0.6, "bus_peak_penalty": 2.0},
 }
 CHAIN_EPISODE_S = {"flat_nav": 40.0, "flat_omni": 15.0, "terrain_easy": 20.0, "terrain_full": 40.0}
 CHAIN_THRESHOLD = {"flat_nav": 0.80, "flat_omni": 0.70, "terrain_easy": 0.75, "terrain_full": 0.70}
