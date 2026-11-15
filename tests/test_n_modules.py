@@ -81,11 +81,11 @@ def _serpenoid_fwd_cm(sim: PetSim, n: int, seconds: float = 10.0) -> float:
     return 100 * float((sim.head_pos() - p0) @ fwd)
 
 
+@pytest.mark.skipif(not _HAS_URDF, reason="Fusion URDF export not present")
 @pytest.mark.parametrize("n", [9, 10, 11, 15])
 @pytest.mark.parametrize("urdf", [False, True])
 def test_long_model_settles(n: int, urdf: bool) -> None:
-    if urdf and not _HAS_URDF:
-        pytest.skip("Fusion URDF export not present")
+    """n != 8 always uses the generated URDF variant (``urdf_dir`` None = the owner's default folder as the source)."""
     sim = PetSim(BuildParams(n_modules=n, urdf_dir=_URDF if urdf else None, delay_s=0.0, dt=0.004))
     assert sim.model.nu == n - 1 and sim.model.nbody == n + 1 and len(sim.joint_pos()) == n - 1
     sim.step(np.zeros(n - 1), 3.0)

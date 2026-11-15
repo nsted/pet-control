@@ -51,7 +51,7 @@ class BuildParams:
     dt: float = 0.002
     masses: tuple[float, ...] = (MODULE_MASS_KG,) * N_MODULES    # head..tail (kg); to be replaced by weighed values
     cap_nm: tuple[float, ...] = (PEAK_TORQUE_NM,) * N_JOINTS
-    n_modules: int = N_MODULES              # 8 (the real robot) .. 15: longer bodies repeat the middle-module pair of the CAD chain
+    n_modules: int = N_MODULES              # 8 (the real robot) .. 15: longer bodies use a URDF generated from the owner's (petctl.sim.urdf_gen)
     floor_friction: float = 1.0             # sliding friction coefficient (carpet: measure)
     torsional_friction: float = 0.005
     rolling_friction: float = 0.0002
@@ -163,7 +163,8 @@ def load_urdf(urdf_dir: str) -> UrdfGeometry:
     from scipy.spatial import ConvexHull, cKDTree  # type: ignore[import-untyped]
 
     root = Path(urdf_dir)
-    names = ["base_link"] + [f"module_{i}_1" for i in range(1, N_MODULES)]
+    nmod = 1 + len(list((root / "meshes").glob("module_*_1.stl")))   # 8 for the owner's folder, n for a ``petctl.sim.urdf_gen`` variant
+    names = ["base_link"] + [f"module_{i}_1" for i in range(1, nmod)]
     hulls, centres = [], []
     for n in names:
         v = _read_stl(str(root / "meshes" / f"{n}.stl")) * 1e-3
@@ -173,6 +174,8 @@ def load_urdf(urdf_dir: str) -> UrdfGeometry:
         tet = v[h.simplices] - o
         vol = np.abs(np.einsum("ij,ij->i", tet[:, 0], np.cross(tet[:, 1], tet[:, 2]))) / 6.0
         centres.append((vol[:, None] * (tet.sum(axis=1) / 4.0)).sum(axis=0) / vol.sum() + o)
+    if nmod != N_MODULES:
+        return _load_variant(hulls, centres)
     gm = np.array([P[k] for k in range(1, N_JOINTS + 1)])
     mc = np.array(centres[:N_JOINTS])
     cg, cm = gm.mean(0), mc.mean(0)
@@ -193,6 +196,36 @@ def load_urdf(urdf_dir: str) -> UrdfGeometry:
     return UrdfGeometry(centres, anchors, axes, hulls)
 
 
+def _mating_patch(hulls: list[np.ndarray], k: int) -> np.ndarray:
+    """Vertices of hulls k-1 and k within 4 mm of each other: the mating face of joint k (``k`` = 1..n-1)."""
+    from scipy.spatial import cKDTree  # type: ignore[import-untyped]
+
+    touch = cKDTree(hulls[k]).query(hulls[k - 1])[0] < 4e-3
+    return np.vstack([hulls[k - 1][touch], hulls[k][cKDTree(hulls[k - 1]).query(hulls[k])[0] < 4e-3]])
+
+
+def _load_variant(hulls: list[np.ndarray], centres: list[np.ndarray]) -> UrdfGeometry:
+    """Joint axes/anchors of a generated n-module URDF (``petctl.sim.urdf_gen``), from the meshes alone.
+
+    Same construction as for the CAD chain (axis = mating-face normal, anchor = patch centre); the sign follows the owner's alternation:
+    joint 1 turns about +y of the mesh frame and each next axis is minus the previous one carried over by the chain's 180 deg screw
+    rotation (so +y, -z, +y, -z ...), which reproduces the 8-module signs.
+    """
+    n = len(hulls)
+    d = np.mean([centres[k + 2] - centres[k] for k in range(1, n - 3)], axis=0)
+    u = d / np.linalg.norm(d)
+    rot = 2.0 * np.outer(u, u) - np.eye(3)
+    axes, anchors = {}, {}
+    prev = None
+    for k in range(1, n):
+        patch = _mating_patch(hulls, k)
+        ax = np.linalg.svd(patch - patch.mean(0))[2][-1]
+        ref = np.array([0.0, 1.0, 0.0]) if prev is None else -(rot @ prev)
+        ax = ax if ax @ ref >= 0 else -ax
+        anchors[k], axes[k], prev = patch.mean(0), ax, ax
+    return UrdfGeometry(centres, anchors, axes, hulls)
+
+
 def _urdf_frame(g: UrdfGeometry) -> np.ndarray:
     """CAD -> robot rotation for the URDF geometry: x forward (head -> tail reversed so +x = towards the head), z up, modules 0,2,4,6 low."""
     fwd = g.centres[0] - g.centres[-1]
@@ -201,70 +234,27 @@ def _urdf_frame(g: UrdfGeometry) -> np.ndarray:
     x = fwd / np.linalg.norm(fwd)
     u = np.cross(x, lat)
     u /= np.linalg.norm(u)                                       # candidate up (+-), in the y-z plane, parallel to the joint axes
-    if np.mean([g.centres[k] @ u for k in (0, 2, 4, 6)]) > np.mean([g.centres[k] @ u for k in (1, 3, 5, 7)]):
+    n = len(g.centres)
+    if np.mean([g.centres[k] @ u for k in range(0, n - n % 2, 2)]) > np.mean([g.centres[k] @ u for k in range(1, n, 2)]):
         u = -u
     y = np.cross(u, x)
     return np.vstack([x, y, u])
 
 
-def _rot_y(a: float) -> np.ndarray:
-    """Rotation by ``a`` rad about +y."""
-    c, s = np.cos(a), np.sin(a)
-    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+def resolve_urdf_dir(p: BuildParams) -> str | None:
+    """The PET_description folder ``build_mjcf`` uses: ``p.urdf_dir`` for 8 modules (None = box model), and for ``n_modules != 8`` always a
+    generated n-module copy (``petctl.sim.urdf_gen``, cached under ``data/urdf_variants/``) of the owner's folder ``p.urdf_dir``
+    (default: the owner's folder from ``PET_URDF_DIR`` / ``../body``). An already generated n-module folder is used as is."""
+    nm = int(p.n_modules)
+    if nm == N_MODULES or p.hanging:
+        return p.urdf_dir
+    from pathlib import Path
 
+    from petctl.sim.urdf_gen import variant_dir
 
-def _extend_chain(centres: list[np.ndarray], axes: dict[int, np.ndarray], anchors: dict[int, np.ndarray], hulls: list[np.ndarray], n: int
-                  ) -> tuple[list[np.ndarray], dict[int, np.ndarray], dict[int, np.ndarray], list[np.ndarray]]:
-    """Lengthen the 8-module chain (robot frame) to ``n`` modules by repeating the middle-module pair.
-
-    The CAD chain is periodic with period two (the +-45 deg joint axes and the +-0.6 cm zig-zag alternate), so a module ``j >= 7``
-    is a copy of module 5 or 6 (same parity) translated by the measured pair shift, and likewise for the joints. The whole chain is first
-    rotated about y so that this pair shift is horizontal (the 8-module frame leaves the lying chain tilted by ~5 deg). The tail is the
-    original tail translated to the new end; when ``n`` is odd the parity at the end flips, so the tail is turned 180 deg about the chain
-    axis (the same operation that relates module 5 to module 6) before translating. Head and tail hulls are otherwise unchanged.
-    """
-    pair = np.mean([centres[k + 2] - centres[k] for k in range(1, 5)], axis=0)
-    lvl = _rot_y(float(np.arctan(pair[2] / pair[0])))
-    centres = [lvl @ c for c in centres]
-    axes = {k: lvl @ v for k, v in axes.items()}
-    anchors = {k: lvl @ v for k, v in anchors.items()}
-    hulls = [(lvl @ h.T).T for h in hulls]
-    pair = lvl @ pair
-    pair = np.array([pair[0], 0.0, 0.0])
-    t_flip = centres[6][0] - centres[5][0]                       # odd -> even parity operator: x += t, y = -y, z = zc - z
-    zc = centres[5][2] + centres[6][2]
-
-    def flip(v: np.ndarray) -> np.ndarray:
-        return np.array([v[0] + t_flip, -v[1], zc - v[2]])
-
-    def src_of(j: int) -> int:
-        return 5 if j % 2 else 6
-
-    c2, h2 = list(centres[:7]), list(hulls[:7]) if hulls else []
-    for j in range(7, n - 1):                                   # extra middle modules
-        k = src_of(j)
-        sh = (j - k) // 2 * pair
-        c2.append(centres[k] + sh)
-        if hulls:
-            h2.append(hulls[k] + sh)
-    if n % 2 == 0:
-        sh = (n - 8) // 2 * pair
-        c2.append(centres[7] + sh)
-        if hulls:
-            h2.append(hulls[7] + sh)
-    else:
-        sh = (n - 9) // 2 * pair
-        c2.append(flip(centres[7]) + sh)
-        if hulls:
-            h2.append(np.array([flip(v) for v in hulls[7]]) + sh)
-    a2, q2 = dict((k, axes[k]) for k in range(1, 7)), dict((k, anchors[k]) for k in range(1, 7))
-    for k in range(7, n):
-        if k == n - 1 and n % 2 == 0:
-            a2[k], q2[k] = axes[7], anchors[7] + (n - 8) // 2 * pair
-        else:
-            src = src_of(k)
-            a2[k], q2[k] = axes[src], anchors[src] + (k - src) // 2 * pair
-    return c2, a2, q2, h2
+    if p.urdf_dir and len(list((Path(p.urdf_dir) / "meshes").glob("module_*_1.stl"))) == nm - 1:
+        return p.urdf_dir
+    return variant_dir(nm, p.urdf_dir or None)
 
 
 def build_mjcf(p: BuildParams) -> tuple[str, float]:
@@ -272,15 +262,14 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
     nm = int(p.n_modules)
     if nm != N_MODULES and p.hanging:
         raise ValueError("the hanging regression model only exists for the 8-module CAD chain")
-    geo = load_urdf(p.urdf_dir) if (p.urdf_dir and not p.hanging) else None
+    urdf_dir = resolve_urdf_dir(p)
+    geo = load_urdf(urdf_dir) if (urdf_dir and not p.hanging) else None
     if geo is not None:
         R = _urdf_frame(geo)
         centres = [R @ c for c in geo.centres]
-        axes = {k: R @ geo.axes[k] for k in range(1, N_JOINTS + 1)}
-        anchors = {k: R @ geo.anchors[k] for k in range(1, N_JOINTS + 1)}
+        axes = {k: R @ geo.axes[k] for k in range(1, nm)}
+        anchors = {k: R @ geo.anchors[k] for k in range(1, nm)}
         hulls = [(R @ h.T).T for h in geo.hulls]
-        if nm != N_MODULES:
-            centres, axes, anchors, hulls = _extend_chain(centres, axes, anchors, hulls, nm)
         z0 = float(-min(h[:, 2].min() for h in hulls) + 1e-3)
     else:
         R = np.eye(3) if p.hanging else _frame()[0]
@@ -288,8 +277,6 @@ def build_mjcf(p: BuildParams) -> tuple[str, float]:
         axes = {k: R @ A[k] for k in range(1, N_JOINTS + 1)}
         anchors = {k: R @ Q[k] for k in range(1, N_JOINTS + 1)}
         hulls = []
-        if nm != N_MODULES:
-            centres, axes, anchors, hulls = _extend_chain(centres, axes, anchors, [], nm)
         z0 = 0.0 if p.hanging else float(-min(c[2] - BOX_HALF[2] for c in centres) + 1e-3)
     gravity = G * ghat if p.hanging else np.array([0.0, 0.0, -G])
     L: list[str] = [
