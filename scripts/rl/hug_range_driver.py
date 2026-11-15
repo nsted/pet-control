@@ -126,7 +126,7 @@ def last_train_line(root: Path, series: str) -> dict[str, Any] | None:
     return found[-1] if found else None
 
 
-def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: float, force: bool) -> tuple[Path, str | None]:
+def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: float, force: bool, force_c15: bool = False) -> tuple[Path, str | None]:
     """Train hour ``hour`` of a series (resumable); returns ``(run dir, stop reason or None)``."""
     stage_name = SERIES[series]
     out, buf = root / f"{series}_h{hour}", root / f"{series}_hug_buffer.json"
@@ -144,6 +144,8 @@ def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: 
     base_p75 = source_cyl_span_p75() if (series == "scale15" and hour == 1) else None
     if series == "scale15" and hour == 1:
         checks: hc2.Curr2Checks = hr.RangeChecks(out, base_p75, hc2.CHECK1_MIN * 60.0 * sc, sc)
+    elif series == "long15" and force_c15:                                               # --force-c15: base = this run's own first 150 episodes
+        checks = hr.StartSuccessChecks(out, hc2.CHECK1_MIN * 60.0 * sc, sc)
     elif series == "long15" or (series == "scale15" and hour >= 2):                      # expert rule: success fall > 0.05 below the previous hour's final / box fall > 0.2
         checks = hr.SuccessChecks(out, base_success(root, series, hour), hc2.CHECK1_MIN * 60.0 * sc, sc)
     else:
@@ -297,6 +299,34 @@ def escalate(root: Path, why: str) -> int:
     return halt(root, "ESCALATE_OWNER", why)
 
 
+def run_force_c15(root: Path, n_envs: int, sc: float, a: argparse.Namespace) -> int:
+    """``--force-c15`` (expert override of the scale15 end rule): ONE hour of Step C' (``hug_long15``) warm from ``scale15_h3``, 20-min SuccessChecks (base = first 150 episodes of the run), n=30 screen,
+    ``screen_long15_h1`` line, then STOP_long15_after1 (the manager decides). Resumable: finished train / screen phases are reused."""
+    s3 = phase_line(root, "screen_scale15_h3")
+    if s3 is None:
+        log("[force-c15] no screen_scale15_h3 line in summary.jsonl: nothing to continue from")
+        return 1
+    marker = root / "STOP_scale15_after3"
+    if marker.exists():
+        dest = Path("data/rl/contended_runs")
+        dest.mkdir(parents=True, exist_ok=True)
+        marker.rename(dest / f"STOP_scale15_after3.{time.strftime('%Y%m%d_%H%M%S')}")
+        log(f"[force-c15] {marker} moved aside into {dest}")
+    record(root, {"phase": "expert_override_c15", "go": True, "why": "manager override of the scale15 hour-3 end rule: one hour of Step C' (hug_long15)", "screen_scale15_h3": s3["screen"]["success"]})
+    init = root / "scale15_h3"
+    out, reason = train_hour(root, "long15", 1, init, n_envs, sc, a.force_go, force_c15=True)
+    sline = phase_line(root, "screen_long15_h1")
+    if sline is None:
+        s = screen(out, "hug_long15", a.screen_n, a.eval_workers)
+        fd = hd.family_dump(out)
+        trend = hr.success_trend(hl.read_rows_tolerant(out / "episodes.jsonl"))
+        _, sig = hr.go_rule(s["success"], s["per_shape"], fd["cyl_span_p75"], L)
+        sline = {"phase": "screen_long15_h1", "go": True, "signals": sig, "trend": trend, "screen": s, "family": fd, "train_stop_reason": reason, "stage": "hug_long15"}
+        record(root, sline)
+    s = sline["screen"]
+    return halt(root, "long15_after1", f"hug_long15 hour 1 done (stop reason {reason}); screen {s['success']:.3f}, per shape {json.dumps(s['per_shape'])}; the manager decides")
+
+
 def main() -> int:
     """CLI entry."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -309,9 +339,15 @@ def main() -> int:
     ap.add_argument("--diag-n", type=int, default=20)
     ap.add_argument("--force-go", action="store_true", help="smoke tests only: record the go / no-go values but never stop on them")
     ap.add_argument("--skip-diag", action="store_true", help="smoke tests only: skip Step A and run Step B")
+    ap.add_argument("--force-c15", action="store_true", help="expert override: move STOP_scale15_after3 aside and run ONE hour of Step C' (hug_long15, warm from scale15_h3, 20-min SuccessChecks with the run's own start success), n=30 screen, then STOP_long15_after1")
     a = ap.parse_args()
     root, sc = a.root, a.scale
     root.mkdir(parents=True, exist_ok=True)
+    if a.force_c15:
+        if (root / "STOP_long15_after1").exists():
+            log("[force-c15] STOP_long15_after1 exists: remove it to continue")
+            return 0
+        return run_force_c15(root, a.n_envs or m2v6.best_n_envs(json.loads(d6.BENCH.read_text())), sc, a)
     for m in root.glob("STOP_*"):
         log(f"[stop] {m} exists: remove it to continue")
         return 0

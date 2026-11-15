@@ -313,3 +313,13 @@ def test_run_post_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     (tmp_path / "e").mkdir()
     r, tr, mk, ln = _drive(tmp_path / "e", monkeypatch, [(0.20, {}, False)], {("scale15", 2): "curved_trend_20min"})
     assert r == "stopped" and len(tr) == 1 and "STOP_curved_trend_20min" in mk
+
+
+def test_start_success_checks_base_is_first_150_episodes(tmp_path: Path) -> None:
+    """The --force-c15 rule uses the run's own first 150 episodes as the base."""
+    chk = hr.StartSuccessChecks(tmp_path)
+    rows = [{"success": 0.4, "family": "cyl"}] * 150 + [{"success": 0.0, "family": "cyl"}] * 150
+    chk._rows = lambda: rows  # type: ignore[method-assign]
+    chk._record = lambda *a, **k: None  # type: ignore[method-assign]
+    chk.run_check1()
+    assert abs(chk.base_success - 0.4) < 1e-9

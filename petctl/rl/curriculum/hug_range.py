@@ -92,6 +92,22 @@ class SuccessChecks(hc2.Curr2Checks):
         return not stop
 
 
+class StartSuccessChecks(SuccessChecks):
+    """``SuccessChecks`` whose base is the run's own start value: training success over its first ``window`` episodes (measured at check time)."""
+
+    def __init__(self, out: Any, t1_s: float = hc2.CHECK1_MIN * 60.0, scale: float = 1.0, window: int = hc2.CURVED_WINDOW) -> None:
+        """No fixed base; ``window`` = 150 episodes."""
+        super().__init__(out, HOUR1_FINAL_SUCCESS, t1_s, scale)
+        self.window = window
+
+    def run_check1(self) -> bool:
+        """Set the base from the first ``window`` episodes (kept at the hour-1 default if fewer exist), then apply the rule."""
+        rows = self._rows()
+        if len(rows) >= self.window:
+            self.base_success = float(np.mean([float(r.get("success", 0.0)) for r in rows[: self.window]]))
+        return super().run_check1()
+
+
 class RangeChecks(hc2.Curr2Checks):
     """``Curr2Checks`` with the Step-B 20-min rule (cylinder span p75 fall) instead of the curved-trend rule; the box safety rule is inherited. ``base_p75`` None: the 20-min rule never stops."""
 
