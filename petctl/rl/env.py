@@ -70,6 +70,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.bus: BusClamp | None = None
         self._start_buf: HugStartBuffer | None = None
         self._start_buf_path: str | None = None
+        self._hug_level = int(os.environ.get("PETCTL_HUG_LEVEL", "3"))       # hug success-curriculum level (training only; the task knob ``hug_curriculum`` switches it on; default 3 = the gate definition)
 
     # ------------------------------------------------------------------ hug start buffer (in memory; merged by the training callback once per rollout)
     def start_buffer(self) -> HugStartBuffer | None:
@@ -89,6 +90,14 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         b = self.start_buffer()
         if b is not None:
             b.replace(items)
+
+    def set_hug_level(self, level: int) -> None:
+        """Success-curriculum level (1-3) for the episodes that start after this call (broadcast by ``HugLevelCallback`` once per rollout)."""
+        self._hug_level = min(3, max(1, int(level)))
+
+    def get_hug_level(self) -> int:
+        """The success-curriculum level that the next episode starts at."""
+        return self._hug_level
 
     # ------------------------------------------------------------------ helpers
     def _snapshot(self) -> Snapshot:
@@ -196,6 +205,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._rng = self.np_random
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
         self.task = TASKS[self.cfg.task](self.cfg)
+        if hasattr(self.task, "hug_level"):
+            self.task.hug_level = self._hug_level                                   # type: ignore[attr-defined]
         shape = None
         pick = getattr(self.task, "pick_buffer_start", None)
         if pick is not None:
@@ -285,6 +296,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._term_sums: dict[str, float] = {}
         self._h_sum = self._h_wrap_sum = self._state_run = self._state_best = 0
         self._h_wrap_n = 0
+        self._h_wrap1_sum, self._h_wrap1_n = 0.0, 0
         self._prev_action = np.zeros(self.cfg.n_joints)
         self._t = 0
         snap = self._snapshot()
@@ -298,6 +310,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if last is not None and last.hug_tick:
             self._h_wrap_sum += h
             self._h_wrap_n += 1
+        l1 = getattr(self.task, "_hug_levels", {}).get(1)                               # success curriculum: wrap ticks by the level-1 definition as well
+        if l1 is not None and l1.last is not None and l1.last.hug_tick:
+            self._h_wrap1_sum += h
+            self._h_wrap1_n += 1
         in_state = last is not None and last.hug_modules >= STATE_RUN and last.span_deg >= STATE_SPAN_DEG
         self._state_run = self._state_run + 1 if in_state else 0
         self._state_best = max(self._state_best, self._state_run)
@@ -307,6 +323,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         out = {"h_mean": self._h_sum / max(self._t, 1), "h_wrap_n": float(self._h_wrap_n), "state_hold_s": self._state_best / self.cfg.control_hz}
         if self._h_wrap_n:
             out["h_wrap_mean"] = self._h_wrap_sum / self._h_wrap_n
+        if getattr(self.task, "_hug_levels", None):
+            out["h_wrap1_n"] = float(self._h_wrap1_n)
+            if self._h_wrap1_n:
+                out["h_wrap1_mean"] = self._h_wrap1_sum / self._h_wrap1_n
         return out
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:

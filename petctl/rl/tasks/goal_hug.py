@@ -23,6 +23,8 @@ from petctl.rl.tasks.goal_reach import GLITCH_PENALTY, GLITCH_PENETRATION_M
 from petctl.sim.model_builder import PetSim
 from petctl.sim.shapes import shape_of
 
+SHAPE_KINDS = ("cyl", "box", "rbox")      # ``shape_kind`` metric index (curriculum runs): cylinders, boxes, rounded boxes
+
 
 class GoalHug(HugMixin, GoalObstacles):
     """GoalObstacles + post hug reward; terminates on a held hug."""
@@ -39,6 +41,7 @@ class GoalHug(HugMixin, GoalObstacles):
     start_buffer: HugStartBuffer | None = None   # the env's in-memory buffer (set by the env before ``pick_buffer_start``)
     _stored = False
     _stalled = False
+    hug_level = 3                   # training success curriculum level of this episode (task knob ``hug_curriculum``; set by the env before ``reset``)
     target_shape = None             # set by the env before ``layout`` when ``target_family`` > 0 (petctl.rl.target_shapes)
 
     def param(self, key: str, default: float) -> float:
@@ -182,4 +185,6 @@ class GoalHug(HugMixin, GoalObstacles):
         out = {**m, **h, "success": h["hug_success"], "start_mode": float(MODES.index(mode)), "start_failed": float(self._start_mode != "straight" and not self._start_placed)}
         if self.param("hug_buffer", 0.0) > 0.0 or self.param("hug_stall_s", 0.0) > 0.0:             # v6 diagnostics (absent from the older stages' metrics)
             out.update({"buffer_start": float(self._bstart is not None), "buffer_stored": float(self._stored), "stalled": float(self._stalled)})
+        if self._hug_levels:                                                                          # success curriculum diagnostics (absent unless ``hug_curriculum``)
+            out["shape_kind"] = float(SHAPE_KINDS.index(self.target_shape.kind)) if self.target_shape is not None else -1.0
         return out

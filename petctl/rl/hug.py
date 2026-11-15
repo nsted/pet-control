@@ -28,6 +28,8 @@ DUTY = 0.9                       # fraction of the ticks of the hold window that
 SQUEEZE_CAP_N = 1.0              # per-face normal force at which the (optional, default weight 0) squeeze term saturates
 PEN_VALID_M = 0.005              # post penetration beyond this is charged by the validity term
 POST_FORCE_FREE_N = 5.0          # v3: total post normal force charged only above this
+# Training-only success curriculum (task knob ``hug_curriculum`` > 0, ``petctl.rl.hug_levels``): level -> (normal span deg, contiguous run, hold seconds). Level 3 is the gate definition.
+HUG_LEVELS: dict[int, tuple[float, int, float]] = {1: (120.0, 3, 1.5), 2: (150.0, 4, 2.0), 3: (180.0, 4, 3.0)}
 DEFAULT_WEIGHTS = {"approach_weight": 5.0, "coverage_weight": 2.0, "squeeze_weight": 0.0, "hold_weight": 1.0, "hug_bonus": 100.0, "speed_gain": 1.0}
 
 
@@ -184,8 +186,16 @@ class HugMixin:
     def hug_reset(self, sim: PetSim) -> None:
         """Start the tracker for this episode (call from ``reset``)."""
         self._hug_probe = PostProbe.of(sim)
-        self._hug = HugTracker(int(sim.p.n_modules), self.cfg.control_hz, self.param("hug_hold_s", HOLD_S), None if self.param("hug_h", 0.0) <= 0 else int(self.param("hug_h", 0.0)),
+        n, hz = int(sim.p.n_modules), self.cfg.control_hz
+        self._hug = HugTracker(n, hz, self.param("hug_hold_s", HOLD_S), None if self.param("hug_h", 0.0) <= 0 else int(self.param("hug_h", 0.0)),
                                 None if self.param("hug_span_deg", 0.0) <= 0 else self.param("hug_span_deg", 0.0))  # type: ignore[attr-defined]
+        self._cov_h = self._hug.h                                # the coverage term always uses the level-3 (gate) run threshold
+        self._hug_levels: dict[int, HugTracker] = {}
+        self._hug_level = 3
+        if self.param("hug_curriculum", 0.0) > 0.0:             # training-only success curriculum: one tracker per level, the current level's drives reward / termination (``self._hug``)
+            self._hug_level = min(3, max(1, int(getattr(self, "hug_level", 3))))
+            self._hug_levels = {k: (self._hug if k == 3 else HugTracker(n, hz, hold, run, span)) for k, (span, run, hold) in HUG_LEVELS.items()}
+            self._hug = self._hug_levels[self._hug_level]
         self._hug_peak = 0
         self._hug_prev_dist = self._hug_mean_dist(sim) if self._hug_probe is not None else 0.0
         self.hug_success = False
@@ -201,16 +211,20 @@ class HugMixin:
             return 0.0, terms
         P = self.param
         read = self._hug_probe.read()
-        st = self._hug.update(read, sim.data.xipos[1:self._hug.n + 1, :2], np.array(sim.p.post))
+        centres, post = sim.data.xipos[1:self._hug.n + 1, :2], np.array(sim.p.post)
+        st = self._hug.update(read, centres, post)
+        for t in self._hug_levels.values():
+            if t is not self._hug:
+                t.update(read, centres, post)
         dist = self._hug_mean_dist(sim)
         terms["approach"] = P("approach_weight", DEFAULT_WEIGHTS["approach_weight"]) * (self._hug_prev_dist - dist)
         self._hug_prev_dist = dist
         v3 = P("hug_v3", 0.0) > 0.0
         if v3:                                                  # v3: dense per-tick coverage (pays for STAYING), small discovery ratchet on the running peak
             if P("hug_v5", 0.0) > 0.0:                          # v5 (shape-agnostic): per tick x min(run/H, 1) x min(normal span / 180 deg, 1)
-                terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * min(st.hug_modules / self._hug.h, 1.0) * min(st.span_deg / 180.0, 1.0)
+                terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * min(st.hug_modules / self._cov_h, 1.0) * min(st.span_deg / 180.0, 1.0)
             else:
-                terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * st.hug_modules / self._hug.h
+                terms["coverage"] = P("coverage_weight", DEFAULT_WEIGHTS["coverage_weight"]) * st.hug_modules / self._cov_h
             terms["coverage_ratchet"] = P("coverage_ratchet", 0.0) * max(0, st.hug_modules - self._hug_peak)
             self._hug_peak = max(self._hug_peak, st.hug_modules)
             terms["post_force"] = -P("post_force_penalty", 0.0) * max(0.0, float(read.force.sum()) - POST_FORCE_FREE_N)
@@ -235,6 +249,7 @@ class HugMixin:
     def hug_metrics(self) -> dict[str, float]:
         """Episode-level hug numbers (ground truth) for the gate / eval."""
         h, st = self._hug, self._hug.last
-        return {"hug_success": float(self.hug_success), "hug_modules": float(h.peak_modules), "hug_modules_now": float(0 if st is None else st.hug_modules),
+        extra = {"hug_level": float(self._hug_level), **{f"success_l{k}": float(t.held) for k, t in self._hug_levels.items()}} if self._hug_levels else {}
+        return {**extra, "hug_success": float(self.hug_success), "hug_modules": float(h.peak_modules), "hug_modules_now": float(0 if st is None else st.hug_modules),
                 "hug_threshold": float(h.h), "hold_duty": h.peak_duty, "encircled": float(h.ever_encircled), "wrap_deg": h.peak_wrap_deg, "normal_span_deg": h.peak_span_deg, "post_force_n": h.peak_force_n, "coverage_frac": float(0 if st is None else st.coverage),
                 "t_contact_s": h.t_contact, "t_hug_s": h.t_hug, "t_hug_start_s": h.t_hug_start}

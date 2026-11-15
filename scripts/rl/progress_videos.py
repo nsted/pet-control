@@ -103,12 +103,12 @@ def run_info(run: Path, root: Path) -> dict[str, Any] | None:
 
 def run_dirs(data: Path) -> list[tuple[Path, Path]]:
     """All ``(root, run_dir)`` pairs under ``data/m2v*/`` (a run dir holds an ``episodes.jsonl``)."""
-    return [(r, e.parent) for r in sorted([*data.glob("m2v*"), *data.glob("hug_long*")]) if r.is_dir() for e in sorted(r.rglob("episodes.jsonl"))]
+    return [(r, e.parent) for r in sorted([*data.glob("m2v*"), *data.glob("hug_long*"), *data.glob("hug_curr*")]) if r.is_dir() for e in sorted(r.rglob("episodes.jsonl"))]
 
 
 def driver_alive() -> bool:
     """True when a Regimen driver process is running."""
-    return subprocess.run(["pgrep", "-f", r"scripts/rl/(m2v[0-9a-z_]*|hug_long_)driver"], capture_output=True).returncode == 0
+    return subprocess.run(["pgrep", "-f", r"scripts/rl/(m2v[0-9a-z_]*|hug_long_|hug_curr_)driver"], capture_output=True).returncode == 0
 
 
 def root_complete(root: Path, alive: bool) -> bool:

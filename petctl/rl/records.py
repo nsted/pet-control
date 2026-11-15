@@ -29,6 +29,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from petctl.rl.hug_buffer import CAPACITY as BUFFER_CAPACITY
 from petctl.rl.hug_buffer import HugStartBuffer
+from petctl.rl.hug_levels import LEVEL_FILE, LevelState
 from petctl.rl.policy import export_live_policy, export_policy
 from petctl.rl.video import SESSIONS_DIR, finalize_session
 
@@ -253,3 +254,41 @@ class HugBufferCallback(BaseCallback):
 
     def _on_training_end(self) -> None:
         self._merge()
+
+
+class HugLevelCallback(BaseCallback):
+    """Hug success curriculum (``petctl.rl.hug_levels``): reads each finished episode's ``hug_level`` / ``success``, advances the shared level at rolling success >= 0.30 (persisted in
+    ``<out>/hug_level.json`` at once) and broadcasts the level to every env worker once per rollout (like the start buffer) and at training start (resumes from the file)."""
+
+    def __init__(self, out: Path | str, default_level: int = 1) -> None:
+        """``out``: the run directory; ``default_level``: the level when no state file exists."""
+        super().__init__()
+        self.path = Path(out) / LEVEL_FILE
+        self.state = LevelState.load(self.path, default_level)
+        self._sent = -1
+
+    def _broadcast(self) -> None:
+        if self.state.level != self._sent:
+            self.training_env.env_method("set_hug_level", self.state.level)
+            self._sent = self.state.level
+
+    def _on_training_start(self) -> None:
+        self._t0 = time.time()
+        self.state.save(self.path)
+        self.training_env.env_method("set_hug_level", self.state.level)
+        self._sent = self.state.level
+        print(f"[hug-level] start at level {self.state.level}", flush=True)
+
+    def _on_step(self) -> bool:
+        for done, info in zip(self.locals["dones"], self.locals["infos"]):
+            m = info.get("metrics")
+            if not done or m is None or "hug_level" not in m:
+                continue
+            if self.state.add(int(m["hug_level"]), float(m.get("success", 0.0)), int(self.num_timesteps), time.time() - self._t0):
+                self.state.save(self.path)
+                print(f"[hug-level] advanced to level {self.state.level} at {self.num_timesteps} steps (rolling {self.state.history[-1]['rolling']:.3f})", flush=True)
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self._broadcast()
+        self.state.save(self.path)

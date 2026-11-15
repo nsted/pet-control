@@ -303,6 +303,16 @@ STAGES["hug_long_01"] = dataclasses.replace(
 HUG_LONG_TASKS = ("hug_long_01",)
 
 
+# ---------------------------------------------------------------- hug_curr_01 (training-only success curriculum L1 -> L3; driver scripts/rl/hug_curr_driver.py)
+# hug_long_01 plus ``hug_curriculum`` (petctl.rl.hug_levels): the per-tick hold reward / hug bonus / termination follow the current level's wrap tick and held definition (L1 span >= 120, run >= 3,
+# hold 1.5 s; L2 150 / 4 / 2 s; L3 = the gate definition), advancing at rolling success >= 0.30. The coverage term and the observation are unchanged; the gate (copied from hug_long_01) always scores L3.
+STAGES["hug_curr_01"] = dataclasses.replace(
+    STAGES["hug_long_01"], name="hug_curr_01", task_params={**_HUG_LONG_01, "hug_curriculum": 1.0},
+    description="Regimen v2 hug success curriculum (L=8): hug_long_01 continued with a training-only success curriculum (L1 span >= 120 deg, run >= 3, hold 1.5 s -> L2 150 / 4 / 2 s -> L3 = gate definition 180 / 4 / 3 s; "
+    "level advances at rolling success 0.30, never regresses); hold reward and hug bonus keyed to the current level; coverage term and observation unchanged; gate (L=8 held-out set, dr 0.6) always scores L3.")
+HUG_CURR_TASKS = ("hug_curr_01",)
+
+
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:
     """The stage ``name`` with its ``action_mode`` replaced (``abs`` | ``hold`` | ``delta``); None keeps the stage's own."""
     stage = get_stage(name)
