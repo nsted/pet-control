@@ -8,6 +8,10 @@ STEP B  stage ``hug_scale15`` = hug_curr_02 with action_scale_rad 1.5 (hold_weig
         units (action_obs_scale 1.5), so the commanded targets of actions within +-1 are unchanged. Steps = 0.75 x 45 min x measured steps/s (cap 4M). 20-min check: stop only if the cylinder span p75 fell by more than
         10 deg vs the start or box success fell by more than 0.2. End: n=30 screen on the L=8 gate set at L3 (dr 0.6): GO if screen >= 0.15 OR any curved gate shape >= 1/6 OR cylinder training span p75 >= 165 deg.
         GO -> two more identical 45-min hours (levels preserved, screen after each). Any screen >= 0.55 -> n=100 verdict (gate2_spec_hug5(8), capacitive_off) -> DONE. NO-GO -> Step C.
+POST-H1 (expert rules, hours >= 2 of B; ``run_post``): 20-min check stops only if training success (last 150 eps) < hour-1 final 0.177 - 0.05 or box success fell > 0.2. After each screen: >= 0.55 -> n=100 verdict;
+        hour 2: continue if screen >= 0.15 / curved shape >= 1/6 / training success rising (last sixth >= first + 0.05) else Step C' (stage ``hug_long15`` = hug_long_ep changes on scale 1.5, warm from the latest scale15
+        hour, one hour); after hour 3 or C': screen < 0.30 and no curved shape >= 2/6 -> ESCALATE_OWNER, else ONE extra hour, then decide at 0.55 (else escalate). The hour-1 NO-GO counts as overruled when an
+        ``expert_override`` line exists or scale15_h2 exists.
 STEP C  stage ``hug_long_ep``: hug_curr_02 recipe, action_scale 1.0, warm from hug_curr4, episodes 30 s, start-buffer probability 0.5, buffer storing only states with normal span >= 120 deg (initial buffer = the
         entries of data/rl/hug_curr4/hug_buffer.json with span >= 120), 45 min + n=30 screen, same GO rule / continuation as B (box safety stop only). If C fails: STOP_ESCALATE_OWNER with the L=8, L=9 and range tables.
 
@@ -48,7 +52,7 @@ L = 8
 SRC = Path("data/rl/hug_curr4/hug_curr_02")
 SRC_BUFFER = Path("data/rl/hug_curr4/hug_buffer.json")
 BUDGET_MIN, CAP_STEPS, MAX_HOURS = 45.0, 4_000_000, 3
-SERIES = {"scale15": "hug_scale15", "long_ep": "hug_long_ep"}
+SERIES = {"scale15": "hug_scale15", "long_ep": "hug_long_ep", "long15": "hug_long15"}
 log, finished, record, lines = d6.log, d6.finished, d6.record, d6.lines
 
 
@@ -97,11 +101,29 @@ def prepare_buffer(series: str, buf: Path) -> None:
     if buf.exists():
         return
     items = json.loads(SRC_BUFFER.read_text()) if SRC_BUFFER.exists() else []
-    if series == "long_ep":
+    s15 = buf.parent / "scale15_hug_buffer.json"
+    if series == "long15" and s15.exists():                                           # Step C': the latest scale15 buffer
+        items = json.loads(s15.read_text())
+    if series in ("long_ep", "long15"):
         items = hr.filter_buffer(items, 120.0)
     buf.parent.mkdir(parents=True, exist_ok=True)
     buf.write_text(json.dumps(items))
     log(f"[buffer] {series}: {len(items)} initial states written to {buf}")
+
+
+def base_success(root: Path, series: str, hour: int) -> float:
+    """Training success the 20-min rule of hour ``hour`` compares to: scale15 hours >= 2 use the hour-1 final 0.177; long15 hour 1 the last scale15 hour's final, later hours the previous long15 hour's."""
+    if series == "scale15":
+        return hr.HOUR1_FINAL_SUCCESS
+    prev = phase_line(root, f"train_long15_h{hour - 1}") if hour > 1 else last_train_line(root, "scale15")
+    v = ((prev or {}).get("train_success") or {}).get("last")
+    return float(v) if v is not None else hr.HOUR1_FINAL_SUCCESS
+
+
+def last_train_line(root: Path, series: str) -> dict[str, Any] | None:
+    """The train line of the highest finished hour of ``series`` or None."""
+    found = [d for d in lines(root) if d["phase"].startswith(f"train_{series}_h")]
+    return found[-1] if found else None
 
 
 def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: float, force: bool) -> tuple[Path, str | None]:
@@ -115,13 +137,15 @@ def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: 
     aside_unfinished(out)
     out.mkdir(parents=True, exist_ok=True)
     prepare_buffer(series, buf)
-    lv_src = SRC / LEVEL_FILE if hour == 1 else init / LEVEL_FILE
+    lv_src = SRC / LEVEL_FILE if (hour == 1 and series != "long15") else init / LEVEL_FILE
     if not (out / LEVEL_FILE).exists() and lv_src.exists():
         shutil.copy(lv_src, out / LEVEL_FILE)
         log(f"[levels] per-family levels copied from {lv_src}")
     base_p75 = source_cyl_span_p75() if (series == "scale15" and hour == 1) else None
     if series == "scale15" and hour == 1:
         checks: hc2.Curr2Checks = hr.RangeChecks(out, base_p75, hc2.CHECK1_MIN * 60.0 * sc, sc)
+    elif series == "long15" or (series == "scale15" and hour >= 2):                      # expert rule: success fall > 0.05 below the previous hour's final / box fall > 0.2
+        checks = hr.SuccessChecks(out, base_success(root, series, hour), hc2.CHECK1_MIN * 60.0 * sc, sc)
     else:
         checks = hc2.Curr2Checks(out, 1e12, sc)                                          # box safety only
     levels = HugFamilyLevelCallback(out)
@@ -130,7 +154,7 @@ def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: 
     os.environ.update({"PETCTL_LR": str(hl.LR), "PETCTL_LR_CONST": "1"})
     os.environ.setdefault("PETCTL_PROGRESS_EXPORT_S", "900")
     try:
-        info = d6.train_phase(stage_name, out, L, {"hold_ramp": 1.0}, get_stage(stage_name).ent_coef, 400 + hour, init, BUDGET_MIN, CAP_STEPS, n_envs, sc, extra=[levels, checks], buffer=buf,
+        info = d6.train_phase(stage_name, out, L, {"hold_ramp": 1.0}, get_stage(stage_name).ent_coef, (500 if series == "long15" else 400) + hour, init, BUDGET_MIN, CAP_STEPS, n_envs, sc, extra=[levels, checks], buffer=buf,
                               copy_ret=True, keep_log_std=True, rescale_joints=rescale)
     finally:
         for k, v in old_env.items():
@@ -142,7 +166,7 @@ def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: 
     reason = None if force else checks.reason
     fd = hd.family_dump(out)
     record(root, {"phase": phase, "go": reason is None, "stop_reason": reason, "stage": stage_name, "checks": checks.results, "family": fd, "range_last300": hr.pool_range(rows[-300:]),
-                  "base_cyl_span_p75": base_p75, "buffer_states": len(json.loads(buf.read_text())) if buf.exists() else 0, "rescale_joints": rescale, **info})
+                  "base_cyl_span_p75": base_p75, "train_success": hr.success_trend(rows), "buffer_states": len(json.loads(buf.read_text())) if buf.exists() else 0, "rescale_joints": rescale, **info})
     return out, reason
 
 
@@ -192,11 +216,52 @@ def run_series(root: Path, series: str, n_envs: int, sc: float, a: argparse.Name
         if s["success"] >= hc2.SCREEN_DONE:
             final_verdict(root, out, series, hour, a.final_n, a.eval_workers, a.force_go)
             return "done"
+        if series == "scale15" and hour == 1 and reason is None and (sline["go"] or h1_overridden(root)):
+            return run_post(root, 2, out, n_envs, sc, a)
         if hour == 1 and (reason is not None or not sline["go"]):
             log_entry(f"{stage_name} hour 1 NO-GO", f"- stop reason {reason}; screen n=30 (L3): {s['success']:.3f}, per shape {json.dumps(s['per_shape'])}; GO signals {json.dumps(sline['signals'])}\n- Data: {root}")
             return "nogo"
         init = out
     return "exhausted"
+
+
+def h1_overridden(root: Path) -> bool:
+    """The expert overruled the hour-1 NO-GO (an ``expert_override`` line, or hour 2 was already started)."""
+    return phase_line(root, "expert_override") is not None or (root / "scale15_h2").exists()
+
+
+def run_post(root: Path, hour: int, init: Path, n_envs: int, sc: float, a: argparse.Namespace) -> str:
+    """Expert rules after Step B hour 1: hours are identical continuations (scale 1.5, no further rescale); every hour writes train / screen / decision lines. Returns ``done`` | ``stopped``."""
+    series = "scale15"
+    while True:
+        out, reason = train_hour(root, series, hour, init, n_envs, sc, a.force_go)
+        stage_name = SERIES[series]
+        sline = phase_line(root, f"screen_{series}_h{hour}")
+        if sline is None:
+            s = screen(out, stage_name, a.screen_n, a.eval_workers)
+            fd = hd.family_dump(out)
+            trend = hr.success_trend(hl.read_rows_tolerant(out / "episodes.jsonl"))
+            _, sig = hr.go_rule(s["success"], s["per_shape"], fd["cyl_span_p75"], L)
+            sline = {"phase": f"screen_{series}_h{hour}", "go": True, "signals": sig, "trend": trend, "screen": s, "family": fd, "train_stop_reason": reason, "stage": stage_name}
+            record(root, sline)
+        s = sline["screen"]
+        rising = bool(sline.get("trend", {}).get("rising"))
+        if reason is not None:
+            halt(root, reason, f"{stage_name} hour {hour} check failed ({reason}); screen {s['success']:.3f}, per shape {json.dumps(s['per_shape'])}")
+            return "stopped"
+        dec = hr.post_hour_decision(series, hour, s["success"], s["per_shape"], rising, L)
+        record(root, {"phase": f"decision_{series}_h{hour}", "go": dec != "escalate", "decision": dec, "screen": s["success"], "rising": rising, "curved_max": hr.curved_max(s["per_shape"], L)})
+        if dec == "final":
+            final_verdict(root, out, series, hour, a.final_n, a.eval_workers, a.force_go)
+            return "done"
+        if dec == "escalate":
+            escalate(root, f"{stage_name} hour {hour}: screen {s['success']:.3f}, curved max {hr.curved_max(s['per_shape'], L):.3f}: end rule -> stop the hug line")
+            return "stopped"
+        if dec == "C15":
+            series, hour = "long15", 1
+        else:                                                                         # next | extra: identical continuation
+            hour += 1
+        init = out
 
 
 def escalation_text(root: Path) -> str:
@@ -214,7 +279,13 @@ def escalation_text(root: Path) -> str:
         parts += ["Range diagnostic (data/rl/range_diag/result.json):", f"  pooled {json.dumps(r['pooled'])}", f"  decision {r['decision']}: {r['reason']}"]
     except (OSError, ValueError, KeyError):
         parts += ["Range diagnostic: not available"]
-    parts += ["This study's screens:", *screens(root, "screen_")]
+    parts += ["This study's screens (scale 1.5 hours / Step C'; per shape, span / saturation / trend in summary.jsonl):", *screens(root, "screen_")]
+    for d in lines(root):
+        if d["phase"].startswith("train_"):
+            tr = d.get("train_success") or {}
+            fam = d.get("family") or {}
+            rg = d.get("range_last300") or {}
+            parts.append(f"  {d['phase']}: cyl span p75 {fam.get('cyl_span_p75')}, saturated_frac {rg.get('saturated_frac')}, train success first/last sixth {tr.get('first')}/{tr.get('last')}")
     return "\n".join(parts)
 
 

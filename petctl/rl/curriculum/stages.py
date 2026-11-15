@@ -338,7 +338,11 @@ STAGES["hug_scale15"] = dataclasses.replace(
 STAGES["hug_long_ep"] = dataclasses.replace(
     STAGES["hug_curr_02"], name="hug_long_ep", episode_s=30.0, task_params={**STAGES["hug_curr_02"].task_params, "hug_buffer_p": 0.5, "hug_buffer_min_span": 120.0, "range_diag": 1.0},
     description="hug_curr_02 (L=8, action_scale 1.0) with 30 s training episodes, start-buffer probability 0.5 and a buffer that stores only states with normal span >= 120 deg; gate unchanged (20 s episodes, L3).")
-HUG_RANGE_TASKS = ("hug_scale15", "hug_long_ep")
+# hug_long15: the hug_long_ep changes (30 s episodes, buffer p 0.5, buffer span >= 120 deg) ON TOP OF action_scale 1.5 (Step C' after hug_scale15; warm start from a scale15 hour, no actor rescale).
+STAGES["hug_long15"] = dataclasses.replace(
+    STAGES["hug_long_ep"], name="hug_long15", action_scale=1.5, action_obs_scale=1.5,
+    description="hug_long_ep (30 s episodes, start-buffer probability 0.5, buffer span >= 120 deg) with action_scale_rad 1.5; warm start from a hug_scale15 hour (no actor rescale); gate unchanged.")
+HUG_RANGE_TASKS = ("hug_scale15", "hug_long_ep", "hug_long15")
 
 
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:

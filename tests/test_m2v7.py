@@ -151,7 +151,7 @@ def test_stage_definitions() -> None:
     assert (tp["shape_phase"], tp["hug_gap_min"], tp["hug_gap_max"], tp["bearing_deg"], tp["start_pose_rad"], tp["hug_stall_s"], tp["hug_buffer"], tp["hold_weight"]) == (1.0, 0.10, 0.40, 90.0, 0.4, 8.0, 1.0, 3.0)
     assert "hug_start_mix" not in tp and h.gate.task_params["hug_buffer"] == 0.0
     assert build_config(h, {"hold_weight": 6.0, "dr_scale": 0.3}).task_params["hold_weight"] == 6.0
-    assert [n for n, s in STAGES.items() if s.action_mode == "hold"] == ["m2_hug7", "hug_long_01", "hug_curr_01", "hug_curr_02", "hug_scale15", "hug_long_ep"]
+    assert [n for n, s in STAGES.items() if s.action_mode == "hold"] == ["m2_hug7", "hug_long_01", "hug_curr_01", "hug_curr_02", "hug_scale15", "hug_long_ep", "hug_long15"]
     assert [n for n, s in STAGES.items() if s.action_mode == "delta"] == ["m2_flat3", "m2_hug6"]       # the old v6 stages are untouched
     assert ObsBuilder(build_config(h, {})).blocks()[-1] == ("target", 7)
 

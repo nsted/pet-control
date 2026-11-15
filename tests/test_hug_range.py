@@ -212,7 +212,7 @@ def test_filter_buffer() -> None:
 
 def test_driver_wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     d = _load("hug_range_driver")
-    assert (d.L, d.BUDGET_MIN, d.CAP_STEPS, d.MAX_HOURS) == (8, 45.0, 4_000_000, 3) and str(d.SRC) == "data/rl/hug_curr4/hug_curr_02" and d.SERIES == {"scale15": "hug_scale15", "long_ep": "hug_long_ep"}
+    assert (d.L, d.BUDGET_MIN, d.CAP_STEPS, d.MAX_HOURS) == (8, 45.0, 4_000_000, 3) and str(d.SRC) == "data/rl/hug_curr4/hug_curr_02" and d.SERIES == {"scale15": "hug_scale15", "long_ep": "hug_long_ep", "long15": "hug_long15"}
     src = inspect.getsource(d)
     assert "gate2_spec_hug5(L)" in src and "ESCALATE_OWNER" in src and "rescale_joints=rescale" in src and '{"hold_ramp": 1.0}' in src
     assert "summary.jsonl" in inspect.getsource(d6_record()) and hr.SCALE15_REF / hr.SCALE15 == pytest.approx(1 / 1.5)
@@ -226,6 +226,7 @@ def test_driver_wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # halt writes a summary line and a marker
     d.halt(tmp_path, "x", "why")
     assert (tmp_path / "STOP_x").exists() and d.phase_line(tmp_path, "stop_x")["why"] == "why"
+    monkeypatch.setattr(d, "log_entry", lambda t, b: None)                                                          # never write the real curriculum log from a test
     d.escalate(tmp_path, "both failed")
     assert (tmp_path / "STOP_ESCALATE_OWNER").exists() and (tmp_path / "ESCALATE").exists() and "L=8 screens" in (tmp_path / "ESCALATE").read_text()
 
@@ -238,3 +239,77 @@ def d6_record():
 def test_progress_videos_cover_the_new_root() -> None:
     pv = _load("progress_videos")
     assert "hug_range*" in inspect.getsource(pv.run_dirs)
+
+
+Z = {"cyl_r3": 0.0, "cyl_r7": 0.0, "square_8x8": 0.0, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+
+
+def _succ_rows(p: float, n: int = 200) -> list[dict]:
+    return [{"shape_kind": 0, "success": float(int((i + 1) * p + 1e-9) - int(i * p + 1e-9))} for i in range(n)]
+
+
+def test_success_fall_rule() -> None:
+    assert not hr.success_fall_stop(_succ_rows(0.13))[0] and hr.success_fall_stop(_succ_rows(0.12))[0]       # 0.177 - 0.05 = 0.127
+    assert not hr.success_fall_stop(_succ_rows(0.30))[0] and not hr.success_fall_stop(_succ_rows(0.0, 100))[0]  # fewer than 150 episodes: no stop
+    box = [{"shape_kind": 1, "success_l1": 0.9 if i < 100 else 0.5, "success": 0.2} for i in range(200)]
+    assert hr.success_fall_stop(box)[0]                                                                      # box success fell > 0.2
+
+
+def test_success_trend() -> None:
+    rows = [{"success": 0.0}] * 60 + [{"success": 0.0}] * 120 + [{"success": 1.0 if i >= 56 else 0.0} for i in range(60)]
+    assert hr.success_trend(rows)["rising"] and not hr.success_trend([{"success": 0.1}] * 120)["rising"] and not hr.success_trend([{"success": 1.0}] * 10)["rising"]
+
+
+def test_post_hour_decisions() -> None:
+    d = hr.post_hour_decision
+    assert d("scale15", 2, 0.55, Z, False) == "final" and d("long15", 1, 0.6, Z, False) == "final" and d("scale15", 4, 0.55, Z, False) == "final"
+    assert d("scale15", 2, 0.15, Z, False) == "next" and d("scale15", 2, 0.0, {**Z, "cyl_r3": 1 / 6}, False) == "next" and d("scale15", 2, 0.0, Z, True) == "next"
+    assert d("scale15", 2, 0.1, {**Z, "square_8x8": 0.5}, False) == "C15"                                    # boxes do not count as curved
+    assert d("scale15", 3, 0.29, {**Z, "cyl_r7": 1 / 6}, True) == "escalate" and d("scale15", 3, 0.30, Z, False) == "extra"
+    assert d("scale15", 3, 0.2, {**Z, "rounded_8x8_r2": 2 / 6}, False) == "extra"
+    assert d("long15", 1, 0.2, Z, True) == "escalate" and d("long15", 1, 0.3, Z, False) == "extra"
+    assert d("scale15", 4, 0.54, Z, True) == "escalate" and d("long15", 2, 0.4, Z, True) == "escalate"       # after the extra hour only 0.55 passes
+
+
+def _drive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, screens: list[tuple[float, dict, bool]], reasons: dict | None = None):
+    """Run ``run_post`` from hour 2 with synthetic hours; returns (result, trained (series, hour) list, markers, summary lines)."""
+    d = _load("hug_range_driver")
+    trained, it = [], iter(screens)
+    monkeypatch.setattr(d, "train_hour", lambda root, series, hour, init, n, sc, f: (trained.append((series, hour, init.name)) or tmp_path / f"{series}_h{hour}", (reasons or {}).get((series, hour))))
+    monkeypatch.setattr(d.hd, "family_dump", lambda out: {"cyl_span_p75": 150.0})
+    monkeypatch.setattr(d.hl, "read_rows_tolerant", lambda p: [])
+
+    def fake_screen(out, stage, n, w):
+        s, per, rising = next(it)
+        fake_screen.rising = rising
+        return {"success": s, "per_shape": {**Z, **per}}
+    monkeypatch.setattr(d, "screen", fake_screen)
+    monkeypatch.setattr(d.hr, "success_trend", lambda rows: {"rising": fake_screen.rising})
+    monkeypatch.setattr(d, "final_verdict", lambda root, out, series, hour, n, w, f: (root / "DONE").write_text(f"{series} {hour}"))
+    monkeypatch.setattr(d, "log_entry", lambda t, b: None)
+    a = SimpleNamespace(force_go=False, screen_n=30, final_n=100, eval_workers=1)
+    res = d.run_post(tmp_path, 2, tmp_path / "scale15_h1", 1, 1.0, a)
+    return res, trained, sorted(p.name for p in tmp_path.iterdir() if p.name.isupper() or p.name.startswith("STOP")), d.lines(tmp_path)
+
+
+def test_run_post_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # h2 screen 0.60 -> verdict
+    (tmp_path / "a").mkdir()
+    r, tr, mk, ln = _drive(tmp_path / "a", monkeypatch, [(0.60, {}, False)])
+    assert r == "done" and tr == [("scale15", 2, "scale15_h1")] and "DONE" in mk and any(x["phase"] == "decision_scale15_h2" and x["decision"] == "final" for x in ln)
+    # h2 0.10, nothing -> C' warm from h2 on scale 1.5 (series long15 hour 1), then 0.20/no curved -> escalate
+    (tmp_path / "b").mkdir()
+    r, tr, mk, ln = _drive(tmp_path / "b", monkeypatch, [(0.10, {}, False), (0.20, {}, False)])
+    assert r == "stopped" and tr == [("scale15", 2, "scale15_h1"), ("long15", 1, "scale15_h2")] and "STOP_ESCALATE_OWNER" in mk and "ESCALATE" in mk
+    # h2 rising -> h3 (0.35) -> extra h4 (0.56) -> verdict
+    (tmp_path / "c").mkdir()
+    r, tr, mk, ln = _drive(tmp_path / "c", monkeypatch, [(0.10, {}, True), (0.35, {}, False), (0.56, {}, False)])
+    assert r == "done" and [t[:2] for t in tr] == [("scale15", 2), ("scale15", 3), ("scale15", 4)]
+    # h2 0.2 -> h3 0.2 (<0.30, no curved 2/6) -> escalate, no h4
+    (tmp_path / "d").mkdir()
+    r, tr, mk, ln = _drive(tmp_path / "d", monkeypatch, [(0.20, {}, False), (0.20, {"cyl_r3": 1 / 6}, False)])
+    assert r == "stopped" and len(tr) == 2 and "STOP_ESCALATE_OWNER" in mk
+    # 20-min stop in hour 2 -> halt, no further hour
+    (tmp_path / "e").mkdir()
+    r, tr, mk, ln = _drive(tmp_path / "e", monkeypatch, [(0.20, {}, False)], {("scale15", 2): "curved_trend_20min"})
+    assert r == "stopped" and len(tr) == 1 and "STOP_curved_trend_20min" in mk
