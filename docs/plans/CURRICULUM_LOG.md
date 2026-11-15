@@ -233,3 +233,13 @@ Stopping rule (Opus expert; fixed before the hour-3 screen):
 4. Then an L=9 study: flat P1 25 min (go if >= 0.15); hug with `hold_ramp=1`, two 45-min hours; continue only if the hour-2 screen >= 0.15 or a curved gate shape >= 2/6, else n=11; escalate to the owner if n=11 fails.
 
 Code: task knob `hold_ramp` (default 0, stage knob of hug_curr_02, driver flag `--hold-ramp`): with 1 the hold term pays `hold_weight x min(2, 1 + hold_ticks / hold_need)` per hug tick, hold_need of the family's current level. Note: hug_curr_02 runs `hug_v3` (flat hold), so the ramp replaces the flat factor under v3 too; with hold_ramp 0 behaviour is unchanged (identity tests pass).
+
+## 2026-11-15 L=9 odd-length study: hug stop (L9_hug)
+
+- screens (n=30, L3, ['cyl_r3', 'cyl_r8', 'square_8x8', 'rect_5x14', 'rounded_8x8_r2']): {"h1": {"success": 0.03333333333333333, "per_shape": {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}}, "h2": {"success": 0.06666666666666667, "per_shape": {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.3333333333333333, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}}}
+- Body: 9-module body = generated URDF variant (tail_flip auto; physical tail orientation unconfirmed by the owner)
+- Data: data/rl/odd9
+
+### L=9 result, odd11 stopped, coordination note (2026-11-15 11:10)
+L=9 (generated URDF, tail_flip auto, unconfirmed by owner): flat P1 took off 1.5M steps, 100% at 5.5M; hug h1 screen 0.033 (square 1/6), h2 screen 0.067 (square 2/6; hold_duty 0.094, span 125, run 4.53) -> STOP_L9_hug by the rule. Same as L=8 (0.033/0.067/0.033): body length 8 vs 9 is not the lever. odd11 (started 11:02) STOPPED by the Opus expert's order after ~8 min (flat pilot only; no results). COORDINATION FAILURE: the L=9 driver stopped at 03:17 and the manager noticed at ~11:00 because the wait loop only woke on the first phase line; ~7.5 h compute idle. Fix: every driver stop must page the manager immediately (wait loops now run until STOP_/DONE markers and are re-armed on every phase line).
+Expert diagnosis: action_scale_rad = 1.0 caps joint targets at +-1.0 rad while the static feasible holds needed up to 1.28 rad (n=8 cyl r3: 0.80,1.28,1.17,1.04,1.28,1.11,1.03; L=8 cyl r7 up to 1.13; n=9 cyl r8 up to 1.08); with contact and the 0.5 N.m cap the joints settle below target, so r3/r7/r8 curls may be unreachable. Step A diagnostic, Step B hug_scale15 (action_scale_rad 1.5, actor weights rescaled by 1/1.5 for the 7 joint channels), Step C (episode_s 30, buffer 0.5 with span>=120 states) ordered.
