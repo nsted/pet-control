@@ -350,6 +350,36 @@ STAGES["hug_anneal"] = dataclasses.replace(
 HUG_RANGE_TASKS = ("hug_scale15", "hug_long_ep", "hug_long15", "hug_anneal")
 
 
+# ---------------------------------------------------------------- A1 / A2 / B1 / B2 navigation chain (plan sec 4.2; driver scripts/rl/chain_ab_driver.py)
+# L = 8 body, action_mode hold (EMA 0.3 + 0.7 h, action_scale 1.0 as the L=8 flat hold policy data/rl/m2v7_L8/L8/P1 it warm-starts from), the _M2_OBS block (head-frame delta + delta DR, reply DR, touch_long, capacitive_obs,
+# bus model + bus penalty; the observation layout is that of the hug stages), asymmetric critic, reward success_bonus 150 / speed_gain 3 / time_penalty 0.5 (S8 style), ent 0.005, start pose +-0.6 rad,
+# training DR 0.3 ramped to 0.6 over the first half of the run (``DrRampCallback``), 10 envs. Episode lengths are chosen from the measured P1 speed (~6.5 cm/s: 2 m takes ~30 s): A1 40 s, A2 15 s, B1 20 s, B2 40 s.
+# Gates (n = 100, dr 0.6, Wilson lower bound vs the frozen threshold, bus current + glitch hard fails) are built by ``petctl.rl.curriculum.chain_ab``.
+_CHAIN_BASE = {**_M2_OBS, **_M2_REWARD, "bearing_deg": 180.0, "start_pose_rad": 0.6, "allow_flip": 1.0}
+_CHAIN_KNOBS = {**_M2_KNOBS, "goal_dist_min": (0.2, 3.0), "terrain_level": (0.0, 1.0), "terrain_level_min": (0.0, 1.0), "bearing_min_deg": (0.0, 180.0)}
+CHAIN_STAGES = ("flat_nav", "flat_omni", "terrain_easy", "terrain_full")
+CHAIN_PARAMS: dict[str, dict[str, float]] = {
+    "flat_nav": {**_CHAIN_BASE, "goal_dist_min": 0.8, "goal_dist_max": 2.0},
+    "flat_omni": {**_CHAIN_BASE, "goal_dist_min": 0.3, "goal_dist_max": 0.8},
+    "terrain_easy": {**_CHAIN_BASE, "goal_dist_min": 0.3, "goal_dist_max": 0.8, "terrain_level": 0.6, "terrain_level_min": 0.3},
+    "terrain_full": {**_CHAIN_BASE, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 0.6},
+}
+CHAIN_EPISODE_S = {"flat_nav": 40.0, "flat_omni": 15.0, "terrain_easy": 20.0, "terrain_full": 40.0}
+CHAIN_THRESHOLD = {"flat_nav": 0.80, "flat_omni": 0.70, "terrain_easy": 0.75, "terrain_full": 0.70}
+CHAIN_DESC = {
+    "flat_nav": "A1: reach a goal 0.8-2.0 m away at any bearing from a random start pose (+-0.6 rad), 40 s episodes, speed reward; L=8, hold channel; gate success >= 0.80.",
+    "flat_omni": "A2: short goals 0.3-0.8 m at any bearing, 15 s limit (forces lateral / reverse moves); gate success >= 0.70 and median lateral displacement >= 0.4 m in 8 s for +-90 deg goals.",
+    "terrain_easy": "B1: A2 on heightfield terrain (level drawn in 0.3-0.6 per episode) with friction tiles, 20 s episodes; gate success >= 0.75 at level 0.6.",
+    "terrain_full": "B2: terrain level 0.6-1.0 (bumps up to 6 cm, slopes 15 deg, loose patches), goals 1.5-2.5 m, 40 s episodes; gate success >= 0.70 at level 1.0 and imu_off drop >= 0.15.",
+}
+for _n in CHAIN_STAGES:
+    _p = CHAIN_PARAMS[_n]
+    STAGES[_n] = Stage(
+        _n, "goal_reach", CHAIN_DESC[_n], task_params=dict(_p),
+        gate=Gate(task_params=_gate_params(_p, **({"terrain_level": 0.6} if _n == "terrain_easy" else {})), episodes=100, dr_scale=0.6, min_success=CHAIN_THRESHOLD[_n], episode_s=CHAIN_EPISODE_S[_n]),
+        steps=4_000_000, n_envs=10, dr_scale=0.3, episode_s=CHAIN_EPISODE_S[_n], ent_coef=0.005, knobs=dict(_CHAIN_KNOBS), action_mode="hold")
+
+
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:
     """The stage ``name`` with its ``action_mode`` replaced (``abs`` | ``hold`` | ``delta``); None keeps the stage's own."""
     stage = get_stage(name)

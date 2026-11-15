@@ -94,6 +94,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if b is not None:
             b.replace(items)
 
+    def set_dr_scale(self, scale: float) -> None:
+        """Domain-randomisation scale for the episodes that start after this call (broadcast by ``DrRampCallback``)."""
+        self.cfg.dr.scale = float(scale)
+
     def set_hug_level(self, level: int) -> None:
         """Success-curriculum level (1-3) for the episodes that start after this call (broadcast by ``HugLevelCallback`` once per rollout)."""
         self._hug_level = min(3, max(1, int(level)))

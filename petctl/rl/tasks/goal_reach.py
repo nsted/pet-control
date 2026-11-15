@@ -80,7 +80,11 @@ class GoalReach(Locomote):
         self.redirects = 0
         self._schedule_redirect(0.0, first=True)
         self._z = float(self.p0[2])
+        h0 = np.array([self.heading[0], self.heading[1]])                       # initial body heading (before the goal pointing below overwrites it)
+        self._lat_n = np.array([-h0[1], h0[0]]) / max(float(np.linalg.norm(h0)), 1e-9)
+        self._lat_peak = 0.0
         self._spawn_goal(self._head(sim), first=True)
+        self._lat_sign = 1.0 if self.bearing0 >= 0.0 else -1.0                     # side of the initial heading the goal lies on (bearing > 0 = left)
         self._last = self.p0.copy()
         self._t = 0
         self._roll = 0.0                                    # roll angle about the body's long axis (rad), integrated from the IMU gyro (IMU x axis runs head->tail)
@@ -118,7 +122,7 @@ class GoalReach(Locomote):
     def _spawn_goal(self, origin: np.ndarray, first: bool = False, sim: PetSim | None = None) -> None:
         """Sample a goal from ``origin`` (the head position) at a random distance and bearing about the current head heading (initial heading for the first)."""
         lo, hi = self.param("goal_dist_min", 0.25), self.param("goal_dist_max", 0.35)
-        bearing = float(np.deg2rad(self._rng.uniform(-1.0, 1.0) * self.param("bearing_deg", 0.0)))
+        bearing = self._draw_bearing()
         if first:
             self.bearing0, ref = bearing, self.heading
             self.dist0 = float(self._rng.uniform(lo, hi))
@@ -131,11 +135,20 @@ class GoalReach(Locomote):
         self.goal[2] = self._z
         self._dist_start = dist
 
+    def _draw_bearing(self) -> float:
+        """Goal bearing (rad) about the head heading: uniform in +-``bearing_deg``; with ``bearing_min_deg`` > 0 its magnitude is uniform in [``bearing_min_deg``, ``bearing_deg``] with a random sign
+        (e.g. 90 / 90: goals at exactly +-90 deg). One rng draw either way, so existing configs keep their random stream."""
+        u = float(self._rng.uniform(-1.0, 1.0))
+        top, lo = self.param("bearing_deg", 0.0), self.param("bearing_min_deg", 0.0)
+        if lo <= 0.0:
+            return float(np.deg2rad(u * top))
+        return float(np.deg2rad(np.sign(u if u != 0.0 else 1.0) * (lo + abs(u) * max(top - lo, 0.0))))
+
     def _relocate_goal(self, origin: np.ndarray, sim: PetSim | None) -> None:
         """Put the current goal at a new random position relative to ``origin`` (the head): random distance, bearing about the current head heading."""
         assert sim is not None
         lo, hi = self.param("goal_dist_min", 0.25), self.param("goal_dist_max", 0.35)
-        bearing = float(np.deg2rad(self._rng.uniform(-1.0, 1.0) * self.param("bearing_deg", 0.0)))
+        bearing = self._draw_bearing()
         fwd = sim.data.site_xmat[sim.head_id].reshape(3, 3)[:, 0].copy()
         yaw = float(np.arctan2(fwd[1], fwd[0])) + bearing
         dist = float(self._rng.uniform(lo, hi))
@@ -218,6 +231,7 @@ class GoalReach(Locomote):
         self._t += 1
         step = vnorm((com - self._last)[:2])
         self.path_m += step
+        self._lat_peak = max(self._lat_peak, self._lat_sign * float(np.dot((com - self.p0)[:2], self._lat_n)))
         self.energy += float(np.sum(sim.joint_torque() ** 2)) * dt
         self._last = com
         head = self._head(sim)
@@ -293,4 +307,5 @@ class GoalReach(Locomote):
         d = self.distance(sim)
         return {"distance": d, "success": float(self.reached), "final_dist": self._to_goal(self._head(sim))[1], "dist0": self.dist0, "goals_reached": float(self.goals_done), "redirects": float(self.redirects),
                 "bearing0_deg": float(np.rad2deg(self.bearing0)), "time_to_goal_s": self.t_goal, "path": self.path_m, "roll_turns": abs(self._roll) / (2 * np.pi), "roll_abs_turns": self._roll_abs / (2 * np.pi), "roll_gyro_turns": abs(self._roll_gyro) / (2 * np.pi), "roll_head_turns": abs(self._roll_head) / (2 * np.pi),
-                "energy_per_m": self.energy / d if d > 1e-3 else float("inf"), "glitch": float(self.glitch)}
+                "energy_per_m": self.energy / d if d > 1e-3 else float("inf"), "glitch": float(self.glitch),
+                "lateral_peak_m": self._lat_peak}

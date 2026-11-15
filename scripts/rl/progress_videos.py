@@ -106,7 +106,7 @@ def run_info(run: Path, root: Path) -> dict[str, Any] | None:
 
 def run_dirs(data: Path) -> list[tuple[Path, Path]]:
     """All ``(root, run_dir)`` pairs under the study roots of ``data`` (a run dir holds an ``episodes.jsonl``)."""
-    pats = ("m2v*", "hug_long*", "hug_curr*", "odd*", "hug_range*", "hug_anneal*")
+    pats = ("m2v*", "hug_long*", "hug_curr*", "odd*", "hug_range*", "hug_anneal*", "chain_ab*")
     return [(r, e.parent) for r in sorted(x for pat in pats for x in data.glob(pat)) if r.is_dir() for e in sorted(r.rglob("episodes.jsonl")) if ".aborted" not in str(e.parent)]
 
 
