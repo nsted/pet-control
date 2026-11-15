@@ -243,3 +243,75 @@ Code: task knob `hold_ramp` (default 0, stage knob of hug_curr_02, driver flag `
 ### L=9 result, odd11 stopped, coordination note (2026-11-15 11:10)
 L=9 (generated URDF, tail_flip auto, unconfirmed by owner): flat P1 took off 1.5M steps, 100% at 5.5M; hug h1 screen 0.033 (square 1/6), h2 screen 0.067 (square 2/6; hold_duty 0.094, span 125, run 4.53) -> STOP_L9_hug by the rule. Same as L=8 (0.033/0.067/0.033): body length 8 vs 9 is not the lever. odd11 (started 11:02) STOPPED by the Opus expert's order after ~8 min (flat pilot only; no results). COORDINATION FAILURE: the L=9 driver stopped at 03:17 and the manager noticed at ~11:00 because the wait loop only woke on the first phase line; ~7.5 h compute idle. Fix: every driver stop must page the manager immediately (wait loops now run until STOP_/DONE markers and are re-armed on every phase line).
 Expert diagnosis: action_scale_rad = 1.0 caps joint targets at +-1.0 rad while the static feasible holds needed up to 1.28 rad (n=8 cyl r3: 0.80,1.28,1.17,1.04,1.28,1.11,1.03; L=8 cyl r7 up to 1.13; n=9 cyl r8 up to 1.08); with contact and the 0.5 N.m cap the joints settle below target, so r3/r7/r8 curls may be unreachable. Step A diagnostic, Step B hug_scale15 (action_scale_rad 1.5, actor weights rescaled by 1/1.5 for the 7 joint channels), Step C (episode_s 30, buffer 0.5 with span>=120 states) ordered.
+
+## 2026-11-15 11:08 action-range study: ESCALATE to the owner
+
+both failed
+
+L=8 screens (n=30, L3; data/rl/hug_curr*/summary.jsonl):
+  screen: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r7": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  hours 1-3 per the curriculum log: 0.033 / 0.067 / 0.033
+L=9 screens (data/rl/odd9/summary.jsonl):
+  screen_h1: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  screen_h2: success 0.067, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.3333333333333333, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+Range diagnostic (data/rl/range_diag/result.json):
+  pooled {"episodes": 40, "episodes_with_wrap_attempt": 40, "wrap_attempt_ticks": 8906.0, "saturated_frac": 0.29473950145969025, "sat_any_frac": 0.7014372333258477, "sat_all_frac": 0.027509544127554457, "target_gap_run": 0.16531265038432547, "max_abs_target_run": 0.9999999999925593}
+  decision B: saturated fraction 0.295 >= 0.2
+This study's screens:
+
+
+## 2026-11-15 11:11 action-range study: ESCALATE to the owner
+
+both failed
+
+L=8 screens (n=30, L3; data/rl/hug_curr*/summary.jsonl):
+  screen: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r7": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  hours 1-3 per the curriculum log: 0.033 / 0.067 / 0.033
+L=9 screens (data/rl/odd9/summary.jsonl):
+  screen_h1: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  screen_h2: success 0.067, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.3333333333333333, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+Range diagnostic (data/rl/range_diag/result.json):
+  pooled {"episodes": 40, "episodes_with_wrap_attempt": 40, "wrap_attempt_ticks": 8906.0, "saturated_frac": 0.29473950145969025, "sat_any_frac": 0.7014372333258477, "sat_all_frac": 0.027509544127554457, "target_gap_run": 0.16531265038432547, "max_abs_target_run": 0.9999999999925593}
+  decision B: saturated fraction 0.295 >= 0.2
+This study's screens:
+
+
+## 2026-11-15 11:13 action-range study: ESCALATE to the owner
+
+both failed
+
+L=8 screens (n=30, L3; data/rl/hug_curr*/summary.jsonl):
+  screen: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r7": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  hours 1-3 per the curriculum log: 0.033 / 0.067 / 0.033
+L=9 screens (data/rl/odd9/summary.jsonl):
+  screen_h1: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  screen_h2: success 0.067, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.3333333333333333, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+Range diagnostic (data/rl/range_diag/result.json):
+  pooled {"episodes": 40, "episodes_with_wrap_attempt": 40, "wrap_attempt_ticks": 8906.0, "saturated_frac": 0.29473950145969025, "sat_any_frac": 0.7014372333258477, "sat_all_frac": 0.027509544127554457, "target_gap_run": 0.16531265038432547, "max_abs_target_run": 0.9999999999925593}
+  decision B: saturated fraction 0.295 >= 0.2
+This study's screens:
+
+
+## 2026-11-15 11:18 action-range study: ESCALATE to the owner
+
+both failed
+
+L=8 screens (n=30, L3; data/rl/hug_curr*/summary.jsonl):
+  screen: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r7": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  hours 1-3 per the curriculum log: 0.033 / 0.067 / 0.033
+L=9 screens (data/rl/odd9/summary.jsonl):
+  screen_h1: success 0.033, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+  screen_h2: success 0.067, per shape {"cyl_r3": 0.0, "cyl_r8": 0.0, "square_8x8": 0.3333333333333333, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+Range diagnostic (data/rl/range_diag/result.json):
+  pooled {"episodes": 40, "episodes_with_wrap_attempt": 40, "wrap_attempt_ticks": 8906.0, "saturated_frac": 0.29473950145969025, "sat_any_frac": 0.7014372333258477, "sat_all_frac": 0.027509544127554457, "target_gap_run": 0.16531265038432547, "max_abs_target_run": 0.9999999999925593}
+  decision B: saturated fraction 0.295 >= 0.2
+This study's screens:
+
+
+## 2026-11-15 11:46 action-range study: hug_scale15 hour 1 NO-GO
+
+- stop reason None; screen n=30 (L3): 0.033, per shape {"cyl_r3": 0.0, "cyl_r7": 0.0, "square_8x8": 0.16666666666666666, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}; GO signals {"screen": 0.03333333333333333, "curved": {"cyl_r3": 0.0, "cyl_r7": 0.0, "rounded_8x8_r2": 0.0}, "cyl_span_p75": 162.5007177161704, "by_screen": false, "by_curved": false, "by_span": false}
+- Data: data/rl/hug_range
+
+### Range diagnostic and hug_scale15 hour 1 (2026-11-15)
+Step A (hug_curr4 policy, 20 eps cyl r3 + 20 cyl r7, DR 0.6): saturated fraction of wrap-attempt joint-ticks 0.295 (r3 0.391, r7 0.212) -> Step B. Step B hug_scale15 h1 (action_scale 1.5, actor rescaled 1/1.5): screen n=30 success 0.033 (square 1/6), hold_duty 0.114, span mean 159 (was 139-144), run 5.87, cyl span p75 162.5 (go bar 165), saturation 0.126, max |target| 1.49; training success rose in every sixth of the run 0.015 -> 0.177. NO-GO by the letter of the rule (screen < 0.15, no curved shape > 0, span 162.5 < 165), OVERRULED by the Opus expert on the training trend. Step C (scale 1.0) auto-started and was killed after ~3 min as superseded (data/rl/contended_runs/long_ep_h1_superseded). Next: scale15_h2 identical continuation; stop rules: 20-min stop only if training success is > 0.05 below hour-1 final 0.177 or box success fell > 0.2; after h2: continue to h3 if screen >= 0.15 or a curved gate shape >= 1/6 or training success still rising (last sixth >= first sixth + 0.05); screen >= 0.55 -> n=100 verdict with capacitive_off; otherwise Step C changes (episode_s 30, buffer p 0.5 span>=120) on top of scale 1.5 for one hour; after hour 3 / C: screen < 0.30 and no curved gate shape >= 2/6 -> stop hug line and escalate to the owner with the L=8, L=9, scale-1.5 tables and trend plot; screen >= 0.30 -> one more hour.
