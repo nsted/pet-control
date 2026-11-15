@@ -327,6 +327,59 @@ def run_force_c15(root: Path, n_envs: int, sc: float, a: argparse.Namespace) -> 
     return halt(root, "long15_after1", f"hug_long15 hour 1 done (stop reason {reason}); screen {s['success']:.3f}, per shape {json.dumps(s['per_shape'])}; the manager decides")
 
 
+def ceiling_passed(ceiling: str) -> bool:
+    """True once the wall clock is at or past today's ``HH:MM``."""
+    return time.strftime("%H:%M") >= ceiling
+
+
+def fallback_table(root: Path) -> str:
+    """One row per scale15 screen: success, per shape, normal span, hold duty."""
+    rows = []
+    for d in lines(root):
+        if d["phase"].startswith("screen_scale15_h"):
+            s = d["screen"]
+            rows.append(f"  {d['phase']}: success {s['success']:.3f}, span {s.get('normal_span_mean', 0):.0f}, hold_duty {s.get('hold_duty_mean', 0):.3f}, per shape {json.dumps(s.get('per_shape'))}")
+    return "\n".join(rows)
+
+
+def run_fallback(root: Path, n_envs: int, sc: float, a: argparse.Namespace) -> int:
+    """``--fallback-scale15``: identical scale15 hours (h4, h5, ... each warm from the previous hour, from ``scale15_h3``), train + n=30 screen per hour; screen >= 0.55 -> n=100 verdict (DONE);
+    past ``--ceiling`` (wall clock) -> ESCALATE_OWNER with the per-hour table. Resumable: finished train / screen phases are reused."""
+    if phase_line(root, "screen_scale15_h3") is None:
+        log("[fallback] no screen_scale15_h3 line in summary.jsonl")
+        return 1
+    marker = root / "STOP_long15_after1"
+    if marker.exists():
+        dest = Path("data/rl/contended_runs")
+        dest.mkdir(parents=True, exist_ok=True)
+        marker.rename(dest / f"STOP_long15_after1.{time.strftime('%Y%m%d_%H%M%S')}")
+        log(f"[fallback] {marker} moved aside into {dest}")
+    if phase_line(root, "fallback_scale15") is None:
+        record(root, {"phase": "fallback_scale15", "go": True, "why": "expert rule: Step C' was worse (0.033 vs 0.133); identical scale15 continuations from scale15_h3", "ceiling": a.ceiling})
+    hour = 4
+    while True:
+        out, reason = train_hour(root, "scale15", hour, root / f"scale15_h{hour - 1}", n_envs, sc, a.force_go)
+        sline = phase_line(root, f"screen_scale15_h{hour}")
+        if sline is None:
+            s = screen(out, "hug_scale15", a.screen_n, a.eval_workers)
+            fd = hd.family_dump(out)
+            trend = hr.success_trend(hl.read_rows_tolerant(out / "episodes.jsonl"))
+            _, sig = hr.go_rule(s["success"], s["per_shape"], fd["cyl_span_p75"], L)
+            sline = {"phase": f"screen_scale15_h{hour}", "go": True, "signals": sig, "trend": trend, "screen": s, "family": fd, "train_stop_reason": reason, "stage": "hug_scale15"}
+            record(root, sline)
+        s = sline["screen"]
+        if reason is not None:
+            halt(root, reason, f"hug_scale15 hour {hour} check failed ({reason}); screen {s['success']:.3f}, per shape {json.dumps(s['per_shape'])}")
+            return 0
+        if s["success"] >= hc2.SCREEN_DONE:
+            final_verdict(root, out, "scale15", hour, a.final_n, a.eval_workers, a.force_go)
+            return 0
+        if ceiling_passed(a.ceiling):
+            escalate(root, f"fallback scale15: ceiling {a.ceiling} passed after hour {hour} (screen {s['success']:.3f}); owner decides\n{fallback_table(root)}")
+            return 0
+        hour += 1
+
+
 def main() -> int:
     """CLI entry."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -340,9 +393,13 @@ def main() -> int:
     ap.add_argument("--force-go", action="store_true", help="smoke tests only: record the go / no-go values but never stop on them")
     ap.add_argument("--skip-diag", action="store_true", help="smoke tests only: skip Step A and run Step B")
     ap.add_argument("--force-c15", action="store_true", help="expert override: move STOP_scale15_after3 aside and run ONE hour of Step C' (hug_long15, warm from scale15_h3, 20-min SuccessChecks with the run's own start success), n=30 screen, then STOP_long15_after1")
+    ap.add_argument("--fallback-scale15", action="store_true", help="expert fallback: move STOP_long15_after1 aside and loop identical scale15 hours (h4, h5, ... from scale15_h3) with n=30 screens; >= 0.55 -> n=100 verdict, past --ceiling -> ESCALATE_OWNER")
+    ap.add_argument("--ceiling", default="16:41", help="HH:MM wall clock after which the fallback chain stops with ESCALATE_OWNER (default 16:41)")
     a = ap.parse_args()
     root, sc = a.root, a.scale
     root.mkdir(parents=True, exist_ok=True)
+    if a.fallback_scale15:
+        return run_fallback(root, a.n_envs or m2v6.best_n_envs(json.loads(d6.BENCH.read_text())), sc, a)
     if a.force_c15:
         if (root / "STOP_long15_after1").exists():
             log("[force-c15] STOP_long15_after1 exists: remove it to continue")
