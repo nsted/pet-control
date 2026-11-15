@@ -147,7 +147,7 @@ def train_hour(root: Path, series: str, hour: int, init: Path, n_envs: int, sc: 
     elif series == "long15" and force_c15:                                               # --force-c15: base = this run's own first 150 episodes
         checks = hr.StartSuccessChecks(out, hc2.CHECK1_MIN * 60.0 * sc, sc)
     elif series == "long15" or (series == "scale15" and hour >= 2):                      # expert rule: success fall > 0.05 below the previous hour's final / box fall > 0.2
-        checks = hr.SuccessChecks(out, base_success(root, series, hour), hc2.CHECK1_MIN * 60.0 * sc, sc)
+        checks = hr.StartSuccessChecks(out, hc2.CHECK1_MIN * 60.0 * sc, sc) if hour >= 4 else hr.SuccessChecks(out, base_success(root, series, hour), hc2.CHECK1_MIN * 60.0 * sc, sc)    # hours >= 4: the hour-1 final 0.177 is no longer a valid base (levels advanced, training success sits ~0.05-0.10): compare with the run's own start value
     else:
         checks = hc2.Curr2Checks(out, 1e12, sc)                                          # box safety only
     levels = HugFamilyLevelCallback(out)
