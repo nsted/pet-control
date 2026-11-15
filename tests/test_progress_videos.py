@@ -45,7 +45,7 @@ def test_progress_export_loadable_by_gaitpolicy(tmp_path: Path, asym: bool) -> N
     cfg.dr.scale = 0.0
     os.environ["PETCTL_PROGRESS_EXPORT_S"] = "0.5"
     try:
-        out = train(cfg, steps=1024, n_envs=1, out=tmp_path / "r", asymmetric=asym)
+        out = train(cfg, steps=1024, n_envs=1, out=tmp_path / "r", asymmetric=asym, video=False)   # never render into docs/media
     finally:
         os.environ.pop("PETCTL_PROGRESS_EXPORT_S")
     prog = json.loads((out / "progress.json").read_text())

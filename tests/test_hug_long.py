@@ -57,7 +57,7 @@ def test_stage_hug_long_01_as_ordered() -> None:
     assert tp["bus_peak_penalty"] == 2.0 and tp["bus_penalty"] == 1.0 and "hug_buffer_p" not in tp                  # 30 % buffer starts = the default
     assert st.gate.dr_scale == 0.6 and st.gate.episode_s == 20.0 and st.gate.task_params["target_heldout"] == 1.0 and st.gate.task_params["hug_buffer"] == 0.0
     assert get_stage("m2_hug7").task_params["hold_weight"] == 3.0 and get_stage("m2_hug7").task_params["shape_phase"] == 1.0           # older stages untouched
-    assert [n for n, s in STAGES.items() if s.action_mode == "hold"] == ["m2_hug7", "hug_long_01", "hug_curr_01"]
+    assert [n for n, s in STAGES.items() if s.action_mode == "hold"] == ["m2_hug7", "hug_long_01", "hug_curr_01", "hug_curr_02"]
 
 
 def test_constant_learning_rate(monkeypatch: pytest.MonkeyPatch) -> None:

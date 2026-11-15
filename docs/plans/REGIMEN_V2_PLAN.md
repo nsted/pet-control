@@ -304,9 +304,13 @@ restart from best checkpoint with identical hyper-parameters; current budget vio
 
 **Cost controls (owner directive 2026-11-14: compute is a fanless M4 MacBook Air, 4P+6E cores, thermally throttled):**
 - **Every run has a wall budget of 60 min including its gate.** Executors measure steps/s over the first 2 min, set `steps = 0.75 x budget x steps/s`
-  (cap 2.5M), and if the projected wall exceeds the budget they cut steps or episode length, never evidence (seeds, held-out n, ablations, captions).
+  (cap 2.5M flat; hug stages: 0.75 x wall x steps/s, cap 4M), and if the projected wall exceeds the budget they cut steps or episode length, never evidence (seeds, held-out n, ablations, captions).
 - **Pilot first**: 10-15 min (<= 600k steps), DR 0.3, with an explicit go/no-go signal (flat: rolling success >= 0.15 and median progress >= 0.3 m;
   hug: >= 5% of episodes with run >= 3 and span >= 90 deg and at least one wrap tick; holding: hold_duty > 0.2 by the second hour-run). No long run without a pilot.
+- **Hug-run stop checks are TREND rules, not fixed thresholds on a level the policy has not reached** (2026-11-14, hug_curr_02): at 20 min stop ONLY if ALL of: curved-family (cylinders + rounded
+  boxes) success < 0.03 over its last 150 episodes, it has not risen vs the 150 before, and the cylinder peak-span p75 is not >= 5 deg above its value at the start (106 deg); no 40-min stop; a
+  separate safety stop if the box success falls by more than 0.2 from its level at the start. At the end: n=30 screen >= 0.55 -> n=100 verdict; else a family advanced a level or curved success
+  rising -> one more hour; else design change. Every check records per family: level, success, wrap-90 rate, contact rate, span p50/p75, joint bend p50/p75.
 - **Screening gates n = 30** (robust DR 0.6) during iteration: go if the point estimate >= threshold - 0.15 (Wilson 95% half-width ~0.17 at n = 30);
   **n = 100 held-out only for stage verdicts.**
 - Long stages are chained as 60-min continuations with identical hyper-parameters, each with its own screen; one job at a time; stage budgets in sec 4.2
@@ -352,5 +356,5 @@ Risks (R):
 Total: ~3.5 weeks wall-clock, one job at a time; Fable effort concentrated at M1/M2 decisions, every gate verdict, and failed iterations.
 
 
-## Owner standing rule: videos
-Only the best video of each run (selected by the gate's best episode), never per-seed galleries or periodic progress clips, max 10 videos per hour overall, unless the owner requests more. Captions per the video-label rule remain. Enforced by a render-budget guard in `petctl/rl/video.py` (log of render times; `PETCTL_VIDEO_FORCE=1` for explicit owner requests).
+## Owner standing rule: videos (revised 2026-11-14)
+Supersedes the earlier video rule. Every 30 minutes, one captioned progress video of the best run so far for each stage under way, until that stage completes (several stages under way = several videos per 30 min), plus one best video at stage end. No per-hour cap. Captions state only facts measured on the recorded episode. Implemented by `scripts/rl/progress_videos.py` and a periodic `progress_policy.npz` export in the training callback.

@@ -313,6 +313,18 @@ STAGES["hug_curr_01"] = dataclasses.replace(
 HUG_CURR_TASKS = ("hug_curr_01",)
 
 
+# ---------------------------------------------------------------- hug_curr_02 (per-family success curriculum, wider cylinder training range; driver scripts/rl/hug_curr2_driver.py)
+# hug_curr_01 with ``hug_curriculum`` 2: separate levels per shape family (cylinders / rounded boxes C0 span 100 run 4 hold 1.0 s -> C1 125 / 4 / 1.5 s -> L2 150 / 4 / 2 s -> L3 = gate; boxes L1 120 / 3 / 1.5 s ->
+# L2 -> L3), each family advancing at rolling success >= 0.30 over its last 100 episodes. ``shape_mix`` 1: shape mix cylinders 50 % / boxes 20 % / rounded boxes 30 %, cylinder radius 1.5-9 cm,
+# exclusion margin 0.5 cm around the gate shapes (training-distribution fix: r3 was outside the trained range). No reward change; the gate (copied from hug_long_01) always scores L3.
+STAGES["hug_curr_02"] = dataclasses.replace(
+    STAGES["hug_long_01"], name="hug_curr_02", task_params={**_HUG_LONG_01, "hug_curriculum": 2.0, "shape_mix": 1.0},
+    description="Regimen v2 per-family hug success curriculum (L=8): hug_curr_01 continued; per shape family levels (cyl / rbox C0 100 deg, run 4, 1.0 s -> C1 125 / 4 / 1.5 s -> L2 150 / 4 / 2 s -> L3 gate; "
+    "box L1 120 / 3 / 1.5 s -> L2 -> L3), advance at rolling success 0.30 over the family's last 100 episodes; shape mix cyl 0.50 / box 0.20 / rounded 0.30, cylinder r 1.5-9 cm, 0.5 cm exclusion margin "
+    "around the gate shapes; hold reward / bonus keyed to the family's level; gate always scores L3.")
+HUG_CURR2_TASKS = ("hug_curr_02",)
+
+
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:
     """The stage ``name`` with its ``action_mode`` replaced (``abs`` | ``hold`` | ``delta``); None keeps the stage's own."""
     stage = get_stage(name)

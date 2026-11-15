@@ -140,7 +140,8 @@ def _row(kind: int, succ: float, reach: bool = True, s1: float = 0.0, h1: float 
 def test_per_shape_breakdown_and_checks(tmp_path) -> None:
     rows = [_row(0, 1.0)] * 10 + [_row(1, 0.0)] * 10 + [_row(2, 0.0, reach=False)] * 5
     bd = hc.per_shape_breakdown(rows)
-    assert bd["cylinders"] == {"n": 10.0, "reach_rate": 1.0, "level_success": 1.0} and bd["boxes"]["level_success"] == 0.0 and bd["rounded"] == {"n": 5.0, "reach_rate": 0.0, "level_success": 0.0}
+    assert bd["cylinders"] == {"n": 10.0, "wrap90_rate": 1.0, "reach_rate": 1.0, "contact_rate": 0.0, "level_success": 1.0} and bd["boxes"]["level_success"] == 0.0     # reach_rate = old-name alias
+    assert bd["rounded"] == {"n": 5.0, "wrap90_rate": 0.0, "reach_rate": 0.0, "contact_rate": 0.0, "level_success": 0.0}
     good = [_row(i % 3, 0.2, s1=1.0 if i % 5 == 0 else 0.0) for i in range(300)]                  # success_l1 0.20
     ok, sig = hc.check1(good, 1)
     assert ok and sig["success_l1"] == pytest.approx(0.2) and sig["h_wrap"] == pytest.approx(0.8) and set(sig["per_shape"]) == {"cylinders", "boxes", "rounded"}

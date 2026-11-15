@@ -70,6 +70,9 @@ def reached_state(r: dict[str, Any]) -> bool:
     return r.get("hug_modules", 0.0) >= P2_RUN and r.get("normal_span_deg", 0.0) >= P2_SPAN_DEG
 
 
+wrap90 = reached_state                # honest name: this is "peak run >= 3 AND peak span >= 90 deg" (a wrap-90 state), not "reaching" (every shape is touched in ~100 % of the episodes)
+
+
 def p2_signals(rows: list[dict[str, Any]], window: int = P2_WINDOW) -> dict[str, Any]:
     """Hug pilot signals over the last ``window`` training episodes: ``frac_reach`` (run >= 3 and span >= 90), among those ``frac_hold`` (state kept >= 2 s) and the tick-weighted ``h_wrap``
     (mean h over wrap ticks; None without wrap ticks), plus the mean h of all ticks."""

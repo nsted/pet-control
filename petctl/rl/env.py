@@ -17,7 +17,7 @@ from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
 from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot, hold_value, next_target
-from petctl.rl.target_shapes import heldout_index, heldout_shape, sample_training_shape
+from petctl.rl.target_shapes import V2_SAMPLER, heldout_index, heldout_shape, sample_training_shape
 from petctl.rl.tasks import TASKS
 from petctl.sim.bus import BusClamp
 from petctl.sim.model_builder import BuildParams, PetSim
@@ -70,6 +70,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.bus: BusClamp | None = None
         self._start_buf: HugStartBuffer | None = None
         self._start_buf_path: str | None = None
+        self._hug_fam_levels: dict[str, int] = {}                           # per-family ladder indices (hug_curriculum 2; empty = every family at its top level = the gate definition)
         self._hug_level = int(os.environ.get("PETCTL_HUG_LEVEL", "3"))       # hug success-curriculum level (training only; the task knob ``hug_curriculum`` switches it on; default 3 = the gate definition)
 
     # ------------------------------------------------------------------ hug start buffer (in memory; merged by the training callback once per rollout)
@@ -94,6 +95,14 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
     def set_hug_level(self, level: int) -> None:
         """Success-curriculum level (1-3) for the episodes that start after this call (broadcast by ``HugLevelCallback`` once per rollout)."""
         self._hug_level = min(3, max(1, int(level)))
+
+    def set_hug_family_levels(self, levels: dict[str, int]) -> None:
+        """Per-family success-curriculum ladder indices (stage hug_curr_02) for the episodes that start after this call (broadcast by ``HugFamilyLevelCallback``)."""
+        self._hug_fam_levels = {str(k): int(v) for k, v in levels.items()}
+
+    def get_hug_family_levels(self) -> dict[str, int]:
+        """The per-family ladder indices that the next episode starts at."""
+        return dict(self._hug_fam_levels)
 
     def get_hug_level(self) -> int:
         """The success-curriculum level that the next episode starts at."""
@@ -207,6 +216,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.task = TASKS[self.cfg.task](self.cfg)
         if hasattr(self.task, "hug_level"):
             self.task.hug_level = self._hug_level                                   # type: ignore[attr-defined]
+        if hasattr(self.task, "hug_family_levels"):
+            self.task.hug_family_levels = dict(self._hug_fam_levels)                # type: ignore[attr-defined]
         shape = None
         pick = getattr(self.task, "pick_buffer_start", None)
         if pick is not None:
@@ -219,7 +230,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         elif self.task.param("target_family", 0.0) > 0.0:                                 # shape-agnostic target (petctl.rl.target_shapes); drawn before the layout, which sizes the start gaps by it
             hi = heldout_index(seed) if (seed is not None and self.task.param("target_heldout", 0.0) > 0.0) else None
             shape = (heldout_shape(hi, int(seed), self.cfg.n_modules) if hi is not None
-                     else sample_training_shape(self._rng, float(self.task.param("shape_phase", 2.0)), self.cfg.n_modules))  # type: ignore[arg-type]
+                     else sample_training_shape(self._rng, float(self.task.param("shape_phase", 2.0)), self.cfg.n_modules,
+                                                **(V2_SAMPLER if self.task.param("shape_mix", 0.0) > 0.0 else {})))  # type: ignore[arg-type]
             self.task.target_shape = shape  # type: ignore[attr-defined]
         self.target_shape = shape
         walls, goal_xy = self._layout(seed)                                           # static geometry (walls) must exist before the sim is built

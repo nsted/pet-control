@@ -28,12 +28,14 @@ SHAPE_NAMES = ("cylinders", "boxes", "rounded")
 
 
 def per_shape_breakdown(rows: list[dict[str, Any]], window: int = CHECK1_WINDOW) -> dict[str, dict[str, float]]:
-    """Per shape family (cylinders / boxes / rounded boxes) over the last ``window`` rows: ``n``, ``reach_rate`` (run >= 3 and span >= 90 deg) and ``level_success`` (the row's own-level success)."""
+    """Per shape family (cylinders / boxes / rounded boxes) over the last ``window`` rows: ``n``, ``wrap90_rate`` (run >= 3 and span >= 90 deg; alias ``reach_rate``, the old mislabelled name), ``contact_rate`` (any module touched the object) and ``level_success`` (the row's own-level success)."""
     out: dict[str, dict[str, float]] = {}
     last = rows[-window:]
     for i, name in enumerate(SHAPE_NAMES):
         r = [x for x in last if int(x.get("shape_kind", -1)) == i]
-        out[name] = {"n": float(len(r)), "reach_rate": float(np.mean([m2v7.reached_state(x) for x in r])) if r else 0.0,
+        w90 = float(np.mean([m2v7.reached_state(x) for x in r])) if r else 0.0
+        out[name] = {"n": float(len(r)), "wrap90_rate": w90, "reach_rate": w90,        # ``reach_rate`` = old key (alias): run >= 3 AND span >= 90 deg, NOT contact
+                     "contact_rate": float(np.mean([float(x.get("contact", 0.0)) for x in r])) if r else 0.0,
                      "level_success": float(np.mean([float(x.get("success", 0.0)) for x in r])) if r else 0.0}
     return out
 

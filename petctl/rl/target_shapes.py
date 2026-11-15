@@ -27,6 +27,12 @@ CYL_R = {1: (0.04, 0.08), 2: (0.02, 0.12)}      # radius range (m) per phase
 BOX_W = {1: (0.06, 0.10), 2: (0.04, 0.16)}      # full width / depth range (m) per phase
 MAX_ASPECT = 3.0
 RC_RANGE = (0.01, 0.03)
+# hug_curr_02 training distribution (task knob ``shape_mix`` > 0; training only, gate sets unchanged): cylinders 50 %, boxes 20 %, rounded boxes 30 %; cylinder radius 1.5-9 cm for every phase
+# (r3 of the L=8 gate lies INSIDE the range now: with the 1 cm exclusion margin the thinnest trained cylinder was r4); exclusion margin 0.5 cm around the held-out sizes.
+P_CYL_V2, P_BOX_V2 = 0.50, 0.20
+CYL_R_V2 = (0.015, 0.09)
+MARGIN_V2_M = 0.005
+V2_SAMPLER = {"mix": (P_CYL_V2, P_BOX_V2), "cyl_r": CYL_R_V2, "margin": MARGIN_V2_M}
 
 # (name, kind, full dims (m) or radius, corner radius)
 HELD_OUT: tuple[tuple[str, str, tuple[float, ...], float], ...] = (
@@ -90,23 +96,26 @@ def heldout_group(seed: int, n_modules: int = 10) -> str:
     return "other" if i is None else held_out_names(n_modules)[i]
 
 
-def near_heldout(shape: TargetShape, n_modules: int = 10) -> bool:
-    """True if ``shape`` is within ``MARGIN_M`` of a held-out shape of the length's set, same kind, in every size dimension (such shapes are never trained on)."""
+def near_heldout(shape: TargetShape, n_modules: int = 10, margin: float = MARGIN_M) -> bool:
+    """True if ``shape`` is within ``margin`` (default ``MARGIN_M``) of a held-out shape of the length's set, same kind, in every size dimension (such shapes are never trained on)."""
     for _, kind, dims, rc in held_out_set(n_modules):
         if kind != shape.kind:
             continue
         if kind == "cyl":
-            if abs(shape.a - dims[0]) < MARGIN_M:
+            if abs(shape.a - dims[0]) < margin:
                 return True
             continue
         mine, theirs = sorted((2 * shape.a, 2 * shape.b)), sorted(dims)
-        if all(abs(x - y) < MARGIN_M for x, y in zip(mine, theirs)) and (kind == "box" or abs(shape.rc - rc) < MARGIN_M):
+        if all(abs(x - y) < margin for x, y in zip(mine, theirs)) and (kind == "box" or abs(shape.rc - rc) < margin):
             return True
     return False
 
 
-def sample_training_shape(rng: np.random.Generator, phase: float = 2, n_modules: int = 10) -> TargetShape:
-    """One training shape of size-curriculum ``phase`` (1 | 2; 1 < phase < 2: the full ranges with probability phase - 1, else phase 1), never within the margins of the length's held-out set."""
+def sample_training_shape(rng: np.random.Generator, phase: float = 2, n_modules: int = 10, *, mix: tuple[float, float] | None = None,
+                          cyl_r: tuple[float, float] | None = None, margin: float = MARGIN_M) -> TargetShape:
+    """One training shape of size-curriculum ``phase`` (1 | 2; 1 < phase < 2: the full ranges with probability phase - 1, else phase 1), never within the margins of the length's held-out set.
+    Keyword overrides (hug_curr_02, ``V2_SAMPLER``): ``mix`` = (P cylinder, P box) (rest rounded boxes), ``cyl_r`` = cylinder radius range replacing the phase ranges, ``margin`` = exclusion margin."""
+    p_cyl, p_box = mix if mix is not None else (P_CYL, P_BOX)
     u = float(rng.random())                                  # the kind is drawn once (held-out rejection only redraws size / yaw, so the 50/35/15 mix is exact)
     if phase <= 1:
         ph = 1
@@ -116,17 +125,17 @@ def sample_training_shape(rng: np.random.Generator, phase: float = 2, n_modules:
         ph = 2 if float(rng.random()) < phase - 1.0 else 1  # one draw per shape: the size range
     while True:
         yaw = float(rng.uniform(0.0, math.pi))
-        if u < P_CYL:
-            shape = TargetShape("cyl", float(rng.uniform(*CYL_R[ph])), yaw=yaw)
+        if u < p_cyl:
+            shape = TargetShape("cyl", float(rng.uniform(*(cyl_r or CYL_R[ph]))), yaw=yaw)
         else:
             while True:
                 w, d = (float(rng.uniform(*BOX_W[ph])) for _ in range(2))
                 if max(w, d) / min(w, d) <= MAX_ASPECT:
                     break
-            if u < P_CYL + P_BOX:
+            if u < p_cyl + p_box:
                 shape = TargetShape("box", w / 2, d / 2, 0.0, yaw)
             else:
                 rc = min(float(rng.uniform(*RC_RANGE)), 0.9 * min(w, d) / 2)
                 shape = TargetShape("rbox", w / 2, d / 2, rc, yaw)
-        if not near_heldout(shape, n_modules):
+        if not near_heldout(shape, n_modules, margin):
             return shape

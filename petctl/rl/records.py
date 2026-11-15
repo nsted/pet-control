@@ -29,7 +29,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from petctl.rl.hug_buffer import CAPACITY as BUFFER_CAPACITY
 from petctl.rl.hug_buffer import HugStartBuffer
-from petctl.rl.hug_levels import LEVEL_FILE, LevelState
+from petctl.rl.hug_levels import FAMILIES, LEVEL_FILE, FamilyLevelState, LevelState
 from petctl.rl.policy import export_live_policy, export_policy
 from petctl.rl.video import SESSIONS_DIR, finalize_session
 
@@ -287,6 +287,45 @@ class HugLevelCallback(BaseCallback):
             if self.state.add(int(m["hug_level"]), float(m.get("success", 0.0)), int(self.num_timesteps), time.time() - self._t0):
                 self.state.save(self.path)
                 print(f"[hug-level] advanced to level {self.state.level} at {self.num_timesteps} steps (rolling {self.state.history[-1]['rolling']:.3f})", flush=True)
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self._broadcast()
+        self.state.save(self.path)
+
+
+class HugFamilyLevelCallback(BaseCallback):
+    """Per-family hug success curriculum (``petctl.rl.hug_levels.FamilyLevelState``, stage hug_curr_02): reads each finished episode's ``shape_kind`` / ``hug_level`` / ``success``, advances the family's
+    level at rolling success >= 0.30 over its last 100 episodes (persisted in ``<out>/hug_level.json`` at once) and broadcasts the per-family levels to every env worker once per rollout and at
+    training start (resumes from the file)."""
+
+    def __init__(self, out: Path | str) -> None:
+        """``out``: the run directory."""
+        super().__init__()
+        self.path = Path(out) / LEVEL_FILE
+        self.state = FamilyLevelState.load(self.path)
+        self._sent: dict[str, int] | None = None
+
+    def _broadcast(self, force: bool = False) -> None:
+        if force or self.state.levels != self._sent:
+            self.training_env.env_method("set_hug_family_levels", dict(self.state.levels))
+            self._sent = dict(self.state.levels)
+
+    def _on_training_start(self) -> None:
+        self._t0 = time.time()
+        self.state.save(self.path)
+        self._broadcast(True)
+        print(f"[hug-level] start at levels {self.state.levels}", flush=True)
+
+    def _on_step(self) -> bool:
+        for done, info in zip(self.locals["dones"], self.locals["infos"]):
+            m = info.get("metrics")
+            if not done or m is None or "hug_level" not in m or not 0 <= int(m.get("shape_kind", -1)) < len(FAMILIES):
+                continue
+            fam = FAMILIES[int(m["shape_kind"])]
+            if self.state.add(fam, int(m["hug_level"]), float(m.get("success", 0.0)), int(self.num_timesteps), time.time() - self._t0):
+                self.state.save(self.path)
+                print(f"[hug-level] {fam} advanced to {self.state.history[-1]['level']} at {self.num_timesteps} steps (rolling {self.state.history[-1]['rolling']:.3f})", flush=True)
         return True
 
     def _on_rollout_end(self) -> None:

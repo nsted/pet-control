@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from petctl.rl.capacitive import PostProbe, PostRead
+from petctl.rl.hug_levels import LADDERS, LEVEL_SPECS
 from petctl.sim.model_builder import PetSim
 from petctl.sim.shapes import shape_of, span_deg
 
@@ -192,10 +193,17 @@ class HugMixin:
         self._cov_h = self._hug.h                                # the coverage term always uses the level-3 (gate) run threshold
         self._hug_levels: dict[int, HugTracker] = {}
         self._hug_level = 3
-        if self.param("hug_curriculum", 0.0) > 0.0:             # training-only success curriculum: one tracker per level, the current level's drives reward / termination (``self._hug``)
+        if 0.0 < self.param("hug_curriculum", 0.0) < 1.5:      # training-only success curriculum: one tracker per level, the current level's drives reward / termination (``self._hug``)
             self._hug_level = min(3, max(1, int(getattr(self, "hug_level", 3))))
             self._hug_levels = {k: (self._hug if k == 3 else HugTracker(n, hz, hold, run, span)) for k, (span, run, hold) in HUG_LEVELS.items()}
             self._hug = self._hug_levels[self._hug_level]
+        if self.param("hug_curriculum", 0.0) > 1.5:             # per-family curriculum (hug_curr_02): the trackers of the episode's shape family ladder (keyed by level name), the family's current level drives
+            fam = getattr(getattr(self, "target_shape", None), "kind", "box")
+            lad = LADDERS[fam]
+            self._hug_level = min(len(lad) - 1, max(0, int(getattr(self, "hug_family_levels", {}).get(fam, len(lad) - 1))))     # unset (video replays, gates): the top level = the gate definition
+            self._hug_levels = {k: (self._hug if k == "l3" else HugTracker(n, hz, LEVEL_SPECS[k][2], LEVEL_SPECS[k][1], LEVEL_SPECS[k][0])) for k in lad}
+            self._hug = self._hug_levels[lad[self._hug_level]]
+        self._bend_peak_span, self._bend_run = -1.0, 0.0
         self._hug_peak = 0
         self._hug_prev_dist = self._hug_mean_dist(sim) if self._hug_probe is not None else 0.0
         self.hug_success = False
@@ -216,6 +224,10 @@ class HugMixin:
         for t in self._hug_levels.values():
             if t is not self._hug:
                 t.update(read, centres, post)
+        if self._hug_levels and st.span_deg > self._bend_peak_span:    # curriculum diagnostics: total joint bend inside the hugging run at the peak-span tick
+            self._bend_peak_span = st.span_deg
+            q = sim.joint_pos()
+            self._bend_run = float(np.rad2deg(sum(abs(q[k - 1]) for k in range(st.run_start + 1, st.run_start + st.hug_modules) if 1 <= k <= len(q))))
         dist = self._hug_mean_dist(sim)
         terms["approach"] = P("approach_weight", DEFAULT_WEIGHTS["approach_weight"]) * (self._hug_prev_dist - dist)
         self._hug_prev_dist = dist
@@ -249,7 +261,8 @@ class HugMixin:
     def hug_metrics(self) -> dict[str, float]:
         """Episode-level hug numbers (ground truth) for the gate / eval."""
         h, st = self._hug, self._hug.last
-        extra = {"hug_level": float(self._hug_level), **{f"success_l{k}": float(t.held) for k, t in self._hug_levels.items()}} if self._hug_levels else {}
+        extra = {"hug_level": float(self._hug_level), **{(f"success_l{k}" if isinstance(k, int) else f"success_{k}"): float(t.held) for k, t in self._hug_levels.items()},
+                 "bend_run_deg": self._bend_run} if self._hug_levels else {}
         return {**extra, "hug_success": float(self.hug_success), "hug_modules": float(h.peak_modules), "hug_modules_now": float(0 if st is None else st.hug_modules),
                 "hug_threshold": float(h.h), "hold_duty": h.peak_duty, "encircled": float(h.ever_encircled), "wrap_deg": h.peak_wrap_deg, "normal_span_deg": h.peak_span_deg, "post_force_n": h.peak_force_n, "coverage_frac": float(0 if st is None else st.coverage),
                 "t_contact_s": h.t_contact, "t_hug_s": h.t_hug, "t_hug_start_s": h.t_hug_start}

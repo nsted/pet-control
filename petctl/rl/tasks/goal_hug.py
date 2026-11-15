@@ -41,6 +41,7 @@ class GoalHug(HugMixin, GoalObstacles):
     start_buffer: HugStartBuffer | None = None   # the env's in-memory buffer (set by the env before ``pick_buffer_start``)
     _stored = False
     _stalled = False
+    hug_family_levels: dict = {}    # per-family ladder indices of the success curriculum (``hug_curriculum`` 2; set by the env before ``reset``)
     hug_level = 3                   # training success curriculum level of this episode (task knob ``hug_curriculum``; set by the env before ``reset``)
     target_shape = None             # set by the env before ``layout`` when ``target_family`` > 0 (petctl.rl.target_shapes)
 
@@ -187,4 +188,7 @@ class GoalHug(HugMixin, GoalObstacles):
             out.update({"buffer_start": float(self._bstart is not None), "buffer_stored": float(self._stored), "stalled": float(self._stalled)})
         if self._hug_levels:                                                                          # success curriculum diagnostics (absent unless ``hug_curriculum``)
             out["shape_kind"] = float(SHAPE_KINDS.index(self.target_shape.kind)) if self.target_shape is not None else -1.0
+            sh = self.target_shape
+            out.update({"shape_a": float(sh.a) if sh is not None else -1.0, "shape_b": float(sh.b) if sh is not None else -1.0, "shape_rc": float(sh.rc) if sh is not None else -1.0,
+                        "contact": float(not np.isnan(self._hug.t_contact))})
         return out

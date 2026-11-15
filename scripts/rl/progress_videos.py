@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from petctl.rl import video
+from petctl.rl.hug_levels import level_caption
 
 DATA = Path("data/rl")
 CANDIDATE_SEEDS = [10_000 + i for i in range(6)]
@@ -108,7 +109,7 @@ def run_dirs(data: Path) -> list[tuple[Path, Path]]:
 
 def driver_alive() -> bool:
     """True when a Regimen driver process is running."""
-    return subprocess.run(["pgrep", "-f", r"scripts/rl/(m2v[0-9a-z_]*|hug_long_|hug_curr_)driver"], capture_output=True).returncode == 0
+    return subprocess.run(["pgrep", "-f", r"scripts/rl/(m2v[0-9a-z_]*|hug_long_|hug_curr[0-9]*_)driver"], capture_output=True).returncode == 0
 
 
 def root_complete(root: Path, alive: bool) -> bool:
@@ -165,6 +166,18 @@ def pick_seed(run: Path, policy_file: str, distance: float) -> tuple[int, bool]:
     return CANDIDATE_SEEDS[0], False
 
 
+def shape_label(m: dict[str, float]) -> str:
+    """Factual shape label of an episode from its recorded metrics (``shape_kind`` 0 cyl / 1 box / 2 rbox, size params ``shape_a`` / ``shape_b`` / ``shape_rc`` in m)."""
+    k, a, b, rc = int(m.get("shape_kind", -1)), m.get("shape_a", 0.0) * 100, m.get("shape_b", 0.0) * 100, m.get("shape_rc", 0.0) * 100
+    if k == 0:
+        return f"shape cylinder r {a:.1f} cm"
+    if k == 1:
+        return f"shape box {2 * a:.1f}x{2 * b:.1f} cm"
+    if k == 2:
+        return f"shape rounded box {2 * a:.1f}x{2 * b:.1f} cm rc {rc:.1f}"
+    return "shape unknown"
+
+
 def episode_note(metrics: dict[str, float], reached: bool, seed: int, found: bool, family: str) -> str:
     """Final-hold caption built ONLY from the recorded episode's own metrics."""
     ok = metrics.get("success", 0.0) >= 0.5
@@ -172,6 +185,10 @@ def episode_note(metrics: dict[str, float], reached: bool, seed: int, found: boo
     if "final_dist" in metrics:
         bits.append(f"final dist {metrics['final_dist']:.2f} m")
     if family == "hug":
+        if "shape_kind" in metrics:
+            bits.append(shape_label(metrics))
+        if "success_l3" in metrics:
+            bits.append("scored at the gate definition L3")
         if "hug_modules" in metrics:
             bits.append(f"hug modules {metrics['hug_modules']:.0f}")
         if "wrap_deg" in metrics:
@@ -187,7 +204,7 @@ def render_stage(st: dict[str, Any], family: str, out_dir: Path) -> Path:
     cfg = _json(run / "config.json")
     stage = b["stage"] or b["root"].name
     label = (f"Regimen v2 PROGRESS - {stage} {run.name} (L={cfg.get('n_modules', '?')}) - best run so far: success {b['rolling_success']:.2f} "
-             f"at {b['steps']} steps, {b['wall_min']:.0f} min into training" + ("" if found else " - no successful episode yet"))
+             f"at {b['steps']} steps, {b['wall_min']:.0f} min into training" + (f" - training {level_caption(run)}" if level_caption(run) else "") + ("" if found else " - no successful episode yet"))
     out = out_dir / f"progress_{b['root'].name}_{family}_{run.name}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     m = video.record_video(run, out, pf, seed=seed, distance=CAMERA_M[family], label=label,
                            final_note=lambda met, reached: episode_note(met, reached, seed, found, family))
