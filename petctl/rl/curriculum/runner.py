@@ -54,6 +54,7 @@ def build_config(stage: Stage, overrides: dict[str, float]) -> EnvConfig:
     cfg.action_mode = stage.action_mode
     if stage.action_scale is not None:
         cfg.action_scale_rad = stage.action_scale
+    cfg.action_obs_scale = stage.action_obs_scale
     if stage.action_ema is not None:
         cfg.action_ema = stage.action_ema
     cfg.task_params = {**stage.task_params, **{k: v for k, v in overrides.items() if k in stage.task_params or k not in ("ent_coef", "dr_scale", "steps", "n_modules")}}

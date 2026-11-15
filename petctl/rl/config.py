@@ -83,6 +83,7 @@ class EnvConfig:
     episode_s: float = 15.0
     history: int = 4                  # past actions in the observation (delay ~2 policy steps at 20 Hz)
     action_scale_rad: float = 0.5     # action in [-1,1] -> joint-angle offset about the default pose
+    action_obs_scale: float = 1.0     # the action history of the observation holds action * this (1.0 = the raw action); a policy rescaled for a wider action_scale_rad keeps its input units by setting it to the scale ratio
     action_ema: float = 0.6           # target = ema*prev_target + (1-ema)*new (1.0 = frozen)
     max_target_step_rad: float = 0.35 # per-policy-step slew limit (matches the deployed protective ramp, 6 rad/s at 20 Hz = 0.3)
     action_mode: str = "abs"          # 'abs': target = EMA of action_scale_rad * a; 'delta': target += DELTA_STEP_RAD * a (clipped to +-DELTA_LIMIT_RAD, no EMA) and the target vector is observed; 'hold': n_joints + 1 outputs, the extra one sets the EMA coefficient 0.3 + 0.7 h (learned hold channel), the target vector is observed

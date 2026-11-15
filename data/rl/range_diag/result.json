@@ -1,0 +1,46 @@
+{
+ "run": "data/rl/hug_curr4/hug_curr_02",
+ "episodes_per_shape": 20,
+ "dr": 0.6,
+ "episode_s": 20.0,
+ "per_shape": {
+  "cyl_r3": {
+   "episodes": 20,
+   "episodes_with_wrap_attempt": 20,
+   "wrap_attempt_ticks": 4095.0,
+   "saturated_frac": 0.3914326414326414,
+   "sat_any_frac": 0.8007326007326008,
+   "sat_all_frac": 0.050793650793650794,
+   "target_gap_run": 0.13856470776463425,
+   "max_abs_target_run": 0.9999999999925593,
+   "success": 0.0,
+   "normal_span_deg_median": 135.6610621900273
+  },
+  "cyl_r7": {
+   "episodes": 20,
+   "episodes_with_wrap_attempt": 20,
+   "wrap_attempt_ticks": 4811.0,
+   "saturated_frac": 0.21243677683087395,
+   "sat_any_frac": 0.6169195593431719,
+   "sat_all_frac": 0.007690708792350863,
+   "target_gap_run": 0.18807981418138126,
+   "max_abs_target_run": 0.9999996363350787,
+   "success": 0.0,
+   "normal_span_deg_median": 119.41363732058105
+  }
+ },
+ "pooled": {
+  "episodes": 40,
+  "episodes_with_wrap_attempt": 40,
+  "wrap_attempt_ticks": 8906.0,
+  "saturated_frac": 0.29473950145969025,
+  "sat_any_frac": 0.7014372333258477,
+  "sat_all_frac": 0.027509544127554457,
+  "target_gap_run": 0.16531265038432547,
+  "max_abs_target_run": 0.9999999999925593
+ },
+ "decision": "B",
+ "reason": "saturated fraction 0.295 >= 0.2",
+ "decision_metric": "saturated_frac = mean over wrap-attempt ticks (hug run >= 3) of the fraction of in-run joints with |action| >= 0.95, pooled over both shapes",
+ "time": "2026-11-15 11:06:16"
+}

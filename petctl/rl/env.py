@@ -25,6 +25,7 @@ from petctl.sim.shapes import shape_of
 from petctl.sim.terrain import START_RADIUS_M, generate_terrain
 
 SETTLE_S = 0.75
+RANGE_RUN, SAT_ACTION = 3, 0.95         # action-range diagnostic: wrap-attempt = hug run >= 3 modules; a joint action is saturated at |a| >= 0.95
 STATE_RUN, STATE_SPAN_DEG = 3, 90.0     # hold-mode diagnostics: the hug pilot state (run >= 3 modules and normal span >= 90 deg)
 BUS_MEAN_WINDOW_S = 2.0                # running-mean window of the bus-current penalty (plan sec 5.5)
 
@@ -309,6 +310,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._h_sum = self._h_wrap_sum = self._state_run = self._state_best = 0
         self._h_wrap_n = 0
         self._h_wrap1_sum, self._h_wrap1_n = 0.0, 0
+        self._range_on = hasattr(self.task, "_hug") and self.task.param("range_diag", 0.0) > 0.0         # task knob ``range_diag``: log the action-range metrics (off: older stages' logs unchanged)
+        self._range = {"n": 0.0, "any": 0.0, "all": 0.0, "frac": 0.0, "gap": 0.0, "tmax": 0.0}      # action-range diagnostic sums over wrap-attempt ticks (hug run >= 3)
         self._prev_action = np.zeros(self.cfg.n_joints)
         self._t = 0
         snap = self._snapshot()
@@ -329,6 +332,34 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         in_state = last is not None and last.hug_modules >= STATE_RUN and last.span_deg >= STATE_SPAN_DEG
         self._state_run = self._state_run + 1 if in_state else 0
         self._state_best = max(self._state_best, self._state_run)
+
+    def _range_step(self, a: np.ndarray) -> None:
+        """Action-range bookkeeping for this tick (hug tasks): on a wrap-attempt tick (hug run >= ``RANGE_RUN`` modules) look at the joints INSIDE the run: whether their action is saturated
+        (|a| >= ``SAT_ACTION``), the gap between each one's commanded target and its measured angle, and the largest |target|."""
+        last = getattr(getattr(self.task, "_hug", None), "last", None)
+        if last is None or last.hug_modules < RANGE_RUN:
+            return
+        nj = self.cfg.n_joints
+        idx = [k - 1 for k in range(last.run_start + 1, last.run_start + last.hug_modules) if 1 <= k <= nj]
+        if not idx:
+            return
+        sat = np.abs(np.asarray(a, float)[idx]) >= SAT_ACTION
+        r = self._range
+        r["n"] += 1.0
+        r["any"] += float(sat.any())
+        r["all"] += float(sat.all())
+        r["frac"] += float(sat.mean())
+        r["gap"] += float(np.mean(np.abs(self._tgt[idx] - self.sim.joint_pos()[idx])))
+        r["tmax"] = max(r["tmax"], float(np.max(np.abs(self._tgt[idx]))))
+
+    def _range_metrics(self) -> dict[str, float]:
+        """Episode metrics of the action range: ``wrap_attempt_ticks`` and, when there were any, ``saturated_frac`` (mean over those ticks of the fraction of in-run joints with |action| >= 0.95), ``sat_any_frac`` (ticks with at least one
+        saturated in-run joint), ``sat_all_frac`` (ticks with all of them saturated), ``target_gap_run`` (mean |target - angle| of the in-run joints); ``max_abs_target_run`` (rad, 0 without wrap-attempt ticks)."""
+        r = self._range
+        out = {"wrap_attempt_ticks": r["n"], "max_abs_target_run": r["tmax"]}
+        if r["n"] > 0:
+            out.update({"saturated_frac": r["frac"] / r["n"], "sat_any_frac": r["any"] / r["n"], "sat_all_frac": r["all"] / r["n"], "target_gap_run": r["gap"] / r["n"]})
+        return out
 
     def _hold_metrics(self) -> dict[str, float]:
         """Episode metrics of the hold channel: ``h_mean`` (all ticks), ``h_wrap_mean`` / ``h_wrap_n`` (wrap ticks; the mean is absent without wrap ticks), ``state_hold_s`` (longest streak in the pilot state)."""
@@ -351,7 +382,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.sim.step(self._tgt, self.dt)
         if not np.all(np.isfinite(self.sim.data.qpos)):
             raise FloatingPointError("simulation diverged (NaN)")
-        self.obs_builder.push_action(a)
+        self.obs_builder.push_action(a * c.action_obs_scale)
         reward, terms = self.task.reward(self.sim, a, self._prev_action)
         if self.bus is not None:
             tick = self.bus.end_tick()
@@ -368,6 +399,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                 terms["bus_peak"] = -bpen * max(0.0, float(tick["peak"]) - REGIMEN_BUS_PEAK_A)
                 reward += terms["bus_peak"]
         self._prev_action = a
+        if self._range_on:
+            self._range_step(a)
         if c.action_mode == "hold":
             self._hold_step(hold_value(a_full))
         self._t += 1
@@ -393,6 +426,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                                                    "frac_ticks_over_10a": self._bus_over / len(self._bus_means)})
         if c.action_mode == "hold":
             info.setdefault("metrics", {}).update(self._hold_metrics())
+        if self._range_on:
+            info.setdefault("metrics", {}).update(self._range_metrics())
         if (terminated or truncated) and hasattr(self.task, "pose"):
             info["pose"] = self.task.pose()
         return self.obs_builder.build(self._snapshot()), reward, terminated, truncated, info

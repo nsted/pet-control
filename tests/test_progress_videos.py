@@ -74,33 +74,47 @@ def _fake_runs(data: Path, now: float) -> dict[str, Path]:
             "h": mk("m2v7", "H", "goal_hug", 0.1, 800, 30), "old": mk("m2v6", "O", "goal_reach", 0.99, 9000, 7200), "old_day": mk("m2v7", "D", "goal_reach", 0.95, 9000, 10)}
 
 
-def test_watcher_discovery_and_best_run(tmp_path: Path) -> None:
+def test_watcher_discovery_per_run(tmp_path: Path) -> None:
     w = _watcher()
     now = time.time()
     runs = _fake_runs(tmp_path, now)
-    os.utime(runs["old_day"] / "config.json", (now - 90_000, now - 90_000))             # started > 24 h ago: not eligible as best
-    st = w.discover(tmp_path, now, alive=False)
-    assert set(st) == {("m2v7", "flat"), ("m2v7", "hug")}                              # C and O are inactive (> 15 min), v6 root has nothing active
-    assert st[("m2v7", "flat")]["best"]["run"] == runs["b"] and st[("m2v7", "hug")]["best"]["run"] == runs["h"]
-    assert st[("m2v7", "flat")]["best"]["rolling_success"] == pytest.approx(0.6) and st[("m2v7", "flat")]["best"]["policy_file"] == "progress_policy.npz"
-    (tmp_path / "m2v7" / "DONE_P2").write_text("")                                      # complete root + no live driver -> nothing active there
-    assert w.discover(tmp_path, now, alive=False) == {}
-    assert set(w.discover(tmp_path, now, alive=True)) == {("m2v7", "flat"), ("m2v7", "hug")}
-    st = w.discover(tmp_path, now, alive=False, forced=[runs["c"]])                    # forced run counts as active despite markers/age
-    assert st[("m2v7", "flat")]["best"]["run"] == runs["c"]
+    found = {i["run"]: i for i in w.discover_runs(tmp_path, now)}
+    assert {runs["a"], runs["b"], runs["h"], runs["old_day"]} <= set(found) and all(found[runs[k]]["alive"] for k in ("a", "b", "h", "old_day"))      # EVERY alive run, not only the best of a stage
+    assert not found[runs["c"]]["alive"] and runs["c"] in found and runs["old"] in found            # ended (stale > 15 min, < 2 h or 2 h edge) runs without a final video get one
+    assert found[runs["b"]]["rolling_success"] == pytest.approx(0.6) and found[runs["b"]]["policy_file"] == "progress_policy.npz" and found[runs["h"]]["family"] == "hug"
+    (runs["c"] / "progress_ticks").mkdir()
+    (runs["c"] / "progress_ticks" / "final_x.json").write_text("{}")
+    assert runs["c"] not in {i["run"] for i in w.discover_runs(tmp_path, now)}                       # final video already rendered
+    (runs["a"] / "meta.json").write_text("{}")                                                       # a finished run is no longer alive
+    assert not {i["run"]: i for i in w.discover_runs(tmp_path, now)}[runs["a"]]["alive"]
+    assert w.discover_runs(tmp_path, now, forced=[runs["c"]]) and {i["run"]: i for i in w.discover_runs(tmp_path, now, forced=[runs["c"]])}[runs["c"]]["alive"]
+    aborted = tmp_path / "m2v7" / "L8" / "P1.aborted_1"
+    aborted.mkdir(parents=True)
+    (aborted / "episodes.jsonl").write_text("{}\n")
+    assert aborted not in {r for _, r in w.run_dirs(tmp_path)}
 
 
-def test_watcher_ticks_are_idempotent(tmp_path: Path) -> None:
+def test_watcher_schedule(tmp_path: Path) -> None:
     w = _watcher()
     now = time.time()
-    runs = _fake_runs(tmp_path, now)
-    os.utime(runs["old_day"] / "config.json", (now - 90_000, now - 90_000))
-    st = w.discover(tmp_path, now, alive=False)
-    flat = st[("m2v7", "flat")]
-    assert w.due(flat, "flat", now, 1800.0) is True and w.due(flat, "flat", now, 7200.0) is False       # stage active ~1 h: first tick due; not with a 2 h period
-    (tmp_path / "m2v7" / "progress_ticks").mkdir()
-    (tmp_path / "m2v7" / "progress_ticks" / "flat_x.json").write_text("{}")                          # a tick was just rendered -> idempotent until the period passes
-    assert w.due(flat, "flat", time.time() + 100, 1800.0) is False and w.due(flat, "flat", time.time() + 4000, 1800.0) is True
+    first, period = 720.0, 1500.0
+    mk = lambda **k: {"alive": True, "ticks": [], "start": now - 600.0, **k}                       # noqa: E731
+    assert w.next_kind(mk(), now, first, period) is None                                             # 10 min in: not yet
+    assert w.next_kind(mk(start=now - 800.0), now, first, period) == "progress"                      # first video 12 min after the start (<= 15 min)
+    assert w.next_kind(mk(start=now - 4000.0, ticks=[(now - 1000.0, "progress")]), now, first, period) is None
+    assert w.next_kind(mk(start=now - 4000.0, ticks=[(now - 1500.0, "progress")]), now, first, period) == "progress"      # 25 min period: 1-2 per 30 min, never > 3
+    assert w.next_kind(mk(alive=False, ticks=[(now - 100.0, "progress")]), now, first, period) == "final"
+    assert w.next_kind(mk(alive=False, ticks=[(now - 100.0, "final")]), now, first, period) is None
+    # a 20-min run: one video at ~12 min (midpoint) and the final one at its end
+    t = 0.0
+    seen = []
+    for minute in range(0, 21):
+        t = now + 60.0 * minute
+        info = mk(start=now, ticks=list(seen), alive=minute < 20)
+        k = w.next_kind(info, t, first, period)
+        if k:
+            seen.append((t, k))
+    assert [k for _, k in seen] == ["progress", "final"]
 
 
 @needs_urdf

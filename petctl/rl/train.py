@@ -74,6 +74,20 @@ def init_hold_output(model: Any, n_joints: int, h0: float = 0.5) -> None:
         net.bias[n_joints] = 2.0 * h0 - 1.0
 
 
+def rescale_joint_outputs(model: Any, n_joints: int, factor: float) -> None:
+    """Multiply the actor's mean-output weights and bias of the ``n_joints`` JOINT channels by ``factor`` (the hold channel and the value network are untouched).
+
+    Used when ``action_scale_rad`` is widened from ``s0`` to ``s1``: with ``factor = s0 / s1`` (and ``action_obs_scale = s1 / s0`` so the action history keeps its units) the commanded
+    targets of actions within +-1 are unchanged and only the reachable range grows.
+    """
+    import torch
+
+    net = model.policy.action_net
+    with torch.no_grad():
+        net.weight[:n_joints] *= float(factor)
+        net.bias[:n_joints] *= float(factor)
+
+
 def warm_start(model: Any, venv: Any, src: Path, new_cfg: EnvConfig | None = None, new_asym: bool = False, copy_ret: bool = False) -> dict[str, int]:
     """Initialise ``model``/``venv`` from the PPO run ``src`` (``model.zip`` + ``vecnormalize.pkl``), tolerating a larger observation.
 
@@ -148,11 +162,11 @@ def lr_schedule(lr_const: bool = False) -> Any:
 
 def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, algo: str = "ppo", hours: float | None = None,
           ent_coef: float = 0.0, init_from: Path | None = None, video: bool = True, stop_when_gate_passes: Any = None, asymmetric: bool = False,
-          extra_callbacks: list[Any] | None = None, warm_copy_ret: bool = False, log_std_init: float | None = None, lr_const: bool = False) -> Path:
+          extra_callbacks: list[Any] | None = None, warm_copy_ret: bool = False, log_std_init: float | None = None, lr_const: bool = False, rescale_joints: float | None = None) -> Path:
     """Train and save ``model.zip``, ``vecnormalize.pkl``, ``config.json`` and ``meta.json`` under ``out``.
 
     ``init_from``: a PPO run directory to warm-start from (see ``warm_start``). ``video=False`` skips the end-of-run video in docs/media. ``stop_when_gate_passes``: a curriculum ``Stage``; training stops as soon as its gate passes.
-    ``warm_copy_ret``: with ``init_from``, also copy the reward-normalisation statistics (continuing the same task). ``log_std_init``: initial policy log-std (default -1.0; with ``init_from`` it is re-applied after the warm start, which would otherwise copy the source's; None with ``init_from`` keeps the source's trained value). ``lr_const`` (or env ``PETCTL_LR_CONST`` = 1): constant learning rate ``PETCTL_LR`` (default 3e-4) instead of the linear decay to 0, so a continuation does not restart the decay. ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
+    ``warm_copy_ret``: with ``init_from``, also copy the reward-normalisation statistics (continuing the same task). ``log_std_init``: initial policy log-std (default -1.0; with ``init_from`` it is re-applied after the warm start, which would otherwise copy the source's; None with ``init_from`` keeps the source's trained value). ``lr_const`` (or env ``PETCTL_LR_CONST`` = 1): constant learning rate ``PETCTL_LR`` (default 3e-4) instead of the linear decay to 0, so a continuation does not restart the decay. ``rescale_joints``: with ``init_from``, multiply the joint-channel output weights / bias of the warm-started actor by this factor (``rescale_joint_outputs``). ``asymmetric`` (PPO only, default off): the critic also sees the privileged vector of ``PetEnv.privileged_vector()`` (``petctl.rl.asym``); the actor and the exported ``policy.npz`` use the deployable observation only.
     """
     # Worker processes inherit this: unpinned BLAS/OpenMP threads oversubscribe the cores and cost ~3.7x throughput.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
@@ -192,6 +206,9 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
             init_hold_output(model, cfg.n_joints)
         if log_std_init is not None:
             model.policy.log_std.data.fill_(float(log_std_init))
+        if rescale_joints is not None:                      # wider action range: keep the commanded targets of the source policy (see ``rescale_joint_outputs``)
+            rescale_joint_outputs(model, cfg.n_joints, rescale_joints)
+            print(f"[warm-start] joint output channels rescaled by {rescale_joints:.4f}", flush=True)
     t0 = time.time()
     callback: Any
     if cfg.task in ("reach_still", "jump"):

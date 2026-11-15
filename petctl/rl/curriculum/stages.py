@@ -44,6 +44,7 @@ class Stage:
     knobs: dict[str, tuple[float, float]] = field(default_factory=dict)   # tunable name -> (lo, hi); keys: ent_coef, dr_scale, steps, or any task_param
     max_iterations: int = 8
     log_std_init: float | None = None        # PPO initial log-std (None = train() default -1.0)
+    action_obs_scale: float = 1.0            # EnvConfig.action_obs_scale: the observed action history is action x this
     action_mode: str = "abs"                 # 'abs' (EMA of action_scale x a) | 'delta' (target += 0.25 rad x a, target vector observed); see EnvConfig.action_mode
 
 
@@ -324,6 +325,20 @@ STAGES["hug_curr_02"] = dataclasses.replace(
     "box L1 120 / 3 / 1.5 s -> L2 -> L3), advance at rolling success 0.30 over the family's last 100 episodes; shape mix cyl 0.50 / box 0.20 / rounded 0.30, cylinder r 1.5-9 cm, 0.5 cm exclusion margin "
     "around the gate shapes; hold reward / bonus keyed to the family's level; gate always scores L3.")
 HUG_CURR2_TASKS = ("hug_curr_02",)
+
+
+# ---------------------------------------------------------------- hug_scale15 / hug_long_ep (range study; driver scripts/rl/hug_range_driver.py)
+# hug_scale15: hug_curr_02 with the joint-target range widened from +-1.0 to +-1.5 rad (action_scale 1.5). The observed action history keeps the OLD units (action_obs_scale 1.5) and the warm-started
+# actor's joint output channels are multiplied by 1/1.5 (train(rescale_joints=)), so the commanded targets of actions within +-1 are unchanged. Everything else identical to hug_curr_02.
+STAGES["hug_scale15"] = dataclasses.replace(
+    STAGES["hug_curr_02"], name="hug_scale15", action_scale=1.5, action_obs_scale=1.5, task_params={**STAGES["hug_curr_02"].task_params, "range_diag": 1.0},
+    description="hug_curr_02 (L=8) with action_scale_rad 1.5 (joint targets up to +-1.5 rad); warm start from the +-1.0 policy with the joint output weights rescaled by 1/1.5 so the commanded targets of actions within +-1 are unchanged; "
+    "everything else as hug_curr_02.")
+# hug_long_ep: hug_curr_02 recipe (action_scale 1.0) with 30 s training episodes, 50 % buffer starts and a buffer that stores only states with normal span >= 120 deg (gate episodes stay 20 s).
+STAGES["hug_long_ep"] = dataclasses.replace(
+    STAGES["hug_curr_02"], name="hug_long_ep", episode_s=30.0, task_params={**STAGES["hug_curr_02"].task_params, "hug_buffer_p": 0.5, "hug_buffer_min_span": 120.0, "range_diag": 1.0},
+    description="hug_curr_02 (L=8, action_scale 1.0) with 30 s training episodes, start-buffer probability 0.5 and a buffer that stores only states with normal span >= 120 deg; gate unchanged (20 s episodes, L3).")
+HUG_RANGE_TASKS = ("hug_scale15", "hug_long_ep")
 
 
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:
