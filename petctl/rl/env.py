@@ -282,6 +282,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             if amp > 0:
                 q0 = self._rng.uniform(-amp, amp, self.cfg.n_joints)
                 self.sim.reset(q0)
+                self.sim.lift_clear_of_terrain()                              # terrain only: a curled start pose may begin below the heightfield
             self.sim.step(q0, SETTLE_S)                                       # hold the start pose while the body settles on the floor
             if self._up_dot() >= self.cfg.flip_up_dot or amp <= 0:
                 break

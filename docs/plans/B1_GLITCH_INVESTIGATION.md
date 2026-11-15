@@ -20,7 +20,7 @@ CoM speed 0). Terrain seed 2120316457; terrain is exactly flat (h = 0.000) under
 - Guard calibration: the 1 cm threshold is correct (flat-plane settle |dist| <= 0.2 mm; legit hfield contact <= 0.2 mm in the other 99 seeds).
   **Do not change the guard.**
 
-## 2. Proposed minimal fix (not applied)
+## 2. Fix (APPLIED, commit 'fix(sim): lift root after reset on terrain...')
 At reset in `PetEnv` (`env.py:~283`, the start-pose loop), when a terrain is present: after `sim.reset(q0)`, if `mj_forward` shows penetration, lift the
 root by the depth: `qpos[2] += -min(contact.dist) + 2 mm`. Verified on seed 10085 (depth 0.0766 m): no contacts after the lift, settled
 min dist -0.0001, all CoM z >= 0.024. Alternative: resample q0 when the settled min dist < -5 mm (uses the existing resample loop, keeps the
@@ -44,3 +44,15 @@ Over-10 A episodes: seeds 10006 (10.7), 10022 (10.2), 10047 (10.6), 10063 (10.2)
   policy's current profile, not of the terrain; the first 4 ticks of the episode dominate.
 - Implication: terrain features are not the lever. Levers: stronger `bus_peak_penalty` on the first ~10 ticks (attempt 2 already trains with
   a penalty), start-of-episode action ramp/smoothing in training, or a policy with lower initial-step demand. Gate threshold unchanged.
+
+## 4. Remedies for the start-transient peaks (proposals, NOT implemented)
+Evidence: 4/6 over-10 A episodes peak at tick 3-4 (0.10-0.13 s) on flat ground; flat control also 6/100; the peak is the first big target step from the
+random start pose (up to 0.6 rad per joint) hitting the PD actuators, 1-3 ticks over.
+1. **Start-up ramp of the commanded target** over the first ~5 ticks (blend from the held start pose to the policy target; apply in env, training and gate
+   alike, ~0.17 s). Removes the 3-4 tick peaks outright; expected 4 of 6 episodes drop under 10 A, so ~2/100 over (limit 5/100). Cost: negligible success
+   change (first 0.17 s of a 20 s episode); changes the plant, so needs retraining/regate, and the real driver would need the same ramp.
+2. **Slew clip in the first ~10 ticks** (e.g. max 0.15 rad/tick on the target, as the real power manager's demand allocator would). Same effect as 1
+   with a smaller deviation from the policy afterwards; expected to cut the start-transient peaks by ~70-90 %.
+3. **Larger `bus_peak_penalty` (2 -> 5) and a start-window multiplier (x3 on ticks 0-10)**. Training-only, no plant change; the policy learns a gentler first
+   step. Weaker guarantee: expected 6 -> 3-4/100 over, with a risk of slower early motion; the two late peaks (10063, 10069) are only touched by this one.
+Recommendation: 2 (or 1) for a guaranteed gate fix, 3 if the plant must stay frozen.

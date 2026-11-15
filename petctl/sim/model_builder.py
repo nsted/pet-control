@@ -444,6 +444,21 @@ class PetSim:
         self._last_target = self.joint_pos().copy()
         mujoco.mj_forward(self.model, self.data)
 
+    def lift_clear_of_terrain(self, margin: float = 0.002) -> float:
+        """Terrain only: raise the root by the deepest penetration (plus ``margin``) so a start pose that begins below the heightfield does not stay buried.
+
+        A flat plane pushes a penetrating hull out, a heightfield does not (it stays ~cm deep), so this is a no-op without a terrain and when nothing penetrates.
+        Returns the lift (m).
+        """
+        if self.p.terrain is None or self.p.hanging or not self.data.ncon:
+            return 0.0
+        depth = -float(self.data.contact.dist[:self.data.ncon].min())
+        if depth <= 0.0:
+            return 0.0
+        self.data.qpos[2] += depth + margin
+        mujoco.mj_forward(self.model, self.data)
+        return depth + margin
+
     def joint_pos(self) -> np.ndarray:
         """Joint angles (rad), servo 1..n_modules-1."""
         a = 7 if not self.p.hanging else 0

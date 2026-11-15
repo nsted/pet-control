@@ -14,7 +14,7 @@ from petctl.rl.curriculum.stages import REAL_CAP_NM  # noqa: E402
 from petctl.rl.env import PetEnv  # noqa: E402
 from petctl.rl.layout_cache import GATE_SEED_MIN, LayoutCache  # noqa: E402
 from petctl.rl.tasks.goal_obstacles import bounding_radius  # noqa: E402
-from petctl.rl.tasks.goal_reach import GLITCH_LAUNCH_M, GoalReach  # noqa: E402
+from petctl.rl.tasks.goal_reach import GLITCH_LAUNCH_M, GLITCH_PENETRATION_M, GoalReach  # noqa: E402
 from petctl.sim.model_builder import POST_HEIGHT_M, POST_RADIUS_M, BuildParams, PetSim  # noqa: E402
 from petctl.sim.terrain import BUMP_AMP_MAX_M, CELL_M, HALF_M, N_PTS, ROUGH_MAX_M, SLOPE_MAX_DEG, START_RADIUS_M, generate_terrain  # noqa: E402
 
@@ -228,3 +228,44 @@ def test_saturation_reward_not_length_normalised() -> None:
 
 def test_domain_rand_default_cap_is_real_cap() -> None:
     assert DomainRand().cap_nm == (REAL_CAP_NM, REAL_CAP_NM)
+
+
+_Q0_BURIED = np.array([0.379, -0.549, -0.423, -0.5, -0.084, 0.028, -0.571])     # B1 gate seed 10085 start pose: curled tail begins ~8 cm below the surface
+
+
+def _min_dist(sim: PetSim) -> float:
+    d = sim.data
+    return float(d.contact.dist[:d.ncon].min()) if d.ncon else 0.0
+
+
+def test_lift_clear_of_terrain_fixes_buried_start_pose() -> None:
+    sim = PetSim(BuildParams(terrain=generate_terrain(0.0, 1)))
+    sim.reset(_Q0_BURIED)
+    assert _min_dist(sim) < -0.05                                              # the artefact: deep initial penetration of the heightfield
+    sim.reset(_Q0_BURIED)
+    lift = sim.lift_clear_of_terrain()
+    assert lift > 0.05 and sim.data.ncon == 0
+    sim.step(_Q0_BURIED, 0.75)
+    assert _min_dist(sim) > -GLITCH_PENETRATION_M and not GoalReach._terrain_glitch(sim)
+    sim2 = PetSim(BuildParams(terrain=generate_terrain(0.0, 1)))               # deterministic
+    sim2.reset(_Q0_BURIED)
+    assert sim2.lift_clear_of_terrain() == lift
+
+
+def test_lift_is_noop_without_terrain_or_penetration() -> None:
+    flat = PetSim()
+    flat.reset(_Q0_BURIED)
+    before = flat.data.qpos.copy()
+    assert flat.lift_clear_of_terrain() == 0.0 and np.array_equal(before, flat.data.qpos)
+    ter = PetSim(BuildParams(terrain=generate_terrain(0.6, 3)))
+    ter.reset()
+    assert ter.lift_clear_of_terrain() == 0.0
+
+
+def test_env_terrain_start_pose_no_penetration_after_reset() -> None:
+    env = PetEnv(_field_cfg(terrain_level=0.6, start_pose_rad=0.6))
+    for seed in range(10080, 10092):
+        env.reset(seed=seed)
+        assert _min_dist(env.sim) > -GLITCH_PENETRATION_M and not env.task.glitch
+        env.step(np.zeros(7))
+        assert not env.task.glitch
