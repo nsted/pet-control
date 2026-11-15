@@ -326,3 +326,16 @@ scale15_h6 screen (14:18): 0.167 (5/30): cyl_r3 2/6, square 2/6, rect 1/6, cyl_r
 
 ### n=100 checkpoint evaluation (2026-11-15 14:52; L=8 gate set, DR 0.6, plain gate)
 scale15_h3 0.09 (Wilson 0.05-0.16), h4 0.11 (0.06-0.19), h6 0.12 (0.07-0.20; cyl_r3 0.20, square 0.35, rect 0.05, cyl_r7 0, rounded 0). The n=30 screens (0.033-0.167, h7 0.0) were noise around a true ~0.10-0.12. h7 screen 0.0 (hold_duty 0.034). Best checkpoint h6 exported as skill hug_L8_scale15_h6. The line has plateaued at ~0.1 over 4 hours; gate is 0.70 aggregate / 0.50 per shape.
+
+## 2026-11-15 15:26 action-range study: hug_anneal hour 1 screen
+
+- hour 1: stop reason None; screen n=60 (L=8 gate set, DR 0.6, L3, deterministic): success 0.067, per shape {"cyl_r3": 0.08333333333333333, "cyl_r7": 0.0, "square_8x8": 0.25, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}; hold_duty 0.140, span 160; hold breaks {"episodes": 60, "holds_started": 64, "holds_broken": 53, "holds_completed": 4, "break_fractions": {"run_below_h": 0.05660377358490566, "span_below": 1.0, "torque_cap": 0.1509433962264151, "bus_over": 0.5094339622641509, "none": 0.0}}; GO signals {"screen": 0.06666666666666667, "curved_other_than_cyl_r3": {"cyl_r7": 0.0, "rounded_8x8_r2": 0.0}, "by_screen": false, "by_curved": false}
+- Data: data/rl/hug_anneal
+
+## 2026-11-15 15:26 action-range study: hug_anneal PARK
+
+- hug_anneal hour 1 NO-GO: screen 0.067, per shape {"cyl_r3": 0.08333333333333333, "cyl_r7": 0.0, "square_8x8": 0.25, "rect_5x14": 0.0, "rounded_8x8_r2": 0.0}
+- Data: data/rl/hug_anneal
+
+### hug_anneal NO-GO - hug parked (2026-11-15 15:27)
+hug_anneal h1 (warm from scale15_h6, log_std -2.0, ent 0, lr 1.5e-4 -> 2e-5): n=60 screen 0.067 (cyl_r3 1/12, square 3/12, others 0), hold_duty 0.14, span 160. Hold-break diagnostic over 60 episodes: 64 holds started, 53 broken, 4 completed (~6%); break causes: span dropped below the level requirement in 100%, mean bus current > 4 A near the break in 51%, torque at the 0.5 N.m cap in 15%, run dropped below H in 5.7%. NO-GO -> hug PARKED at n=100 0.12 (skill hug_L8_scale15_h6). Observation for the owner: ~half of hold breaks coincide with bus current above the 4 A mean budget, i.e. the current budget may be binding for sustained hugs. Next: stage chain A1 -> A2 -> B1 -> B2 (plan sec 4.2), then C1/C2 (touch navigation), then return to the hug with an LSTM policy + the hold-break data.
