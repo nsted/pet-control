@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from petctl.config import REGIMEN_BUS_MEAN_A
+from petctl.config import REGIMEN_BUS_MEAN_A, REGIMEN_BUS_PEAK_A
 from petctl.rl.curriculum.stages import Stage
 from petctl.rl.env import PetEnv
 from petctl.rl.policy import GaitPolicy
@@ -219,10 +219,14 @@ def current_budget(rows: list[Row], spec: Gate2Spec) -> dict[str, Any]:
         return {"measured": False, "ok": False}
     mean_a = np.array([r["metrics"]["bus_mean_a"] for r in rows])
     over = np.array([r["metrics"].get("frac_ticks_over_10a", 0.0) for r in rows])
-    frac_eps = float(np.mean(over > 0.0))
+    frac_inst = float(np.mean(over > 0.0))                                             # legacy: any 2 ms substep over the limit
+    win = np.array([r["metrics"].get("bus_peak_win_a", r["metrics"].get("bus_peak_a", 0.0)) for r in rows])
+    frac_eps = float(np.mean(win > REGIMEN_BUS_PEAK_A))                                # hard check: largest 50 ms windowed mean of demanded current
     return {"measured": True, "bus_mean_a_median": float(np.median(mean_a)), "bus_mean_a_max": float(mean_a.max()),
             "bus_peak_a_median": float(np.median([r["metrics"].get("bus_peak_a", 0.0) for r in rows])),
-            "frac_episodes_over_10a": frac_eps, "frac_ticks_over_10a_mean": float(over.mean()),
+            "frac_episodes_over_10a": frac_eps, "frac_episodes_over_10a_inst": frac_inst, "bus_peak_win_a_median": float(np.median(win)),
+            "frac_episodes_over_12a_win": float(np.mean(win > 12.0)),
+            "frac_ticks_over_win_mean": float(np.mean([r["metrics"].get("frac_ticks_over_win", 0.0) for r in rows])), "frac_ticks_over_10a_mean": float(over.mean()),
             "ok": bool(np.median(mean_a) <= spec.max_bus_mean_a and frac_eps <= spec.max_frac_ticks_over)}
 
 

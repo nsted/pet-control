@@ -170,6 +170,7 @@ def main() -> int:
     ap.add_argument("--gate-n", type=int, default=100)
     ap.add_argument("--lateral-n", type=int, default=ca.LATERAL_N)
     ap.add_argument("--eval-workers", type=int, default=4)
+    ap.add_argument("--warm-from", type=Path, default=None, help="warm-start run for the FIRST attempt of the first stage that still needs training (instead of the previous stage's passing run); used to continue a failed stage under changed physics in a fresh --root")
     ap.add_argument("--force-go", action="store_true", help="smoke tests only: record gate numbers but treat every gate as passed (also skips the skill bank and the log entry)")
     a = ap.parse_args()
     root = a.root
@@ -194,7 +195,7 @@ def main() -> int:
             record(root, {"phase": "stop", "stage": st, "go": False, "why": f"{st} failed its gate twice", "fail_reasons": [d["fail_reasons"] for d in fails]})
             return d6.stop(root, st, f"{st} failed its n=100 gate on both attempts")
         if nxt["action"] == "train":
-            init = warm_source(root, st, att, ls)
+            init = a.warm_from if (a.warm_from is not None and att == 1 and not run_dir(root, st, 1).exists()) else warm_source(root, st, att, ls)
             log(f"train {st} a{att} warm from {init}")
             info = train_run(root, st, att, init, a.n_envs, a.scale, seed=1000 * (CHAIN_STAGES.index(st) + 1) + att)
             record(root, {"phase": "train", "stage": st, "attempt": att, "go": True, **info})

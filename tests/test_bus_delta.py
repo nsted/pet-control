@@ -83,6 +83,37 @@ def test_clamp_scales_over_peak_and_leaves_under_unchanged() -> None:
     assert np.array_equal(c.data.qpos, b.data.qpos) and np.array_equal(c.data.actuator_force, b.data.actuator_force)
 
 
+def test_soft_limit_curve_is_identity_below_knee_smooth_monotone_and_bounded() -> None:
+    from petctl.sim.bus import soft_limit_current
+    peak, knee = REGIMEN_BUS_PEAK_A, 0.7
+    d = np.linspace(0.0, 40.0, 4001)
+    a = np.array([soft_limit_current(x, peak, knee) for x in d])
+    assert np.allclose(a[d <= knee * peak], d[d <= knee * peak])                    # untouched below the knee
+    assert np.all(np.diff(a) >= 0.0) and np.all(a < peak + 1e-9)                    # monotone, never exceeds the ceiling
+    assert np.all(a[d > knee * peak] < d[d > knee * peak])                          # attenuating above the knee
+    slope = np.diff(a) / np.diff(d)
+    assert slope[0] == pytest.approx(1.0) and np.max(np.abs(np.diff(slope))) < 0.01   # C1: no slope jump at the knee
+    assert soft_limit_current(40.0, peak, knee) == pytest.approx(peak, abs=1e-3)
+    assert soft_limit_current(13.9, peak, 0.0) == peak and soft_limit_current(7.0, peak, 0.0) == 7.0   # knee 0 == the old hard cutoff
+
+
+def test_soft_clamp_attenuates_before_peak_and_stays_under_it() -> None:
+    hard, soft = _sim(), _sim()
+    hard.bus = BusClamp(hard.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=True)
+    soft.bus = BusClamp(soft.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=True, soft_knee=0.7)
+    for sim in (hard, soft):
+        sim.step(_target(3), 0.05)                                                  # 3 saturated joints demand 0.6 + 13.3 * 3 * 0.25 = 10.6 A... (just over)
+    th, ts = hard.bus.end_tick(), soft.bus.end_tick()
+    assert th["peak"] == pytest.approx(ts["peak"], rel=0.02)                        # same demanded current
+    assert ts["applied_peak"] < th["applied_peak"] <= REGIMEN_BUS_PEAK_A * 1.01     # soft attenuates earlier
+    s2, s4 = _sim(), _sim()
+    for sim, n in ((s2, 4), (s4, 7)):
+        sim.bus = BusClamp(sim.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=True, soft_knee=0.7)
+        sim.step(_target(n), 0.05)
+        assert sim.bus.end_tick()["applied_peak"] < REGIMEN_BUS_PEAK_A + 1e-6       # never exceeds the ceiling, however large the demand
+    assert np.all(s4.model.actuator_forcerange[:, 1] == CAP)                        # forcerange restored
+
+
 def test_bus_off_by_default_and_metrics_present_when_on() -> None:
     env = PetEnv(EnvConfig(task="goal_reach", episode_s=2.0))
     env.reset(seed=0)

@@ -1,0 +1,51 @@
+{
+ "id": "nav_chain/terrain_easy",
+ "task": "goal_reach",
+ "name": "terrain_easy",
+ "note": "terrain_easy (A/B chain, L=8, hold channel): gate n=100 dr 0.6 success 1.000 (Wilson lo 0.963 vs 0.75), t_goal median 4.800000000000001, bus mean 2.3232896332464157 A, glitch 0.0",
+ "created": "2026-11-15 17:42:50",
+ "score_label": "m towards goal",
+ "score": {
+  "nominal_median": 0.5815918262830639,
+  "nominal_best": 0.7165551256719814,
+  "robust_median": 0.567915530792713,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.5,
+   0.5
+  ],
+  "action_scale_rad": 1.0,
+  "action_ema": 0.3,
+  "max_target_step_rad": 0.35,
+  "episode_s": 20.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "data/rl/chain_ab/terrain_easy/a2",
+  "policy_file": "policy.npz",
+  "steps": 3138300,
+  "wall_s": 2037.7464172840118,
+  "git": "11e96dd"
+ },
+ "caveats": [],
+ "gate": {
+  "n": 100,
+  "success": 1.0,
+  "wilson_lo": 0.9630065017930143,
+  "threshold": 0.75,
+  "t_goal_median_s": 4.800000000000001,
+  "lateral": null,
+  "ablations": {},
+  "bus_mean_a_median": 2.3232896332464157,
+  "glitch_rate": 0.0
+ }
+}

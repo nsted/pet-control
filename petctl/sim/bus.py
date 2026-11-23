@@ -26,12 +26,25 @@ def bus_current_a(tau: np.ndarray, coeff: float) -> float:
     return idle_current_a(len(tau)) + coeff * float(np.sum(np.square(tau)))
 
 
-class BusClamp:
-    """Per-substep current estimate with an optional spike clamp; accumulates per-tick statistics for ``end_tick``."""
+def soft_limit_current(i_dem: float, peak_a: float, knee: float) -> float:
+    """Applied bus current (A) for a demanded current ``i_dem``: identity up to ``knee * peak_a``, then a smooth (C1) tanh roll-off that approaches ``peak_a`` asymptotically and never exceeds it.
 
-    def __init__(self, model: mujoco.MjModel, coeff: float, peak_a: float, clamp: bool = True) -> None:
-        """Bind to ``model``'s position actuators; ``coeff`` is A per (N.m)^2, ``peak_a`` the spike ceiling."""
+    ``knee`` in [0, 1): 0 gives the hard cutoff ``min(i_dem, peak_a)``; e.g. 0.7 starts attenuating at 7 A for a 10 A ceiling.
+    """
+    k = knee * peak_a
+    if knee <= 0.0 or i_dem <= k:
+        return min(i_dem, peak_a)
+    w = peak_a - k
+    return k + w * float(np.tanh((i_dem - k) / w))
+
+
+class BusClamp:
+    """Per-substep current estimate with an optional spike limiter (hard cutoff or soft roll-off); accumulates per-tick statistics for ``end_tick``."""
+
+    def __init__(self, model: mujoco.MjModel, coeff: float, peak_a: float, clamp: bool = True, soft_knee: float = 0.0) -> None:
+        """Bind to ``model``'s position actuators; ``coeff`` is A per (N.m)^2, ``peak_a`` the spike ceiling, ``soft_knee`` the fraction of ``peak_a`` where attenuation starts (0 = hard cutoff)."""
         self.coeff, self.peak_a, self.clamp = float(coeff), float(peak_a), bool(clamp)
+        self.soft_knee = min(max(float(soft_knee), 0.0), 0.99)
         self.n = model.nu
         self.idle = idle_current_a(self.n)
         self._qadr = np.array([model.jnt_qposadr[model.actuator_trnid[k, 0]] for k in range(self.n)])
@@ -48,6 +61,7 @@ class BusClamp:
     def begin_tick(self) -> None:
         """Clear the per-tick accumulators."""
         self._sum_applied, self._n_sub, self._max_demand, self._max_applied, self._any_over = 0.0, 0, 0.0, 0.0, False
+        self._sum_demand, self._n_dem = 0.0, 0
 
     def demand(self, model: mujoco.MjModel, data: mujoco.MjData, cap: np.ndarray) -> np.ndarray:
         """Torque (N.m) the position actuators would produce this substep, capped at ``cap``."""
@@ -64,11 +78,14 @@ class BusClamp:
         tau = self.demand(model, data, cap)
         ss = float(_add_reduce(tau * tau))                                             # add.reduce == np.sum
         i_dem = self.idle + self.coeff * ss
+        self._sum_demand += i_dem
+        self._n_dem += 1
         if i_dem > self._max_demand:
             self._max_demand = i_dem
         self._any_over = self._any_over or i_dem > self.peak_a
-        if self.clamp and i_dem > self.peak_a and ss > 0.0:
-            s = float(np.sqrt((self.peak_a - self.idle) / (self.coeff * ss))) if self.peak_a > self.idle else 0.0
+        if self.clamp and i_dem > (self.soft_knee * self.peak_a if self.soft_knee > 0.0 else self.peak_a) and ss > 0.0:
+            i_app = soft_limit_current(i_dem, self.peak_a, self.soft_knee)                 # hard: min(i_dem, peak); soft: smooth roll-off below the peak
+            s = float(np.sqrt(max(i_app - self.idle, 0.0) / (self.coeff * ss))) if self.peak_a > self.idle else 0.0
             lim = np.maximum(s * np.abs(tau), 1e-12)
             self._cap = cap.copy()
             fr[:, 0] = -lim
@@ -89,7 +106,8 @@ class BusClamp:
             self._cap = None
 
     def end_tick(self) -> dict[str, float]:
-        """Statistics of the control tick just simulated: ``mean`` / ``peak`` (demanded, pre-clamp) / ``applied_peak`` (A) and ``over`` (demand exceeded the limit)."""
-        out = {"mean": self._sum_applied / max(self._n_sub, 1), "peak": self._max_demand, "applied_peak": self._max_applied, "over": float(self._any_over)}
+        """Statistics of the control tick just simulated: ``mean`` / ``peak`` (demanded, pre-clamp) / ``applied_peak`` (A) and ``over`` (demand exceeded the limit), ``demand_mean`` (mean demanded pre-clamp current over the tick's substeps = the 50 ms window value)."""
+        out = {"mean": self._sum_applied / max(self._n_sub, 1), "peak": self._max_demand, "applied_peak": self._max_applied, "over": float(self._any_over),
+               "demand_mean": self._sum_demand / max(self._n_dem, 1)}
         self.begin_tick()
         return out

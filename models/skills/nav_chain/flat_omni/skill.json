@@ -1,0 +1,60 @@
+{
+ "id": "nav_chain/flat_omni",
+ "task": "goal_reach",
+ "name": "flat_omni",
+ "note": "flat_omni (A/B chain, L=8, hold channel): gate n=100 dr 0.6 success 0.960 (Wilson lo 0.902 vs 0.70), t_goal median 5.050000000000001, bus mean 2.5659086996953215 A, glitch 0.0, lateral median 0.683 m",
+ "created": "2026-11-15 16:32:47",
+ "score_label": "m towards goal",
+ "score": {
+  "nominal_median": 0.5135732775688928,
+  "nominal_best": 0.5786915039384234,
+  "robust_median": 0.5217715382402475,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.5,
+   0.5
+  ],
+  "action_scale_rad": 1.0,
+  "action_ema": 0.3,
+  "max_target_step_rad": 0.35,
+  "episode_s": 15.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "data/rl/chain_ab/flat_omni/a2",
+  "policy_file": "policy.npz",
+  "steps": 4000000,
+  "wall_s": 1126.2706289291382,
+  "git": "d82e9b5"
+ },
+ "caveats": [],
+ "gate": {
+  "n": 100,
+  "success": 0.96,
+  "wilson_lo": 0.9016292856411208,
+  "threshold": 0.7,
+  "t_goal_median_s": 5.050000000000001,
+  "lateral": {
+   "n": 100,
+   "median_m": 0.6827920507831475,
+   "q1_m": 0.5985225194677769,
+   "q3_m": 0.7495503373767799,
+   "frac_ge_min": 0.96,
+   "success_rate": 0.91,
+   "min_m": 0.4,
+   "passed": true
+  },
+  "ablations": {},
+  "bus_mean_a_median": 2.5659086996953215,
+  "glitch_rate": 0.0
+ }
+}

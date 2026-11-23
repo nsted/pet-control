@@ -305,10 +305,12 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._init_reply_dr()
         self.bus = None
         if self.task.param("bus_model", 0.0) > 0.0 or self.task.param("bus_penalty", 0.0) > 0.0:       # per-robot current model, spike clamp and metrics (plan sec 5.5); off by default
-            self.bus = self.sim.bus = BusClamp(self.sim.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=self.task.param("bus_clamp", 1.0) > 0.0)
+            self.bus = self.sim.bus = BusClamp(self.sim.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=self.task.param("bus_clamp", 1.0) > 0.0,
+                                         soft_knee=self.task.param("bus_soft_knee", 0.0))
             self._bus_win: deque[float] = deque(maxlen=max(1, int(round(BUS_MEAN_WINDOW_S * self.cfg.control_hz))))
             self._bus_means: list[float] = []
-            self._bus_peak = self._bus_peak_applied = 0.0
+            self._bus_peak = self._bus_peak_applied = self._bus_peak_win = 0.0
+            self._bus_over_win = 0
             self._bus_over = 0
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
         self._tgt = restored if restored is not None else self.sim.joint_pos().copy() if amp > 0 or arranged else np.zeros(self.cfg.n_joints)
@@ -408,6 +410,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             self._bus_means.append(tick["mean"])
             self._bus_peak, self._bus_peak_applied = max(self._bus_peak, tick["peak"]), max(self._bus_peak_applied, tick["applied_peak"])
             self._bus_over += int(tick["over"])
+            self._bus_peak_win = max(self._bus_peak_win, tick["demand_mean"])
+            self._bus_over_win += int(tick["demand_mean"] > REGIMEN_BUS_PEAK_A)
             pen = self.task.param("bus_penalty", 0.0)
             if pen > 0.0:                                                                 # penalty on the 2 s running mean above the 4 A budget
                 terms["bus"] = -pen * max(0.0, float(np.mean(self._bus_win)) - REGIMEN_BUS_MEAN_A)
@@ -443,7 +447,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             info.setdefault("metrics", {}).update({f"term_{k}": v for k, v in self._term_sums.items()})
         if self.bus is not None:
             info.setdefault("metrics", {}).update({"bus_mean_a": float(np.mean(self._bus_means)), "bus_peak_a": self._bus_peak, "bus_peak_applied_a": self._bus_peak_applied,
-                                                   "frac_ticks_over_10a": self._bus_over / len(self._bus_means)})
+                                                   "frac_ticks_over_10a": self._bus_over / len(self._bus_means),
+                                                   "bus_peak_win_a": self._bus_peak_win, "frac_ticks_over_win": self._bus_over_win / len(self._bus_means)})
         if c.action_mode == "hold":
             info.setdefault("metrics", {}).update(self._hold_metrics())
         if self._range_on:
