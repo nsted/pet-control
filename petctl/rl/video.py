@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -36,8 +37,58 @@ def burn_caption(frame: np.ndarray, text: str) -> np.ndarray:
 
     img = Image.fromarray(np.ascontiguousarray(frame))
     d = ImageDraw.Draw(img, "RGBA")
-    d.rectangle([0, 0, img.width, 22], fill=(0, 0, 0, 170))
-    d.text((6, 5), text[:int(img.width / 6.2)], fill=(255, 255, 255, 255))
+    if img.width <= 1000:                                        # original small banner (bitmap font)
+        d.rectangle([0, 0, img.width, 22], fill=(0, 0, 0, 170))
+        d.text((6, 5), text[:int(img.width / 6.2)], fill=(255, 255, 255, 255))
+        return np.asarray(img)
+    from PIL import ImageFont
+
+    size = int(img.width / 80)                                   # larger frames: scalable font so the caption keeps its relative size
+    try:
+        font = ImageFont.load_default(size=size)
+    except Exception:  # noqa: BLE001
+        font = None
+    d.rectangle([0, 0, img.width, size + 14], fill=(0, 0, 0, 170))
+    d.text((10, 6), text[:int(img.width / (size * 0.52))], fill=(255, 255, 255, 255), font=font)
+    return np.asarray(img)
+
+
+PORTRAIT_SIZE = (1080, 1920)    # 9:16 output (Instagram reels / stories)
+SUPERSAMPLE = int(os.environ.get("PETCTL_VIDEO_SS", "2"))   # frames are rendered at SUPERSAMPLE x the output size and box-filtered down: removes the jagged edges of the offscreen GL renderer
+
+
+def downscale(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Antialiased resize of a (H,W,3) uint8 frame to ``size`` = (w, h); identity when already that size."""
+    if frame.shape[1] == size[0] and frame.shape[0] == size[1]:
+        return frame
+    from PIL import Image
+
+    return np.asarray(Image.fromarray(np.ascontiguousarray(frame)).resize(size, Image.Resampling.LANCZOS))
+
+
+def _font(width: int):
+    from PIL import ImageFont
+
+    try:
+        return ImageFont.load_default(size=max(11, int(width / 54)))
+    except Exception:  # noqa: BLE001 - old Pillow: fixed-size bitmap font
+        return None
+
+
+def burn_caption_wrapped(frame: np.ndarray, text: str) -> np.ndarray:
+    """Like ``burn_caption`` but wraps the text over as many banner lines as it needs (narrow portrait frames)."""
+    import textwrap
+
+    from PIL import Image, ImageDraw
+
+    img = Image.fromarray(np.ascontiguousarray(frame))
+    d = ImageDraw.Draw(img, "RGBA")
+    font = _font(img.width)
+    lh = max(13, int(img.width / 42))
+    rows = textwrap.wrap(text, max(10, int(img.width / (lh * 0.5))))[:6]
+    d.rectangle([0, 0, img.width, 10 + lh * len(rows)], fill=(0, 0, 0, 170))
+    for i, r in enumerate(rows):
+        d.text((8, 5 + lh * i), r, fill=(255, 255, 255, 255), font=font)
     return np.asarray(img)
 
 
@@ -57,9 +108,9 @@ def _log_video(out: Path) -> None:
 
 
 def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds: float | None = None, seed: int = 0,
-                 dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (960, 540), task_params: dict[str, float] | None = None, base: Any = None,
+                 dr_scale: float = 0.0, fps: int = 30, size: tuple[int, int] = (1920, 1080), task_params: dict[str, float] | None = None, base: Any = None,
                  distance: float = 0.9, azimuth: float = 130.0, label: str | None = None, replace_task_params: bool = False,
-                 final_note: Callable[[dict[str, float], bool], str] | None = None) -> dict[str, float]:
+                 final_note: Callable[[dict[str, float], bool], str] | None = None, portrait: bool | None = None) -> dict[str, float]:
     """Roll out ``run/policy_file`` deterministically for one episode, write an MP4 to ``out``, return the episode metrics.
 
     ``task_params`` overrides entries of the run's ``EnvConfig.task_params`` (e.g. force a mid-route goal change for a demo).
@@ -68,6 +119,8 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
     ``final_note(metrics, reached)`` (optional) returns the caption of the 2 s final hold frames, built from the metrics of THE recorded episode itself
     (so captions can state measured numbers); the returned metrics are exactly those passed to it.
     """
+    if portrait is None:
+        portrait = os.environ.get("PETCTL_PORTRAIT", "1") != "0"
     pol = GaitPolicy(run, policy_file)
     pol.cfg.dr.scale = dr_scale
     pol.cfg.task_params = dict(task_params or {}) if replace_task_params else {**pol.cfg.task_params, **(task_params or {})}
@@ -76,8 +129,11 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
     env = PetEnv(pol.cfg, base)
     obs, _ = env.reset(seed=seed)
     w, h = size
-    env.sim.model.vis.global_.offwidth, env.sim.model.vis.global_.offheight = max(w, 640), max(h, 480)
-    rend = mujoco.Renderer(env.sim.model, height=h, width=w)
+    ss = max(1, SUPERSAMPLE)
+    env.sim.model.vis.global_.offwidth, env.sim.model.vis.global_.offheight = max(w * ss, 640), max(h * ss, 480)
+    env.sim.model.vis.quality.offsamples = 8
+    env.sim.model.vis.quality.shadowsize = 8192               # sharper shadow edges (the default 4096 map shows stair-steps)
+    rend = mujoco.Renderer(env.sim.model, height=h * ss, width=w * ss)
     cam = mujoco.MjvCamera()
     cam.distance, cam.elevation, cam.azimuth = distance, -35, azimuth
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -85,6 +141,25 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
     ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps),
                            "-i", "-", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out)], stdin=subprocess.PIPE)
     assert ff.stdin is not None
+    pw, ph = PORTRAIT_SIZE
+    pout = out.with_name(out.stem + "_portrait" + out.suffix)
+    prend = pff = None
+    if portrait:                                                # second, 9:16 version of the same episode (own camera framing, wrapped caption), for Instagram
+        env.sim.model.vis.global_.offwidth, env.sim.model.vis.global_.offheight = max(w * ss, pw * ss, 640), max(h * ss, ph * ss, 480)
+        prend = mujoco.Renderer(env.sim.model, height=ph * ss, width=pw * ss)
+        pff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{pw}x{ph}", "-r", str(fps), "-i", "-", "-an",
+                                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(pout)], stdin=subprocess.PIPE)
+
+    pcam = mujoco.MjvCamera()                                   # portrait is narrower: pull the camera back so the whole body fits
+    pcam.distance, pcam.elevation, pcam.azimuth = distance * 1.6, -40, azimuth
+
+    def write_portrait(text: str) -> None:
+        if prend is not None and pff is not None and pff.stdin is not None:
+            pcam.lookat[:] = env.sim.data.subtree_com[1]
+            prend.update_scene(env.sim.data, camera=pcam)
+            draw_markers(prend.scene, env.task.markers(env.sim))
+            pff.stdin.write(burn_caption_wrapped(downscale(prend.render(), (pw, ph)), text).tobytes())
+
     frame_dt, next_frame, info = 1.0 / fps, 0.0, {}
     done = False
     while not done:
@@ -95,7 +170,8 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
             cam.lookat[:] = env.sim.data.subtree_com[1]
             rend.update_scene(env.sim.data, camera=cam)
             draw_markers(rend.scene, env.task.markers(env.sim))
-            ff.stdin.write(burn_caption(rend.render(), f"{caption[:118]}  t={t:4.1f}s").tobytes())
+            ff.stdin.write(burn_caption(downscale(rend.render(), (w, h)), f"{caption[:118]}  t={t:4.1f}s").tobytes())
+            write_portrait(f"{caption}  t={t:4.1f}s")
             next_frame += frame_dt
     reached = bool(getattr(env.task, "reached", False))
     metrics = {k: float(x) for k, x in info.get("metrics", {}).items()}
@@ -105,9 +181,13 @@ def record_video(run: Path, out: Path, policy_file: str = "policy.npz", seconds:
         cam.lookat[:] = env.sim.data.subtree_com[1]
         rend.update_scene(env.sim.data, camera=cam)
         draw_markers(rend.scene, env.task.markers(env.sim))
-        ff.stdin.write(burn_caption(rend.render(), hold_caption or f"{caption[:70]}  {tag}  t={t:4.1f}s").tobytes())
+        ff.stdin.write(burn_caption(downscale(rend.render(), (w, h)), hold_caption or f"{caption[:70]}  {tag}  t={t:4.1f}s").tobytes())
+        write_portrait(hold_caption or f"{caption}  {tag}  t={t:4.1f}s")
     ff.stdin.close()
     ff.wait()
+    if pff is not None and pff.stdin is not None:
+        pff.stdin.close()
+        pff.wait()
     _log_video(out)
     return metrics
 

@@ -28,6 +28,11 @@ ROUGH_MAX_M = 0.01
 START_RADIUS_M = 0.45
 START_BLEND_M = 0.20            # smooth-step width from the flat disk to full terrain
 EDGE_TAPER_M = 0.30
+ROLL_AMP_MAX_M = 0.12           # rolling terrain: peak |height| about the baseline at level 1 (hills up, valleys down)
+ROLL_BASE_M = 0.15              # baseline height of rolling terrain (the hfield cannot go below 0, so valleys are carved down from here); the start disk sits on it
+ROLL_SIGMA_M = (0.15, 0.35, 0.70)   # smoothing scales of the three octaves (about 0.3 / 0.7 / 1.5 m features)
+ROLL_WEIGHTS = (0.25, 1.0, 1.2)
+ROLL_SLOPE_MAX_DEG = 25.0       # 99.5th percentile of the gradient (isolated steeper cells up to ~1.3x)
 TILE_MU = (0.3, 1.5)
 LOOSE_MU = (0.2, 0.4)
 LOOSE_PROB = 0.3                # probability a tile is "loose" at level 1 (scaled by level)
@@ -97,8 +102,32 @@ def _smoothstep(t: np.ndarray) -> np.ndarray:
     return t * t * (3.0 - 2.0 * t)
 
 
-def generate_terrain(level: float, seed: int, start_radius: float = START_RADIUS_M) -> Terrain:
-    """Sample a terrain. ``level`` in [0, 1] scales bump height, slope angle, roughness, bump count and loose-tile probability (0 = flat)."""
+def _rolling_heights(level: float, rng: np.random.Generator, X: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Signed hills-and-valleys relief about 0: weighted octaves of smoothed noise, peak ``ROLL_AMP_MAX_M * level``, gradient capped at ``ROLL_SLOPE_MAX_DEG * level``, zero on the start disk."""
+    from scipy import ndimage
+
+    field = np.zeros_like(X)
+    for sig, w in zip(ROLL_SIGMA_M, ROLL_WEIGHTS):
+        n = ndimage.gaussian_filter(rng.normal(size=X.shape), sigma=sig / CELL_M, mode="reflect")
+        field += w * n / max(float(n.std()), 1e-9)
+    field *= mask
+    typ = float(np.percentile(np.abs(field[mask > 0.99]), 98)) if (mask > 0.99).any() else 0.0     # typical peak: scaling by the single maximum left most hills small
+    if typ <= 0.0 or level <= 0.0:
+        return np.zeros_like(X)
+    field = np.clip(field * ROLL_AMP_MAX_M * level / typ, -0.95 * ROLL_BASE_M, 0.95 * ROLL_BASE_M)      # 98th percentile of |height| = amplitude; never below the hfield floor
+    gy, gx = np.gradient(field, CELL_M)
+    g, lim = float(np.percentile(np.hypot(gx, gy), 99.5)), float(np.tan(np.radians(ROLL_SLOPE_MAX_DEG * level)))
+    if g > lim:
+        field *= lim / g
+    return field
+
+
+def generate_terrain(level: float, seed: int, start_radius: float = START_RADIUS_M, rolling: bool = False) -> Terrain:
+    """Sample a terrain. ``level`` in [0, 1] scales bump height, slope angle, roughness, bump count and loose-tile probability (0 = flat).
+
+    ``rolling=True`` samples hills and valleys instead (``_rolling_heights``): signed, three-octave smooth relief over the whole patch about a baseline of ``ROLL_BASE_M``,
+    peak +-``ROLL_AMP_MAX_M`` x level, slopes up to ``ROLL_SLOPE_MAX_DEG`` x level, the start disk flat on the baseline; friction tiles and loose-patch roughness as before.
+    """
     from scipy import ndimage
 
     level = float(np.clip(level, 0.0, 1.0))
@@ -150,5 +179,9 @@ def generate_terrain(level: float, seed: int, start_radius: float = START_RADIUS
                 loose_cells[ylo:yhi + 1, xlo:xhi + 1] = 1.0
     rough = ROUGH_MAX_M * level * noise * ndimage.gaussian_filter(loose_cells, sigma=4.0) * mask
 
+    if rolling:
+        roll = _rolling_heights(level, rng, X, mask)
+        heights = ROLL_BASE_M * (level > 0.0) + roll + rough
+        return Terrain(level, int(seed), float(start_radius), heights, mu, loose, {"bump": np.zeros_like(X), "slope": roll, "rough": rough, "roll": roll})
     heights = bump + slope + rough
     return Terrain(level, int(seed), float(start_radius), heights, mu, loose, {"bump": bump, "slope": slope, "rough": rough})

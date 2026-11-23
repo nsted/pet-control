@@ -256,7 +256,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             level = float(np.random.default_rng(int(self._rng.integers(2 ** 31 - 1))).uniform(lmin, level))
         if level > 0.0:                                                                 # per-episode heightfield terrain (flat start disk covers the body)
             tseed = int(self._rng.integers(2 ** 31 - 1))
-            terrain = generate_terrain(level, tseed, max(START_RADIUS_M, self._foot))
+            terrain = generate_terrain(level, tseed, max(START_RADIUS_M, self._foot), rolling=self.task.param("terrain_rolling", 0.0) > 0.0)
             params = BuildParams(**{**params.__dict__, "terrain": terrain})
             self.privileged["terrain_level"], self.privileged["terrain_seed"] = float(level), float(tseed)
         self.sim = PetSim(params)

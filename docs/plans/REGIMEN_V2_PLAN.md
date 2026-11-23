@@ -169,13 +169,16 @@ Budgets are policy steps; ~2.7k steps/s flat, ~0.5-1k steps/s with layouts/terra
 | A2 | `flat_omni` | short goals 0.3-0.8 m at any bearing with a time limit that forces lateral/reverse moves | success >= 0.70; lateral displacement >= 0.4 m in 8 s for +-90 deg goals | 2M |
 | B1 | `terrain_easy` | A2 + heightfield `terrain_scale` 0.3-0.6, friction tiles | success >= 0.75 at scale 0.6 | 3M |
 | B2 | `terrain_full` | scale 0.6-1.0 (bumps 6 cm, slopes 15 deg, loose patches), goals 1.5-2.5 m | success >= 0.70 at scale 1.0; **imu_off drop >= 0.15** | 4M |
-| C1 | `barrier_touch` | flat; barrier +-1.1-1.6 m wide, one 0.45-0.6 m gap (`goal_obstacles.py:131-144`); path-shaped reward; asymmetric critic | success >= 0.60 (stall 45 s); blind baseline <= 0.30; **touch_off drop >= 0.20**; median contact_frac >= 0.02 | 6M |
-| C2 | `field_touch` | layered field (18-28 obstacles, radius 3 m) + barrier mixture | success >= 0.65; touch_off drop >= 0.15; blind baseline <= 0.45 | 4M |
+| B3 | `terrain_rolling` | **added 2026-11-23** (B2 measured too flat: only 14% of the area >3 cm high, 7% steeper than 8 deg, no valleys). Signed three-octave hills + valleys over the whole patch (+-12 cm, slopes <= 25 deg, `generate_terrain(rolling=True)`), goals 1.5-2.5 m; run through `goal_obstacles` with 0 obstacles so the touch block is on (terrain torques are not contacts) | success >= 0.70 at level 1.0; **imu_off drop >= 0.15** | 4M |
+| C0 | `sparse_field` | **added 2026-11-23**: flat; 3-6 mixed-shape obstacles, direct path blocked, goal 2.0-2.6 m, stall 45 s; contact-only sensing | success >= 0.70; **touch_off drop >= 0.15**; blind baseline <= 0.55 (reported); median contact_frac >= 0.02 | 4M |
+| C2 | `field_touch` | layered field (18-28 obstacles, radius 3 m); warm from C0 | success >= 0.65; touch_off drop >= 0.15; blind baseline <= 0.45 | 4M |
+| C1 (now last of C) | `barrier_touch` | flat; warm from C2; barrier +-1.1-1.6 m wide, one 0.45-0.6 m gap (`goal_obstacles.py:131-144`); path-shaped reward; asymmetric critic | success >= 0.60 (stall 45 s); blind baseline <= 0.30; **touch_off drop >= 0.20**; median contact_frac >= 0.02 | 6M | **Result 2026-11-23: 4 runs, 0.00-0.04 success, touch_off drop <= 0; reward imbalance (bus penalty) + barrier too hard as a first contact task (log).**
 | D1 | `hug_from_contact` | start with a random body part 0-0.25 m from the post, flat; post triggers the capacitive block | **hug held** (sec 5.3) in >= 0.75; penetration-free; **capacitive_off drop >= 0.15**; touch_off drop reported; delta bias 8 cm: success >= 0.60 | 4M |
 | D2 | `approach_hug` | post 0.5-1.5 m away, flat; nav then coil | hug held >= 0.70; median time-to-first-contact and time-to-hug reported | 4M |
 | E | `full_course` | terrain scale 0.5-1.0 + field + post | hug held >= 0.60; t_contact median reported; touch_off, imu_off and capacitive_off drops >= 0.15 each | 8M |
 
-Order: locomotion (A) -> terrain/IMU robustness (B) -> contact navigation (C, historically hardest; benefits from terrain-hardened gaits) -> hug (D)
+Order (revised 2026-11-23): locomotion (A) -> terrain/IMU robustness (B1, B2, B3 rolling hills) -> contact navigation easiest first (C0 sparse field -> C2 dense field -> C1 barrier) -> hug (D)
+**Current-model rule (2026-11-23):** the bus-current model is validated only for static, low-torque holds (13.3 A/(N.m)^2, +-6-18%); from B3 on the reward has no bus-current penalty (`bus_peak_penalty` 0; the soft clamp, 0.5 N.m cap and torque^2 energy penalty stay) and the bus current is REPORTED in gates, not gated, until a moving high-torque measurement on the robot (needs the owner's go-ahead)
 -> integration (E). If S0 shows the hug dominates the length decision, D1 is run early on candidate lengths (task iii of sec 3). Training distributions
 are always a superset of the gate's. Each stage: at most 3 knob iterations, then a design change by Fable, then owner escalation (sec 7).
 

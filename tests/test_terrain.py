@@ -269,3 +269,17 @@ def test_env_terrain_start_pose_no_penetration_after_reset() -> None:
         assert _min_dist(env.sim) > -GLITCH_PENETRATION_M and not env.task.glitch
         env.step(np.zeros(7))
         assert not env.task.glitch
+
+
+def test_rolling_terrain_has_valleys_and_flat_start() -> None:
+    """Rolling terrain: signed relief about the baseline (valleys below, hills above), flat start disk on the baseline, never below the hfield floor, deterministic, level 0 flat."""
+    import numpy as np
+
+    from petctl.sim.terrain import ROLL_BASE_M, generate_terrain
+
+    t = generate_terrain(1.0, 3, rolling=True)
+    assert t.heights.min() > 0.0
+    assert t.heights.min() < ROLL_BASE_M - 0.03 < ROLL_BASE_M + 0.03 < t.heights.max()
+    assert abs(t.footprint_height(0.4) - ROLL_BASE_M) < 1e-6
+    assert np.array_equal(t.heights, generate_terrain(1.0, 3, rolling=True).heights)
+    assert np.allclose(generate_terrain(0.0, 3, rolling=True).heights, 0.0)

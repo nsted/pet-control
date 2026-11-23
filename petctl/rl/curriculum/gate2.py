@@ -166,14 +166,25 @@ class PolicyEvaluator:
         if self.episode_s is not None:
             cfg.episode_s = self.episode_s
         env = PetEnv(cfg)
-        if env.observation_space.shape[0] != pol._mean.shape[0]:
+        keep: np.ndarray | None = None
+        if self.cfg_patch.get("drop_touch_block") and env.observation_space.shape[0] != pol._mean.shape[0]:
+            # a touch-blind policy (e.g. the A1 straight walker) on a touch task: remove the contact block(s) from the observation ("touch" 8 nj + "touch_long" 4 nj, after the base block)
+            tp, nj = cfg.task_params, cfg.n_joints
+            n_touch = 8 * nj + (4 * nj if float(tp.get("touch_long", 0.0)) > 0.0 else 0)
+            n_tail = (9 * cfg.n_modules if float(tp.get("capacitive_obs", 0.0)) > 0.0 else 0) + (nj if cfg.action_mode in ("delta", "hold") else 0)
+            start = env.observation_space.shape[0] - n_touch - n_tail
+            keep = np.r_[0:start, start + n_touch:env.observation_space.shape[0]]
+        if keep is not None:
+            if len(keep) != pol._mean.shape[0]:
+                raise ValueError(f"policy expects {pol._mean.shape[0]} entries, touch-dropped observation has {len(keep)}")
+        elif env.observation_space.shape[0] != pol._mean.shape[0]:
             raise ValueError(f"policy expects {pol._mean.shape[0]} observation entries but task '{cfg.task}' provides {env.observation_space.shape[0]}")
         rows: list[Row] = []
         for s in seeds:
             obs, _ = env.reset(seed=s)
             done, info, ret, steps, moved_at = False, {}, 0.0, 0, -1
             while not done:
-                obs, r, te, tr, info = env.step(pol.action(obs))
+                obs, r, te, tr, info = env.step(pol.action(obs if keep is None else obs[keep]))
                 ret, steps, done = ret + float(r), steps + 1, te or tr
                 if leak and moved_at < 0 and not math.isnan(getattr(env.task, "_hug").t_contact):
                     move_post(env, self.leak_move_m)

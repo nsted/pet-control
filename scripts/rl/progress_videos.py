@@ -106,8 +106,8 @@ def run_info(run: Path, root: Path) -> dict[str, Any] | None:
 
 def run_dirs(data: Path) -> list[tuple[Path, Path]]:
     """All ``(root, run_dir)`` pairs under the study roots of ``data`` (a run dir holds an ``episodes.jsonl``)."""
-    pats = ("m2v*", "hug_long*", "hug_curr*", "odd*", "hug_range*", "hug_anneal*", "chain_ab*")
-    return [(r, e.parent) for r in sorted(x for pat in pats for x in data.glob(pat)) if r.is_dir() for e in sorted(r.rglob("episodes.jsonl")) if ".aborted" not in str(e.parent)]
+    pats = ("m2v*", "hug_long*", "hug_curr*", "odd*", "hug_range*", "hug_anneal*", "chain_ab*", "chain_c*")
+    return [(r, e.parent) for r in sorted(x for pat in pats for x in data.glob(pat) if "smoke" not in x.name) if r.is_dir() for e in sorted(r.rglob("episodes.jsonl")) if ".aborted" not in str(e.parent)]
 
 
 def ticks(run: Path) -> list[tuple[float, str]]:
@@ -200,13 +200,13 @@ def render_run(info: dict[str, Any], kind: str, out_dir: Path) -> Path:
         pf = "policy.npz"
     seed, found = pick_seed(run, pf, family)
     cfg = _json(run / "config.json")
-    stage = info["stage"] or (run.parent.name if info["root"].name.startswith("chain_ab") else info["root"].name)        # chain runs: the stage dir (flat_nav / flat_omni / terrain_easy ...) names the stage
+    stage = info["stage"] or (run.parent.name if info["root"].name.startswith(("chain_ab", "chain_c")) else info["root"].name)        # chain runs: the stage dir (flat_nav / flat_omni / terrain_easy ...) names the stage
     scale = float(cfg.get("action_scale_rad", 1.0))
     label = (f"Regimen v2 {'FINAL' if kind == 'final' else 'PROGRESS'} - {stage} {run.name} (L={cfg.get('n_modules', '?')}) - "
              f"{'run end' if kind == 'final' else 'run so far'}: success {info['rolling_success']:.2f} (last {info['n_episodes']} episodes) at {info['steps']} steps, {info['wall_min']:.0f} min into training"
              + (f" - training {level_caption(run)}" if level_caption(run) else "") + f" - joint target cap +-{scale:g} rad" + ("" if found else " - no successful episode yet")
              + (f" - body: {body_note(int(cfg['n_modules']))}" if cfg.get("n_modules") not in (None, 8) else ""))
-    out = out_dir / f"{kind}_{info['root'].name}_{(stage if info['root'].name.startswith('chain_ab') else family)}_{run.name}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+    out = out_dir / f"{kind}_{info['root'].name}_{(stage if info['root'].name.startswith(('chain_ab', 'chain_c')) else family)}_{run.name}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     m = video.record_video(run, out, pf, seed=seed, distance=CAMERA_M[family], label=label,
                            final_note=lambda met, reached: episode_note(met, reached, seed, found, family))
     tick = run / "progress_ticks"

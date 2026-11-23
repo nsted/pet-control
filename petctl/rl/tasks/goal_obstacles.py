@@ -182,10 +182,11 @@ class GoalObstacles(GoalReach):
             obs: list[tuple] = []
             n_block = int(self.param("n_block", 1))               # obstacles placed ON the straight line to the target, so the direct path is always blocked
             hw = self.param("barrier_halfwidth", 0.0)
-            if hw > 0.0:                                          # a barrier ACROSS the route, wider than the gait's sideways sweep, with one gap at a random place:
+            if hw > 0.0:
+                hw = float(rng.uniform(self.param("barrier_halfwidth_min", hw), hw))     # optional per-episode width range (C1: 1.1-1.6)                                          # a barrier ACROSS the route, wider than the gait's sideways sweep, with one gap at a random place:
                 s_bar = float(rng.uniform(0.8, max(0.9, d - 0.7)))      # the robot cannot arc round it and has to feel along it to find the gap
                 gap_c = float(rng.uniform(-hw, hw))
-                gap_w = self.param("barrier_gap", 0.45)
+                gap_w = float(rng.uniform(self.param("barrier_gap_min", self.param("barrier_gap", 0.45)), self.param("barrier_gap", 0.45)))
                 for t in np.arange(-hw, hw + 1e-6, 0.26):
                     if abs(t - gap_c) < gap_w / 2 + 0.1:
                         continue

@@ -380,6 +380,46 @@ for _n in CHAIN_STAGES:
         steps=4_000_000, n_envs=10, dr_scale=0.3, episode_s=CHAIN_EPISODE_S[_n], ent_coef=0.005, knobs=dict(_CHAIN_KNOBS), action_mode="hold")
 
 
+
+# ---------------------------------------------------------------- C1 barrier_touch (plan sec 4.2; driver scripts/rl/chain_c_driver.py)
+# Flat; a barrier +-1.1-1.6 m wide with ONE gap 0.45-0.6 m across the route, goal 2.0-2.6 m ahead (+-20 deg); the policy is blind to it except through the motor-reply contact channels. Path-shaped
+# reward (distance field) and the asymmetric critic as S8b; stall stop 45 s. Warm start: the B2 terrain_full run. Gate: success >= 0.60, touch_off paired drop >= 0.20, blind baseline (A1 straight walker) <= 0.30,
+# median contact_frac >= 0.02, current budget, glitch 0.
+_C1_PARAMS = {**_CHAIN_BASE, "goal_dist_min": 2.0, "goal_dist_max": 2.6, "bearing_deg": 20.0, "barrier_halfwidth": 1.6, "barrier_halfwidth_min": 1.1, "barrier_gap": 0.6, "barrier_gap_min": 0.45,
+              "n_extra": 0, "n_obs_min": 1, "n_obs_max": 1, "stall_s": 45.0, "stall_gain_m": 0.10, "bus_peak_penalty": 0.0, "bus_penalty": 0.0, "bus_soft_knee": 0.7}   # no bus-current reward (model unvalidated for contact / high torque; penalty 10 and 3 collapsed C1); the soft clamp stays
+C1_EPISODE_S = 150.0
+STAGES["barrier_touch"] = Stage(
+    "barrier_touch", "goal_obstacles", "C1: flat barrier +-1.1-1.6 m wide with one 0.45-0.6 m gap, goal 2.0-2.6 m ahead, contact-only sensing; gate success >= 0.60, touch_off drop >= 0.20, blind baseline <= 0.30.",
+    task_params=dict(_C1_PARAMS),
+    gate=Gate(task_params=_gate_params(_C1_PARAMS), episodes=100, dr_scale=0.6, min_success=0.60, episode_s=C1_EPISODE_S, min_median={"contact_frac": 0.02}),
+    steps=6_000_000, n_envs=10, dr_scale=0.3, episode_s=C1_EPISODE_S, ent_coef=0.005, knobs=dict(_CHAIN_KNOBS), action_mode="hold")
+
+
+# ---------------------------------------------------------------- B3 / C0 / C2 (plan sec 4.2, revised 2026-11-23; driver scripts/rl/chain_c_driver.py --stage ...)
+# No bus-current reward (``bus_peak_penalty`` / ``bus_penalty`` 0): the current model is validated only for static low-torque holds. The soft clamp (knee 0.7) and the 0.5 N.m cap stay; bus current is reported, not gated.
+# All three run through ``goal_obstacles`` (touch block on): B3 with 0 obstacles (terrain torques must not be read as contacts), C0 / C2 with obstacle fields.
+_NOBUS = {"bus_peak_penalty": 0.0, "bus_penalty": 0.0, "bus_soft_knee": 0.7}
+_NOOBS = {"n_obs_min": 0, "n_obs_max": 0, "n_block": 0, "n_extra": 0}
+NEW_STAGE_PARAMS: dict[str, dict[str, float]] = {
+    "terrain_rolling": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 0.6, "terrain_rolling": 1.0},
+    "sparse_field": {**_CHAIN_BASE, **_NOBUS, "goal_dist_min": 2.0, "goal_dist_max": 2.6, "bearing_deg": 20.0, "n_obs_min": 3, "n_obs_max": 6, "n_block": 1, "n_extra": 0, "stall_s": 45.0, "stall_gain_m": 0.10},
+    "dense_field": {**_CHAIN_BASE, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "field_radius": 3.0, "n_obs_min": 18, "n_obs_max": 28, "n_corridor": 6, "min_gap": 0.40, "stall_s": 45.0, "stall_gain_m": 0.10},
+}
+NEW_STAGE_EPISODE_S = {"terrain_rolling": 40.0, "sparse_field": 120.0, "dense_field": 150.0}
+NEW_STAGE_THRESHOLD = {"terrain_rolling": 0.70, "sparse_field": 0.70, "dense_field": 0.65}
+NEW_STAGE_DESC = {
+    "terrain_rolling": "B3: hills and valleys (signed three-octave relief, +-12 cm, slopes <= 25 deg) over the whole patch, goals 1.5-2.5 m, touch block on with no obstacles; gate success >= 0.70 at level 1.0, imu_off drop >= 0.15.",
+    "sparse_field": "C0: flat, 3-6 mixed-shape obstacles with the direct path blocked, goal 2.0-2.6 m, contact-only sensing; gate success >= 0.70, touch_off drop >= 0.15, median contact_frac >= 0.02.",
+    "dense_field": "C2: flat, 18-28 obstacles in a 3 m radius field, goal 1.5-2.5 m, contact-only sensing; gate success >= 0.65, touch_off drop >= 0.15, blind baseline <= 0.45.",
+}
+for _n, _p in NEW_STAGE_PARAMS.items():
+    STAGES[_n] = Stage(
+        _n, "goal_obstacles", NEW_STAGE_DESC[_n], task_params=dict(_p),
+        gate=Gate(task_params=_gate_params(_p), episodes=100, dr_scale=0.6, min_success=NEW_STAGE_THRESHOLD[_n], episode_s=NEW_STAGE_EPISODE_S[_n],
+                  min_median={} if _n == "terrain_rolling" else {"contact_frac": 0.02}),
+        steps=4_000_000, n_envs=10, dr_scale=0.3, episode_s=NEW_STAGE_EPISODE_S[_n], ent_coef=0.005, knobs=dict(_CHAIN_KNOBS), action_mode="hold")
+
+
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:
     """The stage ``name`` with its ``action_mode`` replaced (``abs`` | ``hold`` | ``delta``); None keeps the stage's own."""
     stage = get_stage(name)

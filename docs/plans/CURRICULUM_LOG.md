@@ -56,3 +56,7 @@ New `petctl/sim/style.py` (cosmetic only; build_mjcf byte-identical, physics ver
 - Data: data/rl/chain_ab_soft
 
 B2 terrain_full PASS (2026-11-23, soft current limiter knee 0.7, data/rl/chain_ab_soft/terrain_full/a1): success 0.93 (Wilson lo 0.863), imu_off drop 0.87, bus mean 2.49 A, episodes >10 A 1%, glitch 0; skill models/skills/nav_chain/terrain_full. Chain DONE.
+
+## 2026-11-23 C1 barrier_touch set 1 (data/rl/chain_c): FAIL x2, success 0.00 (blind A1 walker 0.17), touch_off drop 0
+Cause: bus_peak_penalty 10 (inherited from B2) swamped progress (-1150 vs +800 per episode); training success fell 0.17 -> 0 as the policy stopped moving (distance 1.26 -> 0.77 m).
+Knob iteration 1/3: bus_peak_penalty 3.0, fresh root data/rl/chain_c2, warm from terrain_full. Also added: portrait videos, touch-blind blind baseline, barrier width/gap ranges.

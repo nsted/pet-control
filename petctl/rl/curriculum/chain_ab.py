@@ -131,3 +131,32 @@ class DrRampCallback(BaseCallback):
     def _on_rollout_end(self) -> None:
         self.last = dr_at(self.num_timesteps, self.budget.target, self.start, self.end, self.frac)
         self.training_env.env_method("set_dr_scale", self.last)
+
+
+# ---------------------------------------------------------------- B3 / C0 / C2 / C1 gates (plan sec 4.2, revised 2026-11-23)
+C1_STAGE = "barrier_touch"
+# stage -> (ablation name, min drop, blind-baseline ceiling or None); the bus current is REPORTED, not gated (model unvalidated for contact / high torque: plan sec 4.2 current-model rule)
+STAGE_GATES: dict[str, tuple[str, float, float | None]] = {
+    "terrain_rolling": ("imu_off", 0.15, None),
+    "sparse_field": ("touch_off", 0.15, 0.55),
+    "dense_field": ("touch_off", 0.15, 0.45),
+    "barrier_touch": ("touch_off", 0.20, 0.30),
+}
+TOUCH_OFF_MIN_DROP = 0.20
+BLIND_CEILING = 0.30
+
+
+def gate_spec_stage(stage_name: str, n: int = 100, blind_run: Any = None) -> Gate2Spec:
+    """Gate2 spec of a B3 / C0 / C2 / C1 stage: ``n`` seeds at dr 0.6, one paired ablation (drop CI lower bound >= its minimum), blind baseline = the A1 straight walker (``blind_run``, touch block dropped)
+    on the stage layout when the stage has a ceiling; bus current reported only (limits disabled)."""
+    stage = get_stage(stage_name)
+    abl_name, min_drop, ceiling = STAGE_GATES[stage_name]
+    blind = ceiling is not None and blind_run is not None
+    return Gate2Spec(n=n, dr_scale=0.6, nominal=False, ablations=(Ablation(abl_name, {abl_name: 1.0}, min_drop=min_drop),), max_bus_mean_a=1e9, max_frac_ticks_over=1.0,
+                     blind_run=blind_run if blind else None, blind_ceiling=ceiling if blind else None,
+                     blind_env={"task": stage.task, "task_params": dict(stage.gate.task_params), "drop_touch_block": True} if blind else {})
+
+
+def gate_spec_c1(n: int = 100, blind_run: Any = None) -> Gate2Spec:
+    """C1 gate (kept for the existing name): ``gate_spec_stage('barrier_touch')``."""
+    return gate_spec_stage(C1_STAGE, n, blind_run)
