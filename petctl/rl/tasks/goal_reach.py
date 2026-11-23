@@ -216,8 +216,8 @@ class GoalReach(Locomote):
         return np.concatenate([r.T @ (v / max(d, 1e-9)), [min(d / DIST_OBS_SCALE_M, 2.0), min(d, NEAR_FIELD_M) / NEAR_FIELD_M]]).astype(np.float32)
 
     def markers(self, sim: PetSim) -> list[tuple[np.ndarray, float, tuple[float, float, float, float]]]:
-        """A red ball of the success radius on the floor at the goal (turns green once reached)."""
-        colour = (0.1, 0.8, 0.2, 0.9) if self.reached else (0.95, 0.1, 0.1, 0.9)
+        """A gold ball of the success radius on the floor at the goal (turns green once reached)."""
+        colour = (0.25, 0.85, 0.55, 0.9) if self.reached else (0.98, 0.78, 0.22, 0.9)
         return [(np.array([self.goal[0], self.goal[1], self.radius]), self.radius, colour)]
 
     def distance(self, sim: PetSim) -> float:

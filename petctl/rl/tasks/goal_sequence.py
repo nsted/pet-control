@@ -14,9 +14,9 @@ import numpy as np
 from petctl.rl.tasks.goal_reach import DIST_OBS_SCALE_M, GoalReach
 from petctl.sim.model_builder import PetSim
 
-RGBA_CURRENT = (0.95, 0.1, 0.1, 0.9)
-RGBA_NEXT = (1.0, 0.6, 0.1, 0.8)
-RGBA_DONE = (0.1, 0.8, 0.2, 0.6)
+RGBA_CURRENT = (0.98, 0.78, 0.22, 0.9)
+RGBA_NEXT = (1.0, 0.62, 0.45, 0.7)
+RGBA_DONE = (0.25, 0.85, 0.55, 0.6)
 
 
 class GoalSequence(GoalReach):

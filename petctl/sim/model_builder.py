@@ -27,6 +27,7 @@ from petctl.gravity_model import A, G, P, Q, ghat
 from petctl.sim.bus import BusClamp
 from petctl.sim.mujoco_model import COULOMB_NM, MODULE_MASS_KG, PEAK_TORQUE_NM
 from petctl.sim.shapes import TARGET_HEIGHT_M, TargetShape
+from petctl.sim.style import apply_style, style_xml
 from petctl.sim.terrain import BASE_M, CELL_M, ELEV_MAX_M, HALF_M, Terrain, tile_slices
 
 N_JOINTS = 7                                # the CAD robot (8 modules); ``BuildParams.n_modules`` lengthens it in simulation
@@ -403,7 +404,10 @@ class PetSim:
         """Build the model; ``reset`` places the robot."""
         self.p = params or BuildParams()
         xml, self.z0 = build_mjcf(self.p)
-        self.model = mujoco.MjModel.from_xml_string(xml)
+        styled = not self.p.extra.get("plain_colors", 0)                       # cosmetic colors/sky/light (petctl/sim/style.py); physics-neutral, set extra["plain_colors"]=1 to disable
+        self.model = mujoco.MjModel.from_xml_string(style_xml(xml, self.p.n_modules) if styled else xml)
+        if styled:
+            apply_style(self.model)
         if self.p.terrain is not None and not self.p.hanging:
             write_terrain(self.model, self.p.terrain)
         self.data = mujoco.MjData(self.model)
