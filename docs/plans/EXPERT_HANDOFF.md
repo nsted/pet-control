@@ -5,6 +5,9 @@ The directing expert is now an **Opus** agent (owner decision, cost). Fable's la
 ## Role
 Reserve effort for: stage/gate design, reward/obs/action design, diagnosing failed iterations, deciding go/no-go after stops, body-length and gate-shape decisions. Sonnet executors do code, runs, logs. Manager (main Claude session) dispatches executors and relays.
 
+## Cost rule (2026-11-23, owner: credits)
+Consult the expert only when a written stop rule is ambiguous or a stage has failed twice for different causes; routine go/no-go follows the written rules. Expert reads JSON + at most one contact sheet. See `CURRICULUM_STATE.md` (token-cost rules).
+
 ## Owner constraints (binding)
 Sim only, never move the robot. Torque cap 0.5 N.m; robot current 10 A spikes / 4 A mean. Obstacles felt through motor feedback only; capacitive sensors are for the target only (acts like a human body part). Target knowledge = delta (head frame, head only). NO hand-coded poses/priors for the hug (target shape unknown: wide/narrow, cylinder/box). Flipping/rolling never a failure. Runs <= ~1 h wall (M4 MacBook Air, ~4-6k steps/s flat, ~1.7k hug); pilots with go/no-go signals first. Videos: every 30 min a progress video of the best run so far per active stage, plus one best video per stage at its end, no cap, factual captions. Owner wants autonomy; escalate only if truly blocking. Gates frozen except demonstrated mis-calibration (log it).
 

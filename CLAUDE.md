@@ -67,6 +67,8 @@ Unchecked `[ ]` items in a plan are the backlog of implied upcoming tasks. When 
 
 **Always ask the user before creating, closing, or commenting on any GitHub issue.**
 
+**RL curriculum sessions (credit budget):** read `docs/plans/CURRICULUM_STATE.md` first (current state, next action, token-cost rules); don't read `docs/plans/archive/` or the whole `CURRICULUM_LOG.md`. Monitor training with `scripts/rl/event_watch.sh` (via Monitor), not a polling cron. Follow written stop rules without consulting the expert; keep log entries to ≤ 5 lines.
+
 ## Design Reference
 
 See `docs/design/` for architecture sketches and the staged implementation plan.
