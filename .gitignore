@@ -38,3 +38,4 @@ data/
 # MuJoCo writes this into the working directory
 MUJOCO_LOG.TXT
 docs/media/.video_log.jsonl
+docs/media/
