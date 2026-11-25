@@ -434,7 +434,7 @@ for _n, _p in NEW_STAGE_PARAMS.items():
         _n, "goal_obstacles", NEW_STAGE_DESC[_n], task_params=dict(_p),
         gate=Gate(task_params=_gate_params(_p, **({"bearing_deg": 180.0} if _n == "terrain_dunes" else {})), episodes=100, dr_scale=0.6, min_success=NEW_STAGE_THRESHOLD[_n], episode_s=NEW_STAGE_EPISODE_S[_n],
                   min_median={} if _n in ("terrain_rolling", "terrain_ridges", "terrain_ridges_lo", "terrain_rings_lo", "terrain_rings_mid", "terrain_dunes", "terrain_rings") else {"contact_frac": 0.02}),
-        steps=4_000_000, n_envs=10, dr_scale=0.3, episode_s=NEW_STAGE_EPISODE_S[_n], ent_coef=0.005, knobs=dict(_CHAIN_KNOBS), action_mode="hold")
+        steps=4_000_000, n_envs=10, dr_scale=0.3, episode_s=NEW_STAGE_EPISODE_S[_n], ent_coef=0.0, log_std_init=-1.0, knobs=dict(_CHAIN_KNOBS), action_mode="hold")        # ent_coef 0 + std reset: with clipped actions the entropy bonus ran the action std away to 10+ (2026-11-25)
 
 
 def stage_variant(name: str, action_mode: str | None = None) -> Stage:

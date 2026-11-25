@@ -16,6 +16,7 @@ from dataclasses import replace
 from multiprocessing import Pool
 from pathlib import Path
 
+import mujoco
 import numpy as np
 
 from petctl.rl.curriculum.gate2 import GaitPolicy
@@ -44,7 +45,8 @@ def _make_env() -> tuple[PetEnv, np.ndarray]:
     flat = generate_terrain(0.5, 1, 0.45, rolling=True)
     env.sim.set_terrain(replace(flat, heights=np.full_like(flat.heights, ROLL_BASE_M), tile_mu=np.full((3, 3), 1.0), tile_loose=np.zeros((3, 3), bool), parts={}))
     d = env.sim.data                                                                    # set_terrain resets the sim to its clean straight home pose
-    v = np.asarray(d.xpos[1][:2] - d.xpos[env.sim.model.nbody - 1][:2], float)          # tail -> head direction in the plane
+    mujoco.mj_forward(env.sim.model, d)
+    v = np.asarray(d.site_xpos[env.sim.head_id][:2] - d.subtree_com[1][:2], float)      # centre of mass -> head direction in the plane (body frames all sit at the origin)
     return env, v / (np.linalg.norm(v) + 1e-9)
 
 
@@ -110,25 +112,27 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("data/rl/ridge_gait/result.json"))
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
-    theta = init_theta(rng)
+    mean = init_theta(rng)
     lo = np.r_[np.full(NJ, -1.5), np.full(NJ, 0.0), np.full(NJ, -np.pi), np.full(NJ, 0.0), np.full(NJ, -np.pi), 0.2]
     hi = np.r_[np.full(NJ, 1.5), np.full(NJ, 2.0), np.full(NJ, 2 * np.pi * 2), np.full(NJ, 1.0), np.full(NJ, np.pi), 2.0]
+    std = (hi - lo) * 0.15 * a.sigma / 0.2                                 # initial per-dimension sampling width
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    hist, best_all = [], (-1.0, theta.copy(), 0.0, 0.0)
-    t0 = time.time()
-    with Pool(a.workers) as pool:
+    hist, best_all = [], (-1.0, mean.copy(), 0.0, 0.0)
+    lam, mu, t0 = 2 * a.pairs, max(3, a.pairs // 2), time.time()
+    with Pool(a.workers) as pool:                                          # cross-entropy method: sample, keep the best mu, refit mean and std (smoothed)
         for it in range(a.iters):
-            eps = rng.normal(0, 1, (a.pairs, theta.size))
-            cand = [np.clip(theta + s * a.sigma * e * (hi - lo) * 0.25, lo, hi) for e in eps for s in (1, -1)]
+            cand = [np.clip(rng.normal(mean, std), lo, hi) for _ in range(lam)]
+            cand[0] = mean.copy()
             res = pool.map(evaluate, [(c, a.height) for c in cand])
             fit = np.array([r[0] for r in res])
             for c, r in zip(cand, res):
                 if r[0] > best_all[0]:
                     best_all = (r[0], c.copy(), r[1], r[2])
-            rank = (np.argsort(np.argsort(fit)) / (len(fit) - 1)) - 0.5                      # centred rank shaping
-            grad = sum(rank[2 * i] * eps[i] - rank[2 * i + 1] * eps[i] for i in range(a.pairs)) / (2 * a.pairs)
-            theta = np.clip(theta + 0.5 * a.sigma * grad * (hi - lo) * 0.25 * 2.0, lo, hi)
-            hist.append({"iter": it, "mean_progress": float(np.mean([r[1] for r in res])), "best_progress": float(max(r[1] for r in res)), "crossed_frac": float(np.mean([r[2] for r in res])), "elapsed_min": (time.time() - t0) / 60})
+            elite = np.array([cand[i] for i in np.argsort(-fit)[:mu]])
+            mean = 0.5 * mean + 0.5 * elite.mean(0)
+            std = np.maximum(0.7 * std + 0.3 * elite.std(0), (hi - lo) * 0.01)
+            hist.append({"iter": it, "mean_progress": float(np.mean([r[1] for r in res])), "elite_progress": float(np.mean(sorted([r[1] for r in res])[-mu:])), "best_progress": float(max(r[1] for r in res)),
+                         "crossed_frac": float(np.mean([r[2] for r in res])), "elapsed_min": (time.time() - t0) / 60})
             print(json.dumps(hist[-1]), flush=True)
             a.out.write_text(json.dumps({"height_m": a.height, "best_fitness": best_all[0], "best_progress_m": best_all[2], "best_crossed": best_all[3], "best_theta": best_all[1].tolist(), "history": hist}, indent=1))
     return 0
