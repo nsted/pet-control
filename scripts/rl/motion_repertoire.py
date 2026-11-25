@@ -109,6 +109,8 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, default=Path("data/rl/motion_repertoire/archive.json"))
+    ap.add_argument("--seed-archives", type=Path, nargs="*", default=[], help="earlier gait archives whose controllers seed the first batch (36-parameter ones are padded with zero spin)")
+    ap.add_argument("--spin-frac", type=float, default=0.5, help="fraction of the random initial batch given random continuous spin rates")
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
     lo, hi = rg.bounds()
@@ -129,6 +131,16 @@ def main() -> int:
         for it in range(a.iters + 1):
             if it == 0:
                 cand = [np.clip(rng.uniform(lo, hi), lo, hi) for _ in range(a.init)]                          # broad random start: wide coverage of motion types
+                for c in cand:                                                                                # some start with no spin, some with it
+                    if rng.random() > a.spin_frac:
+                        c[36:] = 0.0                                                                   # spin rates are the last 7 parameters
+                seeds = []
+                for sp in a.seed_archives:
+                    for cell in json.load(open(sp))["cells"]:
+                        th = np.array(cell["theta"], float)
+                        seeds.append(np.concatenate([th, np.zeros(len(lo) - len(th))]) if len(th) < len(lo) else th)
+                for i, sd in enumerate(seeds[: len(cand)]):
+                    cand[i] = np.clip(sd, lo, hi)
             else:
                 keys = list(archive)
                 cand = []

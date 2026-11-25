@@ -77,7 +77,8 @@ def evaluate_pose(theta: np.ndarray, hold: float = 5.0) -> tuple[dict[str, float
     rise = P[:, 2] - z_rest
     mid, ends = rise[2:6].mean(), rise[[0, 1, 6, 7]].mean()
     dist = np.linalg.norm(P[:, None, :] - P[None, :, :], axis=-1)
-    desc = {"top": float(P[:, 2].max()), "bridge": float(mid - ends), "compact": float(dist.max()), "grounded": float(np.sum(rise < 0.015))}
+    desc = {"top": float(P[:, 2].max()), "bridge": float(mid - ends), "compact": float(dist.max()), "grounded": float(np.sum(rise < 0.015)),
+            "mid_clear": float(rise[2:6].min()), "ends_up": float(rise[[0, 7]].max()), "span": float(dist[0, 7])}          # arch measures: lowest middle module's rise, highest end's rise, end-to-end distance
     effort = tq / keep + 3.0 * dq / keep                         # torque to hold + residual motion
     return desc, float(1.0 / (0.05 + effort))
 

@@ -29,7 +29,8 @@ def pick(cells: list[dict]) -> list[tuple[str, dict]]:
            best("backward", lambda c: -d(c, "vx"), lambda c: abs(d(c, "yaw")) < 0.15),
            best("sidewinding", lambda c: abs(d(c, "vy")), lambda c: abs(d(c, "roll")) < 0.15 and abs(d(c, "vx")) < 0.03),
            best("turn in place (pivot)", lambda c: abs(d(c, "yaw")), lambda c: sp(c) < 0.015),
-           best("fastest rolling", lambda c: abs(d(c, "roll")))]
+           best("fastest rolling", lambda c: abs(d(c, "roll"))),
+           best("rearing (head lifted)", lambda c: c["desc"].get("height", 0.0), lambda c: "height" in c["desc"])]
     return [o for o in out if o is not None]
 
 

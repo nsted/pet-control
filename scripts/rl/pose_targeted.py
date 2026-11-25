@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from multiprocessing import Pool
 from pathlib import Path
@@ -18,8 +19,9 @@ import numpy as np
 
 import pose_repertoire as pr
 
-OBJ = {"reach": lambda d: d["top"], "bridge": lambda d: d["bridge"] - 0.3 * max(0.0, 3 - d["grounded"]) * 0.0, "coil": lambda d: -d["compact"], "low": lambda d: -d["top"]}
-MIN_FIT = 1.5                                   # held-pose requirement: fitness = 1/(0.05 + effort) >= 1.5, i.e. effort <= ~0.62 (torque + residual motion)
+OBJ = {"arch": lambda d: d["mid_clear"] - 2.0 * max(0.0, d["ends_up"]) - 3.0 * max(0.0, 0.30 - d["span"]), "reach": lambda d: d["top"], "bridge": lambda d: d["bridge"] - 0.3 * max(0.0, 3 - d["grounded"]) * 0.0, "coil": lambda d: -d["compact"], "low": lambda d: -d["top"]}
+MIN_FIT = float(os.environ.get("POSE_MIN_FIT", "1.5"))     # held-pose requirement: fitness = 1/(0.05 + effort) >= 1.5, i.e. effort <= ~0.62 (torque + residual motion); 0 = no effort limit (only the actuator cap limits torque)
+ONLY = [o for o in os.environ.get("POSE_OBJ", "").split(",") if o]
 
 
 def score(args):
@@ -42,9 +44,9 @@ def main() -> int:
     seeds = json.load(open(a.seed_archive))["cells"] if a.seed_archive.exists() else []
     out, t0 = {}, time.time()
     with Pool(a.workers) as pool:
-        for name in OBJ:
-            key = {"reach": "top", "bridge": "bridge", "coil": "compact", "low": "top"}[name]
-            sign = 1 if name in ("reach", "bridge") else -1
+        for name in (ONLY or [o for o in OBJ if o != "arch"]):
+            key = {"arch": "bridge", "reach": "top", "bridge": "bridge", "coil": "compact", "low": "top"}[name]
+            sign = 1 if name in ("arch", "reach", "bridge") else -1
             best_seed = max(seeds, key=lambda c: sign * c["desc"][key]) if seeds else None
             mean = np.array(best_seed["theta"]) if best_seed else np.zeros(pr.NJ)
             std = np.full(pr.NJ, 1.0)
