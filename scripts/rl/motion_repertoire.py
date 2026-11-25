@@ -60,7 +60,7 @@ def descriptor(theta: np.ndarray, seconds: float) -> tuple[dict[str, float], flo
     hb = int(m.body("m0").id)
     while not done and t < seconds:
         q = rg.controller(theta, t)
-        a = np.concatenate([np.clip(q / scale, -1.0, 1.0), [-1.0]])
+        a = np.concatenate([q / scale, [-1.0]])
         _, _, te, tr, _ = env.step(a)
         done = te or tr
         t += env.dt
@@ -111,8 +111,7 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("data/rl/motion_repertoire/archive.json"))
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
-    lo = np.r_[np.full(rg.NJ, -1.5), np.full(rg.NJ, 0.0), np.full(rg.NJ, -np.pi), np.full(rg.NJ, 0.0), np.full(rg.NJ, -np.pi), 0.2]
-    hi = np.r_[np.full(rg.NJ, 1.5), np.full(rg.NJ, 2.0), np.full(rg.NJ, 2 * np.pi * 2), np.full(rg.NJ, 1.0), np.full(rg.NJ, np.pi), 2.0]
+    lo, hi = rg.bounds()
     a.out.parent.mkdir(parents=True, exist_ok=True)
     archive: dict[tuple[int, ...], dict] = {}
     t0 = time.time()

@@ -37,7 +37,7 @@ def _make_env() -> tuple[PetEnv, np.ndarray]:
     pol = GaitPolicy(RUN, "policy.npz")
     cfg = pol.cfg
     g = json.load(open(RUN / "gate2_terrain_dunes.json"))
-    cfg.task_params = {**g["eval_task_params"], "terrain_level": 0.5, "terrain_ridges": 0.0, "stall_s": 0.0}
+    cfg.task_params = {**g["eval_task_params"], "terrain_level": 0.5, "terrain_ridges": 0.0, "stall_s": 0.0, "action_unbounded": 1.0}
     cfg.dr.scale = 0.0
     cfg.episode_s = EP_S
     env = PetEnv(cfg)
@@ -62,11 +62,20 @@ def ridge_terrain(env: PetEnv, fwd: np.ndarray, height: float):
 
 
 def controller(theta: np.ndarray, t: float) -> np.ndarray:
-    """Joint-angle targets (rad) at time ``t`` from the parameter vector ``theta`` (36 entries)."""
+    """Joint-angle targets (rad) at time ``t``: per-joint offset, wave and second harmonic (36 parameters), plus an optional continuous spin ``omega_j * t`` (7 more, rad/s) for joints that
+    turn round and round. No angle range anywhere: only the per-tick slew limit (a speed limit) bounds how fast a target may move."""
     off, amp, ph = theta[0:NJ], theta[NJ:2 * NJ], theta[2 * NJ:3 * NJ]
     b, psi, f = theta[3 * NJ:4 * NJ], theta[4 * NJ:5 * NJ], theta[5 * NJ]
+    spin = theta[5 * NJ + 1:6 * NJ + 1] if len(theta) > 5 * NJ + 1 else 0.0
     w = 2.0 * np.pi * f * t
-    return off + amp * np.sin(w + ph) + b * np.sin(2.0 * w + psi)
+    return off + amp * np.sin(w + ph) + b * np.sin(2.0 * w + psi) + spin * t
+
+
+def bounds() -> tuple[np.ndarray, np.ndarray]:
+    """Search bounds of the 43 controller parameters. Angles are wide (offsets +-pi, amplitudes up to 4 rad) and the spin rate is +-3 rad/s: these are search-space sizes, not limits on the robot."""
+    lo = np.r_[np.full(NJ, -np.pi), np.full(NJ, 0.0), np.full(NJ, -np.pi), np.full(NJ, 0.0), np.full(NJ, -np.pi), 0.2, np.full(NJ, -3.0)]
+    hi = np.r_[np.full(NJ, np.pi), np.full(NJ, 4.0), np.full(NJ, 2 * np.pi * 2), np.full(NJ, 2.0), np.full(NJ, np.pi), 2.0, np.full(NJ, 3.0)]
+    return lo, hi
 
 
 def evaluate(args: tuple[np.ndarray, float]) -> tuple[float, float, float]:
@@ -84,7 +93,7 @@ def evaluate(args: tuple[np.ndarray, float]) -> tuple[float, float, float]:
     best, t, done = 0.0, 0.0, False
     while not done:
         q = controller(theta, t)
-        a = np.concatenate([np.clip(q / scale, -1.0, 1.0), [-1.0]])
+        a = np.concatenate([q / scale, [-1.0]])
         _, _, te, tr, _ = env.step(a)
         done = te or tr
         t += env.dt
@@ -94,7 +103,7 @@ def evaluate(args: tuple[np.ndarray, float]) -> tuple[float, float, float]:
 
 
 def init_theta(rng: np.random.Generator) -> np.ndarray:
-    th = np.zeros(5 * NJ + 1)
+    th = np.zeros(6 * NJ + 1)
     th[NJ:2 * NJ] = 0.8                                          # amplitude
     th[2 * NJ:3 * NJ] = np.arange(NJ) * 0.9                      # travelling-wave phase lag
     th[5 * NJ] = 0.8                                             # Hz
@@ -113,8 +122,7 @@ def main() -> int:
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
     mean = init_theta(rng)
-    lo = np.r_[np.full(NJ, -1.5), np.full(NJ, 0.0), np.full(NJ, -np.pi), np.full(NJ, 0.0), np.full(NJ, -np.pi), 0.2]
-    hi = np.r_[np.full(NJ, 1.5), np.full(NJ, 2.0), np.full(NJ, 2 * np.pi * 2), np.full(NJ, 1.0), np.full(NJ, np.pi), 2.0]
+    lo, hi = bounds()
     std = (hi - lo) * 0.15 * a.sigma / 0.2                                 # initial per-dimension sampling width
     a.out.parent.mkdir(parents=True, exist_ok=True)
     hist, best_all = [], (-1.0, mean.copy(), 0.0, 0.0)

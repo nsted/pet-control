@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from petctl.rl.config import N_JOINTS, EnvConfig
-from petctl.rl.obs import ObsBuilder, Snapshot, next_target
+from petctl.rl.obs import ObsBuilder, Snapshot, clip_action, next_target
 
 POLICY_FILE = "policy.npz"
 
@@ -91,7 +91,7 @@ class GaitPolicy:
             x = w @ x + b
             if i < len(self._w) - 1:
                 x = np.tanh(x)
-        return np.clip(x, -1.0, 1.0)
+        return clip_action(self.cfg, x)
 
     def step(self, snap: Snapshot) -> np.ndarray:
         """Joint-angle targets (rad) for this control tick; mirrors ``PetEnv.step``'s EMA and slew limit."""

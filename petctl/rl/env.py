@@ -17,7 +17,7 @@ from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.hold_diag import TORQUE_FRAC, HoldBreakTracker
 from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
 from petctl.rl.layout_cache import LayoutCache, uses_cache
-from petctl.rl.obs import ObsBuilder, Snapshot, hold_value, next_target
+from petctl.rl.obs import ObsBuilder, Snapshot, clip_action, hold_value, next_target, unbounded
 from petctl.rl.target_shapes import V2_SAMPLER, heldout_index, heldout_shape, sample_training_shape
 from petctl.rl.tasks import TASKS
 from petctl.sim.bus import BusClamp
@@ -63,7 +63,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.dt = 1.0 / self.cfg.control_hz
         self.obs_builder = ObsBuilder(self.cfg)
         self.observation_space = spaces.Box(-np.inf, np.inf, (self.obs_builder.size,), np.float32)
-        self.action_space = spaces.Box(-1.0, 1.0, (self.cfg.n_actions,), np.float32)
+        bound = np.inf if unbounded(self.cfg) else 1.0                                   # unbounded: joint targets carry no angle range (the user's rule: no angle limits, ever)
+        self.action_space = spaces.Box(-bound, bound, (self.cfg.n_actions,), np.float32)
         self.max_steps = int(round(self.cfg.episode_s * self.cfg.control_hz))
         self.sim: PetSim | None = None
         self._cap_out: tuple[np.ndarray, np.ndarray] | None = None
@@ -395,8 +396,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         """Apply one policy step (1/control_hz seconds of physics)."""
         assert self.sim is not None
-        a_full = np.clip(np.asarray(action, float), -1.0, 1.0)
         c = self.cfg
+        a_full = clip_action(c, action)
         self._tgt = next_target(c, self._tgt, a_full)
         a = a_full[:c.n_joints]                                                          # joint outputs; in ``hold`` mode the last entry is the hold channel (history / reward see the joints only)
         self.sim.step(self._tgt, self.dt)

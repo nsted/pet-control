@@ -99,7 +99,7 @@ def peak_pose(theta: np.ndarray, seconds: float = 20.0) -> np.ndarray:
             best, qbest = z, env.sim.joint_pos().copy()
         if te or tr:
             break
-    return np.clip(qbest, -1.0, 1.0)
+    return qbest
 
 
 def cell_of(desc: dict[str, float]) -> tuple[int, ...]:
@@ -118,7 +118,7 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--init", type=int, default=256)
     ap.add_argument("--hold", type=float, default=5.0)
-    ap.add_argument("--range", type=float, default=1.0, help="joint target range +-rad searched (the policy's commandable range is 1.0)")
+    ap.add_argument("--range", type=float, default=2 * 3.141592653589793, help="search-space size for each joint target (+-rad); NOT a robot limit: the robot has no angle range")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seed-gaits", type=Path, default=None, help="gait archive JSON: seed the search with the joint configurations at the peak head height of its highest-rising gaits")

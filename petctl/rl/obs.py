@@ -38,6 +38,28 @@ def next_target(cfg: EnvConfig, tgt: np.ndarray, a: np.ndarray) -> np.ndarray:
     return tgt + np.clip(smoothed - tgt, -cfg.max_target_step_rad, cfg.max_target_step_rad)
 
 
+def unbounded(cfg: EnvConfig) -> bool:
+    """True when the joint action has NO angle range (task param ``action_unbounded``): the policy's joint outputs are raw angle targets in rad (``action_scale_rad`` x action, scale 1.0 = rad),
+    any size and sign, multi-turn; observed angles are wrapped to [-pi, pi). Only the hold channel (not an angle) stays in [-1, 1]. Motor speed is still bounded by the protective slew limit."""
+    return float(cfg.task_params.get("action_unbounded", 0.0)) > 0.0
+
+
+def wrap_angle(x: np.ndarray | float) -> np.ndarray:
+    """Wrap angles (rad) to [-pi, pi): a joint turned 2 pi looks identical to the policy (and is, geometrically)."""
+    return (np.asarray(x, float) + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def clip_action(cfg: EnvConfig, a: np.ndarray) -> np.ndarray:
+    """The action the environment applies: clipped to [-1, 1], except the joint entries when ``unbounded(cfg)`` (the hold channel, last entry in ``hold`` mode, is still clipped)."""
+    a = np.asarray(a, float)
+    if not unbounded(cfg):
+        return np.clip(a, -1.0, 1.0)
+    out = a.copy()
+    if cfg.action_mode == "hold":
+        out[-1] = np.clip(out[-1], -1.0, 1.0)
+    return out
+
+
 def hold_value(a: np.ndarray) -> float:
     """The hold channel ``h`` in [0, 1] of a ``hold``-mode action (last entry, mapped from [-1, 1])."""
     return float((float(np.clip(np.asarray(a, float)[-1], -1.0, 1.0)) + 1.0) / 2.0)
@@ -90,6 +112,7 @@ class ObsBuilder:
         self.capacitive_off = float(cfg.task_params.get("capacitive_off", 0.0)) > 0.0      # ablation: zero the capacitive block
         self.imu_off = float(cfg.task_params.get("imu_off", 0.0)) > 0.0                    # ablation: zero the IMU channels (gravity direction + gyro)
         self.n_modules = cfg.n_modules
+        self.unbounded = unbounded(cfg)                                                    # no angle range: observed joint angles and targets are wrapped to [-pi, pi)
         self.delta = cfg.action_mode in ("delta", "hold")                                  # the current target vector (/ DELTA_LIMIT_RAD) is appended last (delta and hold modes)
         self.size = (3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
                      + (9 * cfg.n_modules if self.capacitive else 0) + (nj if self.delta else 0))
@@ -137,7 +160,7 @@ class ObsBuilder:
         w = len(self._pos) - 1
         vel = (self._pos[-1] - self._pos[0]) / (w * self.dt)
         grav, gyro = (np.zeros(3), np.zeros(3)) if self.imu_off else (gravity_in_body(snap.quat), snap.gyro)
-        parts = [grav, gyro, snap.joint_pos, np.clip(vel, -10, 10), snap.cap_nm / 0.164,
+        parts = [grav, gyro, wrap_angle(snap.joint_pos) if self.unbounded else snap.joint_pos, np.clip(vel, -10, 10), snap.cap_nm / 0.164,
                  np.concatenate(list(self._act)), np.asarray(snap.extra, float).reshape(-1)[:self.extra_dim]]
         if self.touch:                                       # contact is inferred from the MIT reply: torque and tracking error, this tick and the previous one
             cur = np.concatenate([np.clip(snap.torque / np.maximum(snap.cap_nm, 1e-6), -1.5, 1.5), np.clip((snap.target - snap.joint_pos) * TOUCH_ERR_SCALE, -3.0, 3.0)])
@@ -157,5 +180,5 @@ class ObsBuilder:
             self._cap_ema += (self.dt / CAP_EMA_S) * (raw[:nf] - self._cap_ema)
             parts.append(np.concatenate([raw, self._cap_ema]))
         if self.delta:                                       # the brain's own commanded targets (deployable), appended last
-            parts.append(np.asarray(snap.target, float) / DELTA_LIMIT_RAD)
+            parts.append((wrap_angle(snap.target) if self.unbounded else np.asarray(snap.target, float)) / DELTA_LIMIT_RAD)
         return np.concatenate(parts).astype(np.float32)

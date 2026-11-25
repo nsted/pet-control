@@ -60,7 +60,7 @@ def main() -> int:
         t, nxt = 0.0, 0.0
         while t < a.seconds:
             q = rg.controller(th, t)
-            _, _, te, tr, _ = env.step(np.concatenate([np.clip(q / scale, -1.0, 1.0), [-1.0]]))
+            _, _, te, tr, _ = env.step(np.concatenate([q / scale, [-1.0]]))
             t += env.dt
             while nxt <= t:
                 cam.lookat[:] = d.subtree_com[1]

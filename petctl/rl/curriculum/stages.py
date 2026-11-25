@@ -403,6 +403,7 @@ STAGES["barrier_touch"] = Stage(
 _NOBUS = {"bus_peak_penalty": 0.0, "bus_penalty": 0.0, "bus_soft_knee": 0.7}
 _NOOBS = {"n_obs_min": 0, "n_obs_max": 0, "n_block": 0, "n_extra": 0}
 _RINGS_LEVEL = float(os.environ.get("PETCTL_RINGS_LEVEL", "0.22"))     # terrain_rings_mid: ring height level (small ladder steps are run by setting this per stage run)
+_ACTION_UNBOUNDED = float(os.environ.get("PETCTL_ACTION_UNBOUNDED", "0"))     # 1 = NO angle range on the joint action (owner rule 2026-11-25); env-var gated until running ladders finish so their gates stay consistent
 _DUNES_TRAIN_BEARING = float(os.environ.get("PETCTL_DUNES_TRAIN_BEARING", "180"))   # terrain_dunes: goal bearing range used for TRAINING only (the gate is always +-180)
 _DUNES_LEVEL = float(os.environ.get("PETCTL_DUNES_LEVEL", "0.2"))     # terrain_dunes: dune height level (the ladder script runs one stage per level)
 NEW_STAGE_PARAMS: dict[str, dict[str, float]] = {
@@ -430,6 +431,7 @@ NEW_STAGE_DESC = {
     "dense_field": "C2: flat, 18-28 obstacles in a 3 m radius field, goal 1.5-2.5 m, contact-only sensing; gate success >= 0.65, touch_off drop >= 0.15, blind baseline <= 0.45.",
 }
 for _n, _p in NEW_STAGE_PARAMS.items():
+    _p = {**_p, "action_unbounded": _ACTION_UNBOUNDED}
     STAGES[_n] = Stage(
         _n, "goal_obstacles", NEW_STAGE_DESC[_n], task_params=dict(_p),
         gate=Gate(task_params=_gate_params(_p, **({"bearing_deg": 180.0} if _n == "terrain_dunes" else {})), episodes=100, dr_scale=0.6, min_success=NEW_STAGE_THRESHOLD[_n], episode_s=NEW_STAGE_EPISODE_S[_n],
