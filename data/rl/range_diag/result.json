@@ -42,5 +42,5 @@
  "decision": "B",
  "reason": "saturated fraction 0.295 >= 0.2",
  "decision_metric": "saturated_frac = mean over wrap-attempt ticks (hug run >= 3) of the fraction of in-run joints with |action| >= 0.95, pooled over both shapes",
- "time": "2026-11-15 11:06:16"
+ "time": "2026-11-15 11:20:30"
 }
