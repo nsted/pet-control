@@ -31,6 +31,7 @@ from petctl.rl.curriculum.stages import get_stage  # noqa: E402
 STAGE = ca.C1_STAGE                                   # set from --stage in main()
 WARM = Path("data/rl/chain_ab_soft/terrain_full/a1")   # first attempt warm start (--warm overrides; required after B3)
 BLIND = Path("data/rl/chain_ab/flat_nav/a1")
+SCRATCH = False                                       # --scratch: attempt 1 from a random init
 log, lines, record = d6.log, d6.lines, d6.record
 
 
@@ -59,11 +60,12 @@ def gate_run(root: Path, attempt: int, gate_n: int, workers: int) -> dict[str, A
 
 
 def main() -> int:
-    global STAGE, WARM
+    global STAGE, WARM, SCRATCH
     """CLI entry."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", default=ca.C1_STAGE, choices=sorted(ca.STAGE_GATES))
     ap.add_argument("--warm", type=Path, default=None, help="run dir to warm-start attempt 1 from (default: the B2 terrain_full run)")
+    ap.add_argument("--scratch", action="store_true", help="attempt 1 trains from a random init (no warm start); attempt 2 still continues attempt 1")
     ap.add_argument("--root", type=Path, default=None, help="default data/rl/chain_c_<stage>")
     ap.add_argument("--n-envs", type=int, default=10)
     ap.add_argument("--scale", type=float, default=1.0)
@@ -73,6 +75,7 @@ def main() -> int:
     a = ap.parse_args()
     STAGE = a.stage
     WARM = a.warm or WARM
+    SCRATCH = a.scratch
     root = a.root or Path(f"data/rl/chain_c_{STAGE}")
     root.mkdir(parents=True, exist_ok=True)
     if list(root.glob("STOP_*")):
@@ -94,8 +97,8 @@ def main() -> int:
             record(root, {"phase": "stop", "stage": STAGE, "go": False, "why": f"{STAGE} failed its gate twice", "fail_reasons": [d["fail_reasons"] for d in fails]})
             return d6.stop(root, STAGE, f"{STAGE} failed its n=100 gate on both attempts")
         if nxt["action"] == "train":
-            init = WARM if att == 1 else ab.run_dir(root, STAGE, 1)
-            log(f"train {STAGE} a{att} warm from {init}")
+            init = (None if SCRATCH else WARM) if att == 1 else ab.run_dir(root, STAGE, 1)
+            log(f"train {STAGE} a{att} " + (f"warm from {init}" if init is not None else "from scratch"))
             info = ab.train_run(root, STAGE, att, init, a.n_envs, a.scale, seed=7000 + att)
             record(root, {"phase": "train", "stage": STAGE, "attempt": att, "go": True, **info})
             continue

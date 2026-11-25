@@ -324,7 +324,7 @@ class GoalObstacles(GoalReach):
         terms["stall"] = 0.0
         if stall > 0.0 and (self._t - self._last_gain_t) / self.cfg.control_hz > stall:         # giving up must not beat wandering: charge the time penalty for the rest of the episode
             remaining_s = max(0.0, self.cfg.episode_s - self._t / self.cfg.control_hz)
-            terms["stall"] = -self.param("time_penalty", 0.0) * remaining_s
+            terms["stall"] = -self.param("time_penalty", 0.0) * remaining_s * self.param("stall_mult", 1.0)      # stall_mult > 1: quitting must cost more than a full failed attempt (tilt/energy included), or hard goals teach giving up
         return total + terms["obstacle_contact"] + terms["stall"], terms
 
     def terminated(self, sim: PetSim) -> bool:

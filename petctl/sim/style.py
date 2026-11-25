@@ -42,9 +42,9 @@ def style_xml(xml: str, n_modules: int) -> str:
               + "".join(f'<material name="pet{k}" rgba="{_s(module_rgb(k, n_modules))} 1" specular="0.5" shininess="0.7"/>' for k in range(n_modules)))
     if "<asset>" in xml:
         xml = xml.replace("<asset>", "<asset>" + assets, 1)
-    visual = (f'<visual><headlight ambient="0.28 0.28 0.32" diffuse="0.30 0.30 0.30" specular="0.05 0.05 0.05"/><rgba haze="{_s(SKY_HORIZON)} 1"/>'
+    visual = (f'<visual><headlight ambient="0.16 0.16 0.20" diffuse="0.08 0.08 0.08" specular="0.02 0.02 0.02"/><rgba haze="{_s(SKY_HORIZON)} 1"/>'
               f'<map haze="0.2"/><quality shadowsize="2048"/></visual>')
-    light = '<light name="sun" directional="true" pos="0 0 4" dir="-0.4 0.3 -1" diffuse="0.62 0.58 0.50" specular="0.25 0.25 0.25" castshadow="true"/>'
+    light = '<light name="sun" directional="true" pos="0 0 4" dir="-0.85 0.45 -0.45" diffuse="0.85 0.80 0.68" specular="0.25 0.25 0.25" castshadow="true"/>'
     return xml.replace("<worldbody>", visual + "<worldbody>" + light, 1)
 
 

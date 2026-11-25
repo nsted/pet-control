@@ -11,6 +11,8 @@ same array into ``model.hfield_data`` (one hfield asset per friction tile, shari
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -28,11 +30,26 @@ ROUGH_MAX_M = 0.01
 START_RADIUS_M = 0.45
 START_BLEND_M = 0.20            # smooth-step width from the flat disk to full terrain
 EDGE_TAPER_M = 0.30
-ROLL_AMP_MAX_M = 0.12           # rolling terrain: peak |height| about the baseline at level 1 (hills up, valleys down)
+ROLL_AMP_MAX_M = 0.09           # rolling terrain: peak |height| about the baseline at level 1 (hills up, valleys down)
 ROLL_BASE_M = 0.15              # baseline height of rolling terrain (the hfield cannot go below 0, so valleys are carved down from here); the start disk sits on it
 ROLL_SIGMA_M = (0.15, 0.35, 0.70)   # smoothing scales of the three octaves (about 0.3 / 0.7 / 1.5 m features)
 ROLL_WEIGHTS = (0.25, 1.0, 1.2)
-ROLL_SLOPE_MAX_DEG = 25.0       # 99.5th percentile of the gradient (isolated steeper cells up to ~1.3x)
+ROLL_SLOPE_MAX_DEG = 20.0       # 99.5th percentile of the gradient (isolated steeper cells up to ~1.3x)
+RIDGE_N = (4, 7)                # sawtooth ridges per patch at level 1 (scaled by level)
+RIDGE_H_M = (0.06, 0.12)        # crest height above the surrounding ground, x level
+RIDGE_UP_DEG = (30.0, 50.0)     # climb angle of the rising face, x level (the steep face the robot must climb)
+RIDGE_DROP_M = (0.025, 0.075)   # horizontal run of the falling face (1-3 grid cells: a near-vertical step down a few cm after the crest)
+RIDGE_CREST_M = 0.04
+RIDGE_HALF_LEN_M = (0.9, 1.6)   # half-length along the ridge; the ends taper off so a ridge can be skirted but is cheaper to cross
+RING_RADII_M = (0.95, 1.45, 1.95, 2.45)   # closed ridge rings around the start (all goals are 1.5-2.5 m out, so every route crosses at least two)
+RING_JITTER_M = 0.08
+RING_WOBBLE_M = 0.12            # angular wobble of each ring radius (two harmonics), so the rings are not perfect circles
+DUNE_N = (5, 8)                 # dune components (close-packed asymmetric ripples at random orientations around a "wind" direction)
+DUNE_WAVELENGTH_M = (0.28, 0.60)
+DUNE_P2P_M = 0.09               # peak-to-peak dune height at level 1 (same scale as the ridge rings: 6-12 cm x level); scaled by level
+DUNE_SKEW = (0.62, 0.80)        # fraction of each wavelength spent on the gentle windward face; the rest is the steep lee face
+DUNE_LOOSE_PROB = 0.7           # sand: most friction tiles are loose (low friction) at level 1
+DUNE_LOOSE_MU = (0.3, 0.5) if os.environ.get("PETCTL_DUNE_SOFT_FRICTION", "0") == "1" else (0.2, 0.4)     # default: the original approved sand friction; env 1 = the softer variant that did not help      # loose-sand friction (the generic LOOSE_MU 0.2-0.4 left the robot without traction: 2026-11-24 L0.3 start-stalls had centre-tile mu 0.40 vs 0.63)
 TILE_MU = (0.3, 1.5)
 LOOSE_MU = (0.2, 0.4)
 LOOSE_PROB = 0.3                # probability a tile is "loose" at level 1 (scaled by level)
@@ -122,7 +139,65 @@ def _rolling_heights(level: float, rng: np.random.Generator, X: np.ndarray, mask
     return field
 
 
-def generate_terrain(level: float, seed: int, start_radius: float = START_RADIUS_M, rolling: bool = False) -> Terrain:
+def _ridge_heights(level: float, rng: np.random.Generator, X: np.ndarray, Y: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Sawtooth ridges: a steep rising face (30-50 deg x level), a short crest, then a near-vertical drop within a few cm (2.5-7.5 cm run). Zero on the start disk."""
+    out = np.zeros_like(X)
+    if level <= 0.0:
+        return out
+    for _ in range(max(1, int(round(rng.integers(RIDGE_N[0], RIDGE_N[1] + 1) * level)))):
+        cx, cy = rng.uniform(-2.5, 2.5, 2)
+        yaw, half = rng.uniform(0.0, 2.0 * np.pi), rng.uniform(*RIDGE_HALF_LEN_M)
+        h = rng.uniform(*RIDGE_H_M) * level
+        run = h / np.tan(np.radians(rng.uniform(RIDGE_UP_DEG[0], RIDGE_UP_DEG[1]) * level + (1.0 - level) * 10.0))
+        drop = rng.uniform(*RIDGE_DROP_M)
+        t = (X - cx) * np.cos(yaw) + (Y - cy) * np.sin(yaw)               # across the ridge (climb direction is +t)
+        s_ = -(X - cx) * np.sin(yaw) + (Y - cy) * np.cos(yaw)             # along the ridge
+        prof = np.interp(t, [-run, 0.0, RIDGE_CREST_M, RIDGE_CREST_M + drop], [0.0, h, h, 0.0], left=0.0, right=0.0)
+        out = np.maximum(out, prof * 0.5 * (1.0 - np.tanh((np.abs(s_) - half) / 0.15)))
+    return out * mask
+
+
+def _ring_heights(level: float, rng: np.random.Generator, X: np.ndarray, Y: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Closed sawtooth ridge rings around the origin (``RING_RADII_M``, wobbly): moving outward the robot climbs a steep face (30-50 deg x level), crosses a short crest, then drops
+    within a few cm. Unavoidable: every route to a goal beyond the first rings crosses them. Zero on the start disk."""
+    out = np.zeros_like(X)
+    if level <= 0.0:
+        return out
+    r, th = np.hypot(X, Y), np.arctan2(Y, X)
+    for r0 in RING_RADII_M:
+        wob = sum(rng.uniform(0.3, 1.0) * RING_WOBBLE_M * np.sin(k * th + rng.uniform(0.0, 2.0 * np.pi)) for k in (2, 3)) / 2.0
+        rr = r0 + rng.uniform(-RING_JITTER_M, RING_JITTER_M) + wob
+        h = rng.uniform(*RIDGE_H_M) * level
+        run = h / np.tan(np.radians(rng.uniform(RIDGE_UP_DEG[0], RIDGE_UP_DEG[1]) * level + (1.0 - level) * 10.0))
+        drop = rng.uniform(*RIDGE_DROP_M)
+        out = np.maximum(out, np.interp(r - rr, [-run, 0.0, RIDGE_CREST_M, RIDGE_CREST_M + drop], [0.0, h, h, 0.0], left=0.0, right=0.0))
+    return out * mask
+
+
+def _dune_heights(level: float, rng: np.random.Generator, X: np.ndarray, Y: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Sandy-beach dune field: 5-8 close-packed asymmetric ripple trains (gentle windward face, steep lee face, 28-60 cm wavelength) at orientations within about +-40 deg of a wind
+    direction plus a cross train, crests warped by smooth noise so they wander. Covers the whole patch (no flat ground) except the start disk; zero-mean, peak-to-peak ``DUNE_P2P_M * level``."""
+    from scipy import ndimage
+
+    if level <= 0.0:
+        return np.zeros_like(X)
+    wind = rng.uniform(0.0, np.pi)
+    field = np.zeros_like(X)
+    for i in range(int(rng.integers(DUNE_N[0], DUNE_N[1] + 1))):
+        phi = wind + (rng.uniform(-0.7, 0.7) if i else np.pi / 2 + rng.uniform(-0.3, 0.3))
+        lam, a = rng.uniform(*DUNE_WAVELENGTH_M), rng.uniform(*DUNE_SKEW)
+        warp = ndimage.gaussian_filter(rng.normal(size=X.shape), sigma=0.25 / CELL_M)
+        warp *= 0.18 / max(float(np.abs(warp).max()), 1e-9)                              # crest wander: up to ~18 cm
+        w = ((X * np.cos(phi) + Y * np.sin(phi)) / lam + warp / lam + rng.uniform()) % 1.0
+        field += rng.uniform(0.5, 1.0) * np.where(w < a, w / a, (1.0 - w) / (1.0 - a))   # asymmetric sawtooth in [0, 1]
+    field = ndimage.gaussian_filter(field, sigma=1.2)                                    # soften the grid-scale kinks (3 cm)
+    inner = mask > 0.99
+    lo, hi = (float(np.percentile(field[inner], 1)), float(np.percentile(field[inner], 99))) if inner.any() else (0.0, 1.0)
+    field = (field - 0.5 * (lo + hi)) / max(hi - lo, 1e-9) * DUNE_P2P_M * level
+    return np.clip(field, -0.45 * ROLL_BASE_M, 0.45 * ROLL_BASE_M) * mask
+
+
+def generate_terrain(level: float, seed: int, start_radius: float = START_RADIUS_M, rolling: bool = False, ridges: float | bool = False) -> Terrain:
     """Sample a terrain. ``level`` in [0, 1] scales bump height, slope angle, roughness, bump count and loose-tile probability (0 = flat).
 
     ``rolling=True`` samples hills and valleys instead (``_rolling_heights``): signed, three-octave smooth relief over the whole patch about a baseline of ``ROLL_BASE_M``,
@@ -143,6 +218,10 @@ def generate_terrain(level: float, seed: int, start_radius: float = START_RADIUS
     loose = rng.random((3, 3)) < LOOSE_PROB * level
     mu = np.where(loose, rng.uniform(*LOOSE_MU, (3, 3)), mu)
 
+    dunes = float(ridges) >= 3.0
+    if dunes:                                                                                 # sand: mostly loose, low-friction tiles
+        loose = rng.random((3, 3)) < DUNE_LOOSE_PROB * min(1.0, 0.3 + level)
+        mu = np.where(loose, rng.uniform(*DUNE_LOOSE_MU, (3, 3)), mu)
     bump = np.zeros_like(X)
     for _ in range(int(round(25 * level))):
         cx, cy = rng.uniform(-3.5, 3.5, 2)
@@ -179,9 +258,19 @@ def generate_terrain(level: float, seed: int, start_radius: float = START_RADIUS
                 loose_cells[ylo:yhi + 1, xlo:xhi + 1] = 1.0
     rough = ROUGH_MAX_M * level * noise * ndimage.gaussian_filter(loose_cells, sigma=4.0) * mask
 
+    if dunes:
+        d = _dune_heights(level, rng, X, Y, mask)
+        heights = ROLL_BASE_M * (level > 0.0) + d + rough
+        return Terrain(level, int(seed), float(start_radius), heights, mu, loose, {"bump": np.zeros_like(X), "slope": d, "rough": rough, "roll": d, "ridge": d})
     if rolling:
         roll = _rolling_heights(level, rng, X, mask)
-        heights = ROLL_BASE_M * (level > 0.0) + roll + rough
-        return Terrain(level, int(seed), float(start_radius), heights, mu, loose, {"bump": np.zeros_like(X), "slope": roll, "rough": rough, "roll": roll})
+        if float(ridges) >= 2.0:                                                                  # 2: closed rings around the start (unavoidable); 1: finite line ridges
+            ridge = _ring_heights(level, rng, X, Y, mask)
+        else:
+            ridge = _ridge_heights(level, rng, X, Y, mask) if ridges else np.zeros_like(X)      # drawn after the rolling field so rolling terrain keeps its rng stream
+        heights = ROLL_BASE_M * (level > 0.0) + roll + ridge + rough
+        if ridges:
+            heights = np.minimum(heights, ELEV_MAX_M - 0.01)
+        return Terrain(level, int(seed), float(start_radius), heights, mu, loose, {"bump": np.zeros_like(X), "slope": roll, "rough": rough, "roll": roll, "ridge": ridge})
     heights = bump + slope + rough
     return Terrain(level, int(seed), float(start_radius), heights, mu, loose, {"bump": bump, "slope": slope, "rough": rough})

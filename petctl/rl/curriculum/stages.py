@@ -3,6 +3,8 @@ training knobs within ``Stage.knobs`` ranges, never the gate. Thresholds below a
 
 from __future__ import annotations
 
+import os
+
 import dataclasses
 from dataclasses import dataclass, field
 
@@ -400,23 +402,38 @@ STAGES["barrier_touch"] = Stage(
 # All three run through ``goal_obstacles`` (touch block on): B3 with 0 obstacles (terrain torques must not be read as contacts), C0 / C2 with obstacle fields.
 _NOBUS = {"bus_peak_penalty": 0.0, "bus_penalty": 0.0, "bus_soft_knee": 0.7}
 _NOOBS = {"n_obs_min": 0, "n_obs_max": 0, "n_block": 0, "n_extra": 0}
+_RINGS_LEVEL = float(os.environ.get("PETCTL_RINGS_LEVEL", "0.22"))     # terrain_rings_mid: ring height level (small ladder steps are run by setting this per stage run)
+_DUNES_TRAIN_BEARING = float(os.environ.get("PETCTL_DUNES_TRAIN_BEARING", "180"))   # terrain_dunes: goal bearing range used for TRAINING only (the gate is always +-180)
+_DUNES_LEVEL = float(os.environ.get("PETCTL_DUNES_LEVEL", "0.2"))     # terrain_dunes: dune height level (the ladder script runs one stage per level)
 NEW_STAGE_PARAMS: dict[str, dict[str, float]] = {
-    "terrain_rolling": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 0.6, "terrain_rolling": 1.0},
+    "terrain_rolling": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 1.0, "terrain_rolling": 1.0},
+    "terrain_ridges": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 0.5, "terrain_rolling": 1.0, "terrain_ridges": 1.0},
+    "terrain_ridges_lo": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 0.5, "terrain_level_min": 0.3, "terrain_rolling": 1.0, "terrain_ridges": 1.0},
+    "terrain_rings_lo": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 0.15, "terrain_level_min": 0.05, "terrain_rolling": 1.0, "terrain_ridges": 2.0},
+    "terrain_rings_mid": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": _RINGS_LEVEL, "terrain_level_min": max(0.05, _RINGS_LEVEL - 0.1), "terrain_rolling": 1.0, "terrain_ridges": 2.0, "stall_s": 20.0, "stall_gain_m": 0.10},
+    "terrain_dunes": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "bearing_deg": _DUNES_TRAIN_BEARING, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": _DUNES_LEVEL, "terrain_level_min": max(0.05, _DUNES_LEVEL - 0.1), "terrain_rolling": 1.0, "terrain_ridges": 3.0, "stall_s": 20.0, "stall_gain_m": 0.10, "stall_mult": 3.0},
+    "terrain_rings": {**_CHAIN_BASE, **_NOOBS, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "terrain_level": 1.0, "terrain_level_min": 0.5, "terrain_rolling": 1.0, "terrain_ridges": 2.0, "stall_s": 20.0, "stall_gain_m": 0.10},
     "sparse_field": {**_CHAIN_BASE, **_NOBUS, "goal_dist_min": 2.0, "goal_dist_max": 2.6, "bearing_deg": 20.0, "n_obs_min": 3, "n_obs_max": 6, "n_block": 1, "n_extra": 0, "stall_s": 45.0, "stall_gain_m": 0.10},
     "dense_field": {**_CHAIN_BASE, **_NOBUS, "goal_dist_min": 1.5, "goal_dist_max": 2.5, "field_radius": 3.0, "n_obs_min": 18, "n_obs_max": 28, "n_corridor": 6, "min_gap": 0.40, "stall_s": 45.0, "stall_gain_m": 0.10},
 }
-NEW_STAGE_EPISODE_S = {"terrain_rolling": 40.0, "sparse_field": 120.0, "dense_field": 150.0}
-NEW_STAGE_THRESHOLD = {"terrain_rolling": 0.70, "sparse_field": 0.70, "dense_field": 0.65}
+NEW_STAGE_EPISODE_S = {"terrain_rolling": 40.0, "terrain_ridges": 60.0, "terrain_ridges_lo": 60.0, "terrain_rings_lo": 75.0, "terrain_rings_mid": 75.0, "terrain_dunes": 75.0, "terrain_rings": 75.0, "sparse_field": 120.0, "dense_field": 150.0}
+NEW_STAGE_THRESHOLD = {"terrain_rolling": 0.70, "terrain_ridges": 0.60, "terrain_ridges_lo": 0.60, "terrain_rings_lo": 0.60, "terrain_rings_mid": 0.60, "terrain_dunes": 0.60, "terrain_rings": 0.60, "sparse_field": 0.70, "dense_field": 0.65}
 NEW_STAGE_DESC = {
-    "terrain_rolling": "B3: hills and valleys (signed three-octave relief, +-12 cm, slopes <= 25 deg) over the whole patch, goals 1.5-2.5 m, touch block on with no obstacles; gate success >= 0.70 at level 1.0, imu_off drop >= 0.15.",
+    "terrain_rolling": "B3: hills and valleys (signed three-octave relief, +-12 cm, slopes <= 20 deg) over the whole patch, goals 1.5-2.5 m, touch block on with no obstacles; gate success >= 0.70 at level 1.0, imu_off drop >= 0.15.",
+    "terrain_ridges": "B4: rolling hills plus 4-7 sawtooth ridges (6-12 cm high, rising face 30-50 deg, then a drop within 2.5-7.5 cm), goals 1.5-2.5 m; gate success >= 0.60 at level 1.0, imu_off drop >= 0.15.",
+    "terrain_ridges_lo": "B4a: B4 ridges at terrain level 0.5 (about 3-6 cm high, rising face about 15-25 deg, drop within 2.5-7.5 cm) over rolling hills; ramp to B4; gate success >= 0.60 at level 0.5, imu_off drop >= 0.15.",
+    "terrain_rings_lo": "B4r-lo: rolling hills inside 4 closed rings of sawtooth ridges around the start (level 0.15: ~1-2 cm; level 0.5 was never crossed, drop within a few cm); every route to the 1.5-2.5 m goal crosses >= 2 rings; gate success >= 0.60, imu_off drop >= 0.15.",
+    "terrain_rings_mid": "B4r-mid: closed rings at level 0.22 (about 1.3-2.6 cm; 0.3 gave 0/100); gate success >= 0.60, imu_off drop >= 0.15.",
+    "terrain_dunes": "B5: sandy-beach dune field over the whole patch (asymmetric close-packed ripples, 28-60 cm wavelength, peak-to-peak 9 cm x level, steep lee faces, mostly loose low-friction tiles), goals 1.5-2.5 m, stall rule; gate success >= 0.60, imu_off drop >= 0.15 at the stage level.",
+    "terrain_rings": "B4r: as B4r-lo at level 1.0 (6-12 cm rings, 30-50 deg climb, drop within 2.5-7.5 cm); unavoidable ridges in every direction; gate success >= 0.60, imu_off drop >= 0.15.",
     "sparse_field": "C0: flat, 3-6 mixed-shape obstacles with the direct path blocked, goal 2.0-2.6 m, contact-only sensing; gate success >= 0.70, touch_off drop >= 0.15, median contact_frac >= 0.02.",
     "dense_field": "C2: flat, 18-28 obstacles in a 3 m radius field, goal 1.5-2.5 m, contact-only sensing; gate success >= 0.65, touch_off drop >= 0.15, blind baseline <= 0.45.",
 }
 for _n, _p in NEW_STAGE_PARAMS.items():
     STAGES[_n] = Stage(
         _n, "goal_obstacles", NEW_STAGE_DESC[_n], task_params=dict(_p),
-        gate=Gate(task_params=_gate_params(_p), episodes=100, dr_scale=0.6, min_success=NEW_STAGE_THRESHOLD[_n], episode_s=NEW_STAGE_EPISODE_S[_n],
-                  min_median={} if _n == "terrain_rolling" else {"contact_frac": 0.02}),
+        gate=Gate(task_params=_gate_params(_p, **({"bearing_deg": 180.0} if _n == "terrain_dunes" else {})), episodes=100, dr_scale=0.6, min_success=NEW_STAGE_THRESHOLD[_n], episode_s=NEW_STAGE_EPISODE_S[_n],
+                  min_median={} if _n in ("terrain_rolling", "terrain_ridges", "terrain_ridges_lo", "terrain_rings_lo", "terrain_rings_mid", "terrain_dunes", "terrain_rings") else {"contact_frac": 0.02}),
         steps=4_000_000, n_envs=10, dr_scale=0.3, episode_s=NEW_STAGE_EPISODE_S[_n], ent_coef=0.005, knobs=dict(_CHAIN_KNOBS), action_mode="hold")
 
 

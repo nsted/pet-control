@@ -1,0 +1,59 @@
+{
+ "id": "nav_chain/terrain_rolling",
+ "task": "goal_obstacles",
+ "name": "terrain_rolling",
+ "note": "terrain_rolling (A/B chain, L=8, hold channel): gate n=100 dr 0.6 success 0.860 (Wilson lo 0.779 vs 0.70), t_goal median 23.150000000000002, bus mean 2.82125587458557 A, glitch 0.0, imu_off drop 0.800 (CI lo 0.720)",
+ "created": "2026-11-24 01:49:29",
+ "score_label": "m towards goal",
+ "score": {
+  "nominal_median": 2.1955352580232845,
+  "nominal_best": 2.439043012470856,
+  "robust_median": 2.1867741203703464,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.5,
+   0.5
+  ],
+  "action_scale_rad": 1.0,
+  "action_ema": 0.3,
+  "max_target_step_rad": 0.35,
+  "episode_s": 40.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "data/rl/chain_c_terrain_rolling_d1/terrain_rolling/a1",
+  "policy_file": "policy.npz",
+  "steps": 10000000,
+  "wall_s": 4591.120970249176,
+  "git": "4f808cf"
+ },
+ "caveats": [],
+ "gate": {
+  "n": 100,
+  "success": 0.86,
+  "wilson_lo": 0.7786281178903616,
+  "threshold": 0.7,
+  "t_goal_median_s": 23.150000000000002,
+  "lateral": null,
+  "ablations": {
+   "imu_off": {
+    "drop": 0.8,
+    "ci_lo": 0.72,
+    "ci_hi": 0.87,
+    "success": 0.06,
+    "passed": true
+   }
+  },
+  "bus_mean_a_median": 2.82125587458557,
+  "glitch_rate": 0.0
+ }
+}

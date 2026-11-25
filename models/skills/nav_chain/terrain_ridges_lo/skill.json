@@ -1,0 +1,59 @@
+{
+ "id": "nav_chain/terrain_ridges_lo",
+ "task": "goal_obstacles",
+ "name": "terrain_ridges_lo",
+ "note": "terrain_ridges_lo (A/B chain, L=8, hold channel): gate n=100 dr 0.6 success 0.720 (Wilson lo 0.625 vs 0.60), t_goal median 22.225, bus mean 2.577355085839912 A, glitch 0.0, imu_off drop 0.380 (CI lo 0.280)",
+ "created": "2026-11-24 07:44:33",
+ "score_label": "m towards goal",
+ "score": {
+  "nominal_median": 1.8718894949781666,
+  "nominal_best": 2.4378077261807887,
+  "robust_median": 1.8712587855933942,
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "robust_dr_scale": 0.3
+ },
+ "conditions": {
+  "torque_cap_nm": [
+   0.5,
+   0.5
+  ],
+  "action_scale_rad": 1.0,
+  "action_ema": 0.3,
+  "max_target_step_rad": 0.35,
+  "episode_s": 60.0,
+  "control_hz": 20.0
+ },
+ "source": {
+  "run": "data/rl/chain_c_terrain_ridges_lo/terrain_ridges_lo/a1",
+  "policy_file": "policy.npz",
+  "steps": 10000000,
+  "wall_s": 4494.899806976318,
+  "git": "4f808cf"
+ },
+ "caveats": [],
+ "gate": {
+  "n": 100,
+  "success": 0.72,
+  "wilson_lo": 0.6251197129007884,
+  "threshold": 0.6,
+  "t_goal_median_s": 22.225,
+  "lateral": null,
+  "ablations": {
+   "imu_off": {
+    "drop": 0.38,
+    "ci_lo": 0.28,
+    "ci_hi": 0.48,
+    "success": 0.34,
+    "passed": true
+   }
+  },
+  "bus_mean_a_median": 2.577355085839912,
+  "glitch_rate": 0.0
+ }
+}

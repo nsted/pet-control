@@ -283,3 +283,58 @@ def test_rolling_terrain_has_valleys_and_flat_start() -> None:
     assert abs(t.footprint_height(0.4) - ROLL_BASE_M) < 1e-6
     assert np.array_equal(t.heights, generate_terrain(1.0, 3, rolling=True).heights)
     assert np.allclose(generate_terrain(0.0, 3, rolling=True).heights, 0.0)
+
+
+def test_ridge_terrain_has_steep_climb_and_abrupt_drop() -> None:
+    """B4 ridges: tall steep-faced ridges with a near-vertical drop; rolling field unchanged; flat start disk; deterministic."""
+    import numpy as np
+
+    from petctl.sim.terrain import CELL_M, ELEV_MAX_M, generate_terrain
+
+    t = generate_terrain(1.0, 3, 0.45, rolling=True, ridges=True)
+    base = generate_terrain(1.0, 3, 0.45, rolling=True)
+    assert np.allclose(t.parts["roll"], base.parts["roll"])
+    assert t.parts["ridge"].max() > 0.05 and t.heights.max() < ELEV_MAX_M
+    gy, gx = np.gradient(t.heights, CELL_M)
+    assert np.degrees(np.arctan(np.hypot(gx, gy).max())) > 45.0
+    assert np.array_equal(t.heights, generate_terrain(1.0, 3, 0.45, rolling=True, ridges=True).heights)
+    assert np.allclose(generate_terrain(0.0, 3, 0.45, rolling=True, ridges=True).heights, 0.0)
+
+
+def test_ring_ridges_surround_the_start_in_every_direction() -> None:
+    """terrain_ridges = 2: closed rings, so every ray from the start to 2.5 m crosses at least three ridges; the start disk stays flat; line ridges (1.0) unchanged."""
+    import numpy as np
+
+    from petctl.sim.terrain import CELL_M, generate_terrain
+
+    t = generate_terrain(1.0, 7, 0.45, rolling=True, ridges=2.0)
+    r = t.parts["ridge"]
+    idx = lambda v: int(round((v + 4.0) / CELL_M))  # noqa: E731
+    for deg in range(0, 360, 15):
+        a = np.radians(deg)
+        z = np.array([r[idx(k * 0.01 * np.sin(a)), idx(k * 0.01 * np.cos(a))] for k in range(300)]) > 0.02
+        assert int(z[0]) + int(np.sum(z[1:] & ~z[:-1])) >= 3, deg
+    X = -4.0 + CELL_M * np.arange(r.shape[0])
+    assert float(r[np.hypot(*np.meshgrid(X, X)) < 0.5].max()) == 0.0
+    assert np.array_equal(generate_terrain(1.0, 7, 0.45, rolling=True, ridges=True).heights, generate_terrain(1.0, 7, 0.45, rolling=True, ridges=1.0).heights)
+
+
+def test_dune_terrain_is_dense_asymmetric_sand() -> None:
+    """terrain_ridges = 3: close-packed dunes over the whole patch (little flat ground), flat start disk, height scales with level, mostly loose friction tiles; other modes unchanged."""
+    import numpy as np
+
+    from petctl.sim.terrain import CELL_M, generate_terrain
+
+    t = generate_terrain(1.0, 4, 0.45, rolling=True, ridges=3.0)
+    h, d = t.heights, t.parts["ridge"]
+    X = -4.0 + CELL_M * np.arange(h.shape[0])
+    R = np.hypot(*np.meshgrid(X, X))
+    gy, gx = np.gradient(h, CELL_M)
+    g = np.degrees(np.arctan(np.hypot(gx, gy)))
+    assert float((g[R > 0.8] < 2.0).mean()) < 0.12                                   # almost no flat terrain
+    assert 0.06 < np.percentile(d[R > 0.8], 99) - np.percentile(d[R > 0.8], 1) < 0.12
+    assert float(np.abs(d[R < 0.45]).max()) == 0.0 and float(h.min()) > 0.0
+    assert t.tile_loose.sum() >= 4
+    p2p = lambda lv: np.ptp(generate_terrain(lv, 4, 0.45, rolling=True, ridges=3.0).parts["ridge"][R > 0.8])  # noqa: E731
+    assert p2p(0.5) < p2p(1.0)
+    assert np.array_equal(generate_terrain(1.0, 4, 0.45, rolling=True, ridges=3.0).heights, h)

@@ -26,8 +26,8 @@ LATERAL_N = 100
 LATERAL_PARAMS = {"bearing_deg": 90.0, "bearing_min_deg": 90.0, "goal_dist_min": 0.8, "goal_dist_max": 0.8}
 IMU_OFF_MIN_DROP = 0.15
 DR_START, DR_END, DR_RAMP_FRAC = 0.3, 0.6, 0.5
-BUDGET_MIN = 45.0
-CAP_STEPS = 4_000_000
+BUDGET_MIN = 120.0
+CAP_STEPS = 10_000_000
 NEXT_STAGE: dict[str, str | None] = {"flat_nav": "flat_omni", "flat_omni": "terrain_easy", "terrain_easy": "terrain_full", "terrain_full": None}
 
 
@@ -138,6 +138,12 @@ C1_STAGE = "barrier_touch"
 # stage -> (ablation name, min drop, blind-baseline ceiling or None); the bus current is REPORTED, not gated (model unvalidated for contact / high torque: plan sec 4.2 current-model rule)
 STAGE_GATES: dict[str, tuple[str, float, float | None]] = {
     "terrain_rolling": ("imu_off", 0.15, None),
+    "terrain_ridges": ("imu_off", 0.15, None),
+    "terrain_ridges_lo": ("imu_off", 0.15, None),
+    "terrain_rings_lo": ("imu_off", 0.15, None),
+    "terrain_rings_mid": ("imu_off", 0.15, None),
+    "terrain_dunes": ("imu_off", 0.15, None),
+    "terrain_rings": ("imu_off", 0.15, None),
     "sparse_field": ("touch_off", 0.15, 0.55),
     "dense_field": ("touch_off", 0.15, 0.45),
     "barrier_touch": ("touch_off", 0.20, 0.30),
