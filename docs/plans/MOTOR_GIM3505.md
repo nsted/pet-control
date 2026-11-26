@@ -43,9 +43,11 @@ Motor Wizard, torque mode, holding a cantilever load at 3 cm lever arm, 13 V sup
 3. Speed: no-load ~12.59 rpm/V x 13 V = 164 rpm = 17 rad/s at the output (more at higher voltage). The sim's 6 rad/s slew limit is below it.
 4. Backlash 0.25 deg is not modelled (small against the 0.5-rad action scale). Reflected rotor inertia (x64) and gear friction are unknown (armature DR 1e-4..1e-3 may not cover it).
 
-## Needs the owner's approval (physical limits / current model, approval 2) before I change the sim
+## APPROVED by the owner 2026-11-26 and IMPLEMENTED (was: needs approval)
 - Replace the current model in the sim: idle 0.02 A per motor + 2.4 A/(N.m)^2 hold + a moving term (4.6 A/(N.m)^2 until the test speed is known), scaled by 13 V / V_bus. The 10 A peak / 4 A
-  mean budgets themselves stay as they are until the owner gives the real battery / bus limits. Until approved: new runs use the old coefficient ONLY as an unvalidated proxy (no gates).
+  mean budgets themselves stay as they are until the owner gives the real battery / bus limits. Implementation: task knob `bus_motor = 1` selects the GIM3505-8 model (constants `GIM3505_*` in `petctl/config.py`; per-joint coefficient blends from 2.4 (still) to 4.6 A/(N.m)^2 at 1 rad/s;
+  idle 0.25 A electronics + 0.02 A per motor; `bus_voltage` knob scales by 13 V / V_bus); default 0 keeps the legacy GL40 II model bit-identical for old stages. The autonomous trainer sets `bus_motor: 1`.
+  Assumptions still open: the rotate coefficient (test speed unknown; 1 rad/s blend is a guess) and the 0.25 A electronics idle (not measured). Current remains a proxy until validated on the robot; no gate uses it.
 
 ## Still unknown (owner data would remove an assumption)
 - MIT-mode / gain protocol of the GDK driver: kp, kd ranges, torque-feedforward, reply frame and rate, command delay (needed for dynamic gains and the delay randomisation).
@@ -80,6 +82,6 @@ exactly where PET works (torque <= 0.5 N.m, soft gains, a few rad/s).
 | Kp | 342 / 344 (0.01) | 0..100 (10000) | **0..5 N.m/rad (500)** | 0.0012 | 0.024 |
 | Kd | 346 / 348 (0.01) | 0..5 (500) | **0..0.5 N.m.s/rad (50)** | 0.00012 | 0.0012 |
 | velocity | 334 / 336 (0.01 rad/s) | +-30 rad/s (3000) | keep (no-load max is ~17 rad/s at 13 V, 63 rad/s at 48 V) | 0.0147 rad/s | same |
-| position | 330 / 332 (0.01 rad) | +-12.5 rad (1250) | keep for now; widen (e.g. +-40 rad) only if absolute multi-turn targets are used, at 16 bit it costs 0.001 -> 0.0012 rad per step | 0.00038 rad | same |
+| position | 330 / 332 (0.01 rad) | +-12.5 rad (1250) | keep for now; widen (e.g. +-40 rad) only if absolute multi-turn targets are used, at 16 bit the step grows from 0.00038 to 0.0012 rad | 0.00038 rad | same |
 Notes: Kp 5 N.m/rad already saturates the 0.5 N.m cap at a 0.1 rad error (the old GL40 setting was 0.8), so 0..5 leaves ample headroom; Kd 0.5 is >10x the old 0.035. If a pose needs
 more, widen later. Sim consequence: use a torque quantisation step of 0.001 N.m (not 0.005) and a joint-torque reading noise on that scale in the reply-frame model once these registers are set.

@@ -41,12 +41,19 @@ def soft_limit_current(i_dem: float, peak_a: float, knee: float) -> float:
 class BusClamp:
     """Per-substep current estimate with an optional spike limiter (hard cutoff or soft roll-off); accumulates per-tick statistics for ``end_tick``."""
 
-    def __init__(self, model: mujoco.MjModel, coeff: float, peak_a: float, clamp: bool = True, soft_knee: float = 0.0) -> None:
-        """Bind to ``model``'s position actuators; ``coeff`` is A per (N.m)^2, ``peak_a`` the spike ceiling, ``soft_knee`` the fraction of ``peak_a`` where attenuation starts (0 = hard cutoff)."""
+    def __init__(self, model: mujoco.MjModel, coeff: float, peak_a: float, clamp: bool = True, soft_knee: float = 0.0, move_coeff: float | None = None,
+                 move_omega0: float = 1.0, idle_a: float | None = None) -> None:
+        """Bind to ``model``'s position actuators; ``coeff`` is A per (N.m)^2, ``peak_a`` the spike ceiling, ``soft_knee`` the fraction of ``peak_a`` where attenuation starts (0 = hard cutoff).
+
+        ``move_coeff`` (default None = the legacy scalar model, bit-identical to before): a joint's coefficient rises linearly from ``coeff`` (still) to ``move_coeff`` at joint speed
+        ``move_omega0`` rad/s (GIM3505-8 model, ``petctl.config.GIM3505_*``). ``idle_a``: total idle current (default: the legacy ``idle_current_a(n)``).
+        """
         self.coeff, self.peak_a, self.clamp = float(coeff), float(peak_a), bool(clamp)
         self.soft_knee = min(max(float(soft_knee), 0.0), 0.99)
         self.n = model.nu
-        self.idle = idle_current_a(self.n)
+        self.idle = idle_current_a(self.n) if idle_a is None else float(idle_a)
+        self.move_coeff = None if move_coeff is None else float(move_coeff)
+        self.move_omega0 = float(move_omega0)
         self._qadr = np.array([model.jnt_qposadr[model.actuator_trnid[k, 0]] for k in range(self.n)])
         self._dadr = np.array([model.jnt_dofadr[model.actuator_trnid[k, 0]] for k in range(self.n)])
         for nm in ("_qadr", "_dadr"):                                                  # contiguous joint addresses -> a slice (a view) instead of a fancy-index copy
@@ -63,6 +70,12 @@ class BusClamp:
         self._sum_applied, self._n_sub, self._max_demand, self._max_applied, self._any_over = 0.0, 0, 0.0, 0.0, False
         self._sum_demand, self._n_dem = 0.0, 0
 
+    def _weighted_ss(self, tau: np.ndarray, data: mujoco.MjData) -> float:
+        """GIM3505-8 model: sum_j c_j tau_j^2 with c_j = coeff + (move_coeff - coeff) * min(|qdot_j| / move_omega0, 1)."""
+        assert self.move_coeff is not None
+        w = self.coeff + (self.move_coeff - self.coeff) * np.minimum(np.abs(data.qvel[self._dsel]) / self.move_omega0, 1.0)
+        return float(_add_reduce(w * tau * tau))
+
     def demand(self, model: mujoco.MjModel, data: mujoco.MjData, cap: np.ndarray) -> np.ndarray:
         """Torque (N.m) the position actuators would produce this substep, capped at ``cap``."""
         f = self._gain * data.ctrl
@@ -76,8 +89,13 @@ class BusClamp:
         fr = model.actuator_forcerange
         cap = fr[:, 1]
         tau = self.demand(model, data, cap)
-        ss = float(_add_reduce(tau * tau))                                             # add.reduce == np.sum
-        i_dem = self.idle + self.coeff * ss
+        if self.move_coeff is None:
+            ss = float(_add_reduce(tau * tau))                                         # add.reduce == np.sum
+            wss = self.coeff * ss
+        else:
+            wss = self._weighted_ss(tau, data)
+            ss = wss
+        i_dem = self.idle + wss
         self._sum_demand += i_dem
         self._n_dem += 1
         if i_dem > self._max_demand:
@@ -85,7 +103,7 @@ class BusClamp:
         self._any_over = self._any_over or i_dem > self.peak_a
         if self.clamp and i_dem > (self.soft_knee * self.peak_a if self.soft_knee > 0.0 else self.peak_a) and ss > 0.0:
             i_app = soft_limit_current(i_dem, self.peak_a, self.soft_knee)                 # hard: min(i_dem, peak); soft: smooth roll-off below the peak
-            s = float(np.sqrt(max(i_app - self.idle, 0.0) / (self.coeff * ss))) if self.peak_a > self.idle else 0.0
+            s = float(np.sqrt(max(i_app - self.idle, 0.0) / wss)) if self.peak_a > self.idle else 0.0
             lim = np.maximum(s * np.abs(tau), 1e-12)
             self._cap = cap.copy()
             fr[:, 0] = -lim
@@ -94,7 +112,7 @@ class BusClamp:
     def after(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         """Call after ``mj_step``: record the applied current and restore the original ``forcerange``."""
         tau = data.actuator_force
-        i_app = self.idle + self.coeff * float(_add_reduce(tau * tau))
+        i_app = self.idle + (self.coeff * float(_add_reduce(tau * tau)) if self.move_coeff is None else self._weighted_ss(tau, data))
         self._sum_applied += i_app
         self._n_sub += 1
         if i_app > self._max_applied:

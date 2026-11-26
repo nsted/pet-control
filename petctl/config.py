@@ -343,6 +343,12 @@ POWER_BUDGET = PowerBudgetConfig()
 # Regimen v2 per-robot bus-current budget (owner, 2026-11): mean and spike limits used by the sim current model/clamp (petctl/sim/bus.py)
 # and the gate metrics. Distinct from POWER_BUDGET (the live power manager's present dev/prod ceilings).
 REGIMEN_BUS_MEAN_A: float = 4.0     # 2 s running-mean budget
+# SteadyWin GIM3505-8 bus-current model (owner bench test 2026-11-26, docs/plans/MOTOR_GIM3505.md): I = idle + c * tau^2 per motor at GIM3505_V_TEST; hold fit 2.4, rotate fit 4.6 (test speed unknown).
+GIM3505_V_TEST: float = 13.0            # V at which the current was measured; the model scales as V_TEST / V_bus
+GIM3505_IDLE_PER_MOTOR_A: float = 0.02  # measured idle per motor
+GIM3505_HOLD_A_PER_NM2: float = 2.4     # holding still
+GIM3505_MOVE_A_PER_NM2: float = 4.6     # rotating (speed of the test unknown; assumed reached at GIM3505_MOVE_OMEGA0_RAD_S)
+GIM3505_MOVE_OMEGA0_RAD_S: float = 1.0  # joint speed above which the moving coefficient applies fully (assumption; blended linearly below)
 REGIMEN_BUS_PEAK_A: float = 10.0    # spike ceiling; the gate evaluates it on the 50 ms window (one control tick) MEAN of the demanded (pre-clamp) current; the sim clamp holds it per 2 ms substep
 
 # Total number of modules: head (0) + 6 middle + tail (7).

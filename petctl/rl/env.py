@@ -10,7 +10,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from petctl.config import REGIMEN_BUS_MEAN_A, REGIMEN_BUS_PEAK_A
+from petctl.config import (GIM3505_HOLD_A_PER_NM2, GIM3505_IDLE_PER_MOTOR_A, GIM3505_MOVE_A_PER_NM2, GIM3505_MOVE_OMEGA0_RAD_S, GIM3505_V_TEST, REGIMEN_BUS_MEAN_A,
+                          REGIMEN_BUS_PEAK_A)
 from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
 from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
@@ -20,7 +21,7 @@ from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot, clip_action, hold_value, next_target, unbounded
 from petctl.rl.target_shapes import V2_SAMPLER, heldout_index, heldout_shape, sample_training_shape
 from petctl.rl.tasks import TASKS
-from petctl.sim.bus import BusClamp
+from petctl.sim.bus import IDLE_ELECTRONICS_A, BusClamp
 from petctl.sim.model_builder import BuildParams, PetSim
 from petctl.sim.shapes import shape_of
 from petctl.sim.terrain import START_RADIUS_M, generate_terrain
@@ -344,8 +345,12 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._init_reply_dr()
         self.bus = None
         if self.task.param("bus_model", 0.0) > 0.0 or self.task.param("bus_penalty", 0.0) > 0.0:       # per-robot current model, spike clamp and metrics (plan sec 5.5); off by default
-            self.bus = self.sim.bus = BusClamp(self.sim.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=self.task.param("bus_clamp", 1.0) > 0.0,
-                                         soft_knee=self.task.param("bus_soft_knee", 0.0))
+            gim = self.task.param("bus_motor", 0.0) > 0.0                                  # 1: SteadyWin GIM3505-8 model (owner measurements, MOTOR_GIM3505.md); 0: legacy GL40 II model
+            vscale = GIM3505_V_TEST / max(self.task.param("bus_voltage", GIM3505_V_TEST), 1.0)
+            kw = ({"move_coeff": GIM3505_MOVE_A_PER_NM2 * vscale, "move_omega0": GIM3505_MOVE_OMEGA0_RAD_S, "idle_a": IDLE_ELECTRONICS_A + GIM3505_IDLE_PER_MOTOR_A * self.cfg.n_joints}
+                  if gim else {})
+            self.bus = self.sim.bus = BusClamp(self.sim.model, GIM3505_HOLD_A_PER_NM2 * vscale if gim else BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=self.task.param("bus_clamp", 1.0) > 0.0,
+                                         soft_knee=self.task.param("bus_soft_knee", 0.0), **kw)
             self._bus_win: deque[float] = deque(maxlen=max(1, int(round(BUS_MEAN_WINDOW_S * self.cfg.control_hz))))
             self._bus_means: list[float] = []
             self._bus_peak = self._bus_peak_applied = self._bus_peak_win = 0.0
