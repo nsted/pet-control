@@ -50,7 +50,7 @@ Held-pose current proxy of the best poses: 1.0-3.6 A (median 2.0 A) against the 
 
 **Decisions for the skill list (logged here as the brief requires):**
 1. Step-up / reach: statically bounded by about 19 cm head height at every length; length does not change it (cap-limited). Step heights above that need momentum: dynamic.
-2. Gap bridge: the beam span scales with length (45 -> 60 cm for 10 -> 13); a real gap-bridging skill still has to be tested with gap edges in Phase 8.
+2. Gap bridge: the `arch` span row above is a WEAK proxy (a nearly straight body lying on the floor) and is superseded by the real gap test in section 5.
 3. **Self-righting from inverted is REDEFINED as a dynamic, momentum-based move** (no single held pose does it at any length): found by CPG / RL search from inverted starts (Phase 4 tool target, Phase 8 skill).
    Self-righting from the side is quasi-static at 11 and 13, marginal at 10 and 12: keep it as a quasi-static skill with the dynamic one as fallback.
 4. Cylinder wrap: see section 4.
@@ -66,3 +66,22 @@ Held span in degrees (longest held run of modules, hold_ok = bus mean <= 4 A, ap
 Reading: every length wraps radii up to 9 cm; r = 11 cm wraps at n = 11 and 13 but was not found at n = 10 and 12 (single seed, a "no" is a search miss as much as infeasibility). Under the old current model
 the n = 11 r9 / r11 rows were 2.8 A / infeasible, so the current relaxation matters. **Odd n (even joint count: 11, 13) is slightly ahead on both the wrap and the side-start self-righting statics**:
 two hints, one seed or two, not a conclusion; the length study (Phase 6) must test it with >= 3 seeds before it counts as evidence for odd lengths.
+
+## 5. Gap bridging between two 12 cm platforms (`scripts/rl/gap_statics.py`, `data/rl/statics/gap.json`; 1 seed, ~4800 evaluations per search, gaps scanned in 5 cm steps, stop at first failure)
+A pose counts when the head-end and tail-end modules rest on OPPOSITE platforms, every module over the gap stays >= 6 cm above the floor, and the pose is settled. (The first version only required the
+modules over the gap to stay clear, and the search "bridged 40 cm" by piling the body on one platform with its front cantilevered over the gap; those results are kept as `gap_INVALID_cantilever.*`.)
+| n | widest gap bridged | first failure |
+|---|---|---|
+| 10 | **20 cm** (lowest module 17.9 cm) | 25 cm (sags to 3.9 cm) |
+| 11 | 15 cm (19.6 cm) | 20 cm (8.1 cm, unsettled) |
+| 12 | **20 cm** (16.3 cm) | 25 cm (13.8 cm, not settled-and-spanning) |
+| 13 | 15 cm (19.4 cm) | 20 cm (14.1 cm, unsettled) |
+Reading: all lengths bridge 15 cm, the EVEN lengths (10, 12) reach 20 cm, the odd ones (11, 13) not at this budget. This is the opposite parity to the wrap and side-self-righting hints (where 11 and 13 were
+ahead), so there is no consistent odd-length advantage in the statics: each skill favours a different parity, differences are one 5 cm step or one pose, single seed. Bridging ability is limited by the
+cap (the straight beam alone bridges ~10 cm at n = 11, the search roughly doubles it); it does NOT scale with body length the way the old `arch` proxy suggested. Video: `docs/media/gap_bridge_n10-13.mp4`.
+
+## 6. Phase 3 summary
+- CPG basis done and validated (exact baseline equivalence, 67 tests); coarse sweeps show all behaviours at all lengths, speeds 3-4 cm/s (lower bound, torque-limited).
+- Statics at 0.5 N.m: head lift ~19 cm at every length; gap bridge 15-20 cm; wrap radius 9-11 cm; self-right from the side feasible for most lengths, from inverted NOT by a held pose (dynamic skill).
+- Length signal so far: none consistent. Wrap / self-right (side) lean odd, gap bridging leans even, head lift and speed are flat. Phase 6 must settle it with >= 3 seeds and the pre-registered criteria.
+- Videos: `docs/media/index.html` (gaits for all four lengths, wrap, gap bridge, statics at n = 11) and `index_attempt1.html` (earlier work).
