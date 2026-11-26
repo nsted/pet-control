@@ -54,3 +54,15 @@ Held-pose current proxy of the best poses: 1.0-3.6 A (median 2.0 A) against the 
 3. **Self-righting from inverted is REDEFINED as a dynamic, momentum-based move** (no single held pose does it at any length): found by CPG / RL search from inverted starts (Phase 4 tool target, Phase 8 skill).
    Self-righting from the side is quasi-static at 11 and 13, marginal at 10 and 12: keep it as a quasi-static skill with the dynamic one as fallback.
 4. Cylinder wrap: see section 4.
+
+## 4. Cylinder wrap (`scripts/rl/wrap_statics.py`, M1c/M1d protocol with the GIM3505-8 current model; 1 seed, ~1700 evaluations per search, `data/rl/statics/wrap.json`)
+Held span in degrees (longest held run of modules, hold_ok = bus mean <= 4 A, applied peak <= 10 A, penetration <= 5 mm, duty >= 0.9); bus mean is the UNVALIDATED proxy. A wrap counts when span >= 180 deg.
+| cylinder radius | n = 10 | n = 11 | n = 12 | n = 13 |
+|---|---|---|---|---|
+| 5 cm | 255 (run 10, 1.0 A) | 258 (10, 1.2 A) | 272 (11, 0.7 A) | 283 (11, 0.7 A) |
+| 7 cm | 231 (10, 1.0 A) | 222 (10, 1.6 A) | 237 (11, 0.5 A) | 240 (11, 0.6 A) |
+| 9 cm | 202 (10, 0.6 A) | 223 (11, 1.1 A) | 245 (12, 0.9 A) | 227 (12, 2.0 A) |
+| 11 cm | 168, not found (2.3 A) | **197 (11, 1.7 A)** | 163, not found (2.5 A) | **200 (12, 1.8 A)** |
+Reading: every length wraps radii up to 9 cm; r = 11 cm wraps at n = 11 and 13 but was not found at n = 10 and 12 (single seed, a "no" is a search miss as much as infeasibility). Under the old current model
+the n = 11 r9 / r11 rows were 2.8 A / infeasible, so the current relaxation matters. **Odd n (even joint count: 11, 13) is slightly ahead on both the wrap and the side-start self-righting statics**:
+two hints, one seed or two, not a conclusion; the length study (Phase 6) must test it with >= 3 seeds before it counts as evidence for odd lengths.
