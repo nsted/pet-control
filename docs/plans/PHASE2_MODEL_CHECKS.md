@@ -24,7 +24,7 @@ orange, even blue). The generator's own tests (`tests/` urdf / n8-identity / tai
    the bus-current model (13.3 A per (N.m)^2 per motor, measured at V_bus 14.7 V; the GIM3505-8 is a 24 V nominal part), the 24 W worst-case per motor, thermal limits, and the speed
    limit (retailer listings: 225-384 rpm after the reducer; slew limit in the sim is 6 rad/s). The 0.5 N.m torque cap stays (owner: correct). Retailer pages list rated torque ~0.65 N.m,
    rated power 29-37 W, 84 g motor; they disagree with each other, no official datasheet was found, no peak torque figure.
-8. **Shared bus current model: owner says it may be INCORRECT (2026-11-26).** It is 13.3 A per (N.m)^2 per motor, measured on the old GL40 II robot at 14.7 V, assumed to scale linearly in n with a
+8. **Shared bus current model: owner says it may be INCORRECT (2026-11-26); bench data confirms it is ~5.5x too high for the GIM3505-8 (see MOTOR_GIM3505.md).** It is 13.3 A per (N.m)^2 per motor, measured on the old GL40 II robot at 14.7 V, assumed to scale linearly in n with a
    10 A peak / 4 A mean limit shared by all motors. Consequence: current / bus numbers are reported as an UNVALIDATED proxy (torque^2 sum, per-length ranking only), never used as a gate or as a
    decisive length criterion until the owner supplies measurements of the GIM3505-8 system.
 9. **Multi-turn joints:** assumed physically possible without cable wind-up (slip ring or wireless joints). If not, the policy needs a turn limit after all.
