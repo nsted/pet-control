@@ -22,6 +22,8 @@ def run(tool: str, **inp: str) -> int:
     "git reset --hard HEAD~1", "git push --force origin main", "git push -f", "git push origin main --force-with-lease", "git branch -D old", "git -C . branch -D old",
     "python scripts/rl/chain_ab_driver.py --stage x", "python -m petctl.rl.train", "python scripts/rl/launch_run.py full -- python x.py",
     "python scripts/rl/launch_run.py full --pilot-dir /nonexistent --prev-run none -- python x.py", "python scripts/rl/launch_run.py pilot --steps 9000000 -- python x.py",
+    "nohup python scripts/rl/chain_c_driver.py --stage x &", "PETCTL_X=1 python -m petctl.rl.train --steps 5", ".venv/bin/python scripts/rl/chain_ab_driver.py",
+    "cat > .claude/x.md <<'EOF'\nhello\nEOF",
     "echo hi > .claude/settings.json", "sed -i '' s/a/b/ ~/.claude/settings.json", "cp x /Users/me/.claude/petctl-hooks/petctl_guard.py", "rm -rf .claude/agents",
 ])
 def test_blocked(cmd: str) -> None:
@@ -29,6 +31,8 @@ def test_blocked(cmd: str) -> None:
 
 
 @pytest.mark.parametrize("cmd", [
+    "cat > f.py <<'EOF'\nfrom petctl.rl.train import make_env_fn\nimport os  # python .claude/x > y; launch_run.py\nEOF\npython f.py",
+    "grep -rn petctl.rl.train petctl", "git commit -m 'run chain_ab_driver.py via launcher'", "python scripts/rl/bench_envs.py --n-envs 10", "python scripts/rl/eval_suite.py check",
     "git status", "git push origin feat/x", "git branch -d merged", "git reset --soft HEAD~1", "ls .claude", "cat .claude/settings.local.json",
     "python scripts/rl/launch_run.py pilot --steps 1000000 -- python x.py", "pytest tests", "git commit -m 'x'",
 ])

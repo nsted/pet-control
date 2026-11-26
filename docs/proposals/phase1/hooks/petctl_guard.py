@@ -24,9 +24,21 @@ import sys
 from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
-TRAIN_RE = re.compile(r"(chain_ab_driver|chain_c_driver|rl_driver|petctl[. ]rl[. ]train|petctl\.rl\.train|-m petctl\.rl\.curriculum)")
+# A trainer launch = a command SEGMENT that STARTS (after env assignments / nohup / time / a python interpreter) a driver script or the trainer module.
+# Text elsewhere (heredoc bodies, file contents, commit messages, grep patterns) never matches.
+LAUNCH_RE = re.compile(
+    r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:nohup|time|exec|caffeinate(?:\s+-\w+)*)\s+)*"
+    r"(?:\S*python[0-9.]*\s+(?:-\S+\s+)*)?"
+    r"(?:-m\s+)?(?:\S*(?:chain_ab_driver|chain_c_driver|rl_driver)(?:\.py)?|petctl\.rl\.train|petctl\.rl\.curriculum\S*|petctl\s+rl\s+train)\b")
+LAUNCHER_RE = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:nohup|time|exec)\s+)*(?:\S*python[0-9.]*\s+(?:-\S+\s+)*)?\S*launch_run\.py\b")
+HEREDOC_RE =re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2[ \t]*(?=\n|$)", re.S)
 WRITE_VERBS = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\brm\b|\bsed\s+-i|\bchmod\b|\bchown\b|\bln\b|\binstall\b|\btouch\b|\bdd\b|\bperl\b|\bpython3?\b|\bnode\b|\bruby\b|\bunlink\b|\brsync\b)")
 PROTECTED_RE = re.compile(r"(?:^|[\s/='\"])(?:~|\$HOME|/Users/[^/\s]+)?/?\.claude(?:/|\b)")
+
+
+def strip_heredocs(cmd: str) -> str:
+    """Remove heredoc BODIES (keep the command line that opens them): their text is file content, not commands."""
+    return HEREDOC_RE.sub(lambda m: m.group(0).split("\n", 1)[0], cmd)
 
 
 def block(msg: str) -> None:
@@ -73,12 +85,14 @@ def check_git(cmd: str) -> None:
 
 def check_launch(cmd: str) -> None:
     """Rule 1."""
-    if "launch_run.py" not in cmd:
-        if TRAIN_RE.search(cmd) and not re.search(r"\b(cat|grep|rg|ls|head|tail|less|git|wc|pytest)\b", cmd.split()[0] if cmd.split() else ""):
+    segs = re.split(r"[;&|\n]+", cmd)
+    launcher = next((s for s in segs if LAUNCHER_RE.search(s)), None)
+    if launcher is None:
+        if any(LAUNCH_RE.search(s) for s in segs):
             block("start trainers only through scripts/rl/launch_run.py (pilot|full): python scripts/rl/launch_run.py full --pilot-dir ... --prev-run ... -- <command>")
         return
     try:
-        toks = shlex.split(cmd.split(" -- ", 1)[0])           # options of launch_run.py only (the wrapped command follows ' -- ')
+        toks = shlex.split(launcher.split(" -- ", 1)[0])      # options of launch_run.py only (the wrapped command follows ' -- ')
     except ValueError:
         block("cannot parse the launch command")
     kind = next((t for t in toks if t in ("pilot", "full")), None)
@@ -105,6 +119,7 @@ def check_launch(cmd: str) -> None:
 
 def check_bash(cmd: str, cwd: str) -> None:
     """Rules 1-3 for a shell command."""
+    cmd = strip_heredocs(cmd)
     check_git(cmd)
     check_launch(cmd)
     for seg in re.split(r"[;&|\n]+", cmd):
