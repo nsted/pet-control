@@ -3,6 +3,13 @@
 Rules (AUTONOMOUS_TRAINER.md): log every redesign of action space / task / reward / curriculum here with its reason; write a review every 10 runs and after a stage fails twice
 with different causes. Newest first.
 
+## 2026-11-26 Phase 3 findings that changed the method
+- **Statics objectives must be checked for loopholes before the numbers are believed.** (1) `statics.py arch` rewarded span with the middle 3 cm clear of the floor: the optimum is a nearly straight body
+  lying on the ground (~1 body length), which says nothing about bridging: replaced by a real gap test. (2) The first `gap_statics.py` objective (lowest module over the gap) was beaten by a CANTILEVER: the
+  body piled on one platform with its front hanging over the gap (reported "bridged 40 cm"). Fixed: the two end modules must rest on opposite platforms; invalid results kept in `gap_INVALID_cantilever.*`.
+  Lesson: render the best pose of every search (video, not only numbers) before reporting it; run the adversarial check on tool objectives, not only on RL rewards.
+- Self-righting by a held pose is not found from inverted at any length (see PHASE3_CPG_STATICS.md): redefined as a dynamic skill.
+
 ## 2026-11-26 Phase 2 design decisions (model checks; no reward / task change)
 - `turn_obs` knob (obs.py): turn counts of joint angle / target appended last, because wrapped observations hid the multi-turn state. Default off.
 - Anisotropic skin friction (`petctl/sim/skin.py`): lateral/forward ratio via an extra Coulomb force; `DomainRand.friction_aniso` default (1, 1) = isotropic for all training (owner decision: ABS is isotropic); anisotropy is an optional robustness check only (e.g. final gaits at ratios 1.5 and 2.5).

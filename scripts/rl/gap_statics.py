@@ -58,8 +58,13 @@ def hold(n: int, gap_cm: int, q: np.ndarray) -> dict:
             com.append(pos.mean(axis=0).copy())
             pen.append(float(-d.contact.dist[:d.ncon].min()) if d.ncon else 0.0)
     com = np.array(com)
-    return {"ok": True, "z_min": min(zs), "settled": max(qd) < 0.05 and float(np.linalg.norm(com[-1] - com[0])) < 0.01, "pen": max(pen),
-            "on_platforms": bool(np.all(d.xipos[sim.m0_id:sim.m0_id + n, 2] > 0.5 * PLATFORM_H))}
+    pos = d.xipos[sim.m0_id:sim.m0_id + n]
+    half = gap_cm / 200.0
+    # a real bridge: the two END modules rest on OPPOSITE platforms (beyond the gap edges, above platform height) and some module hangs over the gap
+    # (first version let the body sit on one platform with its front cantilevered over the gap: a loophole found by the first search, results kept as gap_INVALID_cantilever.json)
+    spans = bool(((pos[0, 0] > half and pos[-1, 0] < -half) or (pos[0, 0] < -half and pos[-1, 0] > half)) and min(pos[0, 2], pos[-1, 2]) > 0.8 * PLATFORM_H
+                 and bool((np.abs(pos[:, 0]) < half).any()))
+    return {"ok": True, "z_min": min(zs), "settled": max(qd) < 0.05 and float(np.linalg.norm(com[-1] - com[0])) < 0.01, "pen": max(pen), "spans": spans}
 
 
 def score(n: int, gap_cm: int, q: np.ndarray) -> tuple[float, dict]:
@@ -68,7 +73,7 @@ def score(n: int, gap_cm: int, q: np.ndarray) -> tuple[float, dict]:
     if not r["ok"]:
         return -1.0, r
     val = r["z_min"] - (0.05 if not r["settled"] else 0.0) - (0.05 if r["pen"] > 0.004 else 0.0)
-    return val, r
+    return (val if r["spans"] else -0.5 + 0.1 * min(val, 0.0)), r
 
 
 class Cost:
@@ -87,9 +92,9 @@ def run(n: int, gap_cm: int, seed: int, workers: int) -> dict:
     pop = max(1, EVALS // (40 * dim))
     r = differential_evolution(Cost(n, gap_cm), [(-math.pi, math.pi)] * dim, maxiter=40, popsize=pop, seed=seed, tol=1e-9, polish=False, workers=workers, updating="deferred", init="sobol")
     val, st = score(n, gap_cm, r.x)
-    ok = bool(st.get("settled")) and st.get("z_min", 0.0) >= FLOOR_CLEAR and st.get("pen", 1.0) <= 0.004
+    ok = bool(st.get("settled")) and st.get("z_min", 0.0) >= FLOOR_CLEAR and st.get("pen", 1.0) <= 0.004 and bool(st.get("spans"))
     return {"n_modules": n, "gap_cm": gap_cm, "seed": seed, "objective": float(val), "z_min_cm": 100 * float(st.get("z_min", 0.0)), "bridged": ok, "q": [float(x) for x in r.x],
-            "settled": bool(st.get("settled")), "pen_mm": 1000 * float(st.get("pen", 0.0)), "evals": int(r.nfev)}
+            "settled": bool(st.get("settled")), "spans": bool(st.get("spans")), "pen_mm": 1000 * float(st.get("pen", 0.0)), "evals": int(r.nfev)}
 
 
 def main() -> int:
