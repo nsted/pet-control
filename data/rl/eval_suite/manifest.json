@@ -1,0 +1,20 @@
+{
+ "created": "2026-11-26",
+ "files": {
+  "decision/locomotion.json": "2f58feb086b1fe5cfb6dc2e509ad3fe3958057dc46ca1f1eac2abda7a281bc3f",
+  "decision/obstacle.json": "fee1fe1d44415102844c99b19055ccc4475ab06f561aac3e7f1ae6e424bb1773",
+  "decision/pose_hold.json": "9bcfd6eac25326ac33caff58ccafe4aa96f53ad0f1e14bdca3640989e83f47a7",
+  "decision/self_righting.json": "32a3fa5db55cea56889fd41c4a6a4fcfd581db3f5393a0af57ca9ac38fd6c3f4",
+  "decision/terrain.json": "9132f748c2dc93c6c502287b3274eb4eab6d1d912e59cf41c677f529c814b118",
+  "decision/turning.json": "2e475ec28ae993f934bba7b3df15381a3c690072fe2c09d37b049818ffbaa48f",
+  "test/locomotion.json": "87575984f7f7338c2edb6f59434f1c963a8288aa00099fa4e797a29ca32b855e",
+  "test/obstacle.json": "4d11d9b98809d8108c0fc18557caf9009ccbdcedaaca3dc3902f5fa8304873b9",
+  "test/pose_hold.json": "c31ff1537dc92cf839e3b4c3c70e0f2251c9eff5c83aa1c512c47e7aa53befc9",
+  "test/self_righting.json": "35649da58d59da7dd4845e64a6b1b55f7cd13221e74147de4329b5936d9efbef",
+  "test/terrain.json": "9105b9da34938052a29d0d0a722cabb2d98802c6ae6f1294d4f7f3b5eb4a16a9",
+  "test/turning.json": "fce6f55c52947adfd58d23e7e59ac00d016d051242bdcf2274d5b941e8519b82"
+ },
+ "master_seed": 20261126,
+ "n_per_set": 24,
+ "suite_sha256": "991c59e6f7f1d59ef47f1e27a054d65ceac539af309b17a8ebf0de792bcb41ac"
+}

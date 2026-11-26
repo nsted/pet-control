@@ -1,27 +1,25 @@
 # Curriculum state (read this first; ~1 page; keep it current)
 
-Updated: 2026-11-24. Full history: `CURRICULUM_LOG.md` (recent) and `archive/` (old, do not read by default).
+Updated: 2026-11-26. Governing brief: `AUTONOMOUS_TRAINER.md` (overrides older RL plans). Redesign log: `METHOD_REVIEWS.md`. Recent history: `CURRICULUM_LOG.md` tail; old: `archive/` (do not read).
 
 ## Where we are
-- Hug line PARKED at n=100 success 0.12 (skill `hug_L8_scale15_h6`), gate 0.70/0.50. Return later with an LSTM policy + hold-break data (half of hold breaks coincide with bus > 4 A).
-- Nav chain (`scripts/rl/chain_ab_driver.py`, data `data/rl/chain_ab/`): A1 flat_nav PASS, A2 flat_omni PASS, B1 terrain_easy PASS, **B2 terrain_full STOPPED** (`STOP_terrain_full`): success 0.93 / imu ablation OK / glitch 0, but peak-current budget fails twice (28%, then 24% of episodes > 10 A; limit 5%) even with bus_peak_penalty 10.
-- 2026-11-23 fix (owner request): the hard 10 A cutoff in the sim is replaced, for terrain_full, by a SOFT limiter (`bus_soft_knee` 0.7: applied current follows demand up to 7 A, then rolls off smoothly (tanh) toward 10 A and never exceeds it; `petctl/sim/bus.py::soft_limit_current`). Knee 0 = old hard clamp (other stages unchanged). Gate still judges DEMANDED current.
-- **B2 terrain_full PASSED (2026-11-23 12:30, attempt 1 under the soft limiter, root `data/rl/chain_ab_soft`, warm from the old hard-clamp a2):** success 0.93 (Wilson lo 0.863 vs 0.70), imu_off drop 0.87 (CI lo 0.80 vs 0.15), t_goal median 20.5 s, bus mean 2.49 A, bus peak median 8.5 A, episodes > 10 A 1% (limit 5%; was 24-28%), glitch 0; 4.0 M steps, 33 min; skill `models/skills/nav_chain/terrain_full`. Chain A1-A2-B1-B2 is DONE.
-- C1 barrier_touch FAILED (4 runs, success 0.00-0.04; STOP markers in data/rl/chain_c, chain_c2). Plan reordered 2026-11-23 (owner): B3 terrain_rolling -> C0 sparse_field -> C2 dense field -> C1 barrier; no bus-current penalty/gate from B3 on (model unvalidated). Next: define + run B3 (generator done in petctl/sim/terrain.py, stage/gate/driver not yet), then return to the hug (LSTM policy + hold-break data). Note: stage_summary.py reads only `data/rl/chain_ab` (terrain_full row not in STAGE_SUMMARIES.md; its ROOT needs a `chain_ab_soft` fallback).
-- **B3 terrain_rolling PASSED (2026-11-24, root `data/rl/chain_c_terrain_rolling_d1`, attempt 1):** after knobs 1-3 failed (0.63-0.76; goals behind ~7 cm ridges) the design change softened the relief to +-9 cm / 20 deg and the budget went to 2 h / 10M steps. success 0.86 (Wilson lo 0.779), imu_off drop 0.80 (CI lo 0.72), t_goal median 23.2 s, bus peak median 9.8 A, 7% eps >10 A (reported), glitch 0; 10M steps, 77 min; skill `models/skills/nav_chain/terrain_rolling`.
-- **Next (owner, 2026-11-24): B4 `terrain_ridges`** (rolling + 4-7 sawtooth ridges, 6-12 cm, 30-50 deg climb then drop within 2.5-7.5 cm; gate 0.60 + imu_off 0.15). Two pilots run back to back: warm from B3 d1 (`data/rl/chain_c_terrain_ridges_warm`), then from scratch (`--scratch`, `..._scratch`); keep the better. Then C0 sparse_field -> C2 dense_field -> C1 barrier_touch.
-- **B4a terrain_ridges_lo PASSED (2026-11-24, `data/rl/chain_c_terrain_ridges_lo`):** ridges at level 0.5; success 0.72 (lo 0.625 vs 0.60), imu_off drop 0.38; skill `terrain_ridges_lo`. B4 warm-from-B3 failed (0.40/0.37: crosses no ridge), scratch 0.01. **B4 full ridges now running** warm from B4a (`data/rl/chain_c_terrain_ridges_full`); then C0 -> C2 -> C1.
-- **B5 terrain_dunes (2026-11-24, owner-approved look):** sandy-beach dunes replace the rings (rings_lo level 0.15 passed 0.73; higher ring levels fell off gradually; coil-stall fixed by stall_s 20). Dune ladder levels 0.2 -> 1.0 in steps of 0.1 (`PETCTL_DUNES_LEVEL`), roots `data/rl/chain_c_dunes_L<level>`, warm from rings_lo ladder a1; stops at the first stage failing twice. Then C0 -> C2 -> C1.
-- **Dunes status (2026-11-24 night):** L0.2 PASS 0.96. L0.3 failed twice on the original friction (0.66, 0.58); ladder 2 (softer sand friction) a1 0.43 (worse), a2 running. Failures = goal behind-left start-stalls. `scripts` for the unattended path live in the Claude scratchpad (dunes_ladder3.sh): re-run from the failing level with original friction + training bearing 135 (env PETCTL_DUNE_SOFT_FRICTION=0, PETCTL_DUNES_TRAIN_BEARING=135), roots data/rl/chain_c_dunes3_L<level>. Stop only on STOP markers/owner.
-- Cosmetic: new sim colors in `petctl/sim/style.py` (opt out with BuildParams.extra["plain_colors"]=1).
+- Branch `feat/autonomous-trainer` (from f450903; tag `attempt-1-end`). The failed skill-gating experiment is on `exp/skill-gating-wip`. Attempt-1 chain (A1..B5 nav stages, hug parked at 0.12) is
+  reference/seed material only, not a baseline to beat; the rebuilt robot's length (10-13 modules) is undecided.
+- **Phase 0 DONE** (branches/tag, ladder scripts in `scripts/rl/ladders/`, dead drivers in `scripts/rl/archive/`, BEST_RUNS torque note fixed).
+- **Phase 1 DONE except owner installs:** watchdog + reward-term logging (`petctl/rl/watchdog.py`), orientation diagnostics, `start_orient`, frozen eval suites (`data/rl/eval_suite/`,
+  `scripts/rl/eval_suite.py check`), contact sheet (`scripts/rl/contact_sheet.py`), run gating (`launch_run.py`, `mark_pilot.py`), hook + subagent PROPOSALS in `docs/proposals/phase1/`
+  (owner installs; rule 8). Waiting for the owner: install, review, go-ahead for Phase 2.
+- Next: Phase 2 (URDFs for 10-13 modules + unverified-CAD-assumption list, multi-turn observation check, friction randomisation + anisotropy, n_envs benchmark).
 
 ## Fixed rules (do not re-litigate)
-Sim only, never move the robot. Torque cap 0.5 N.m; current 10 A peak / 4 A mean. Gates frozen except demonstrated mis-calibration. Runs <= ~1 h; pilots first. Fail on current budget = fix, not retune. Stage: max 3 knob iterations, then design change, then owner escalation (a message, never a halt of compute).
+Sim only, never move the robot. Torque cap 0.5 N.m; current 10 A peak / 4 A mean, shared bus. Flipping is never a failure. Std-runaway fix stays (ent_coef 0, log_std_init -1).
+Gates / eval suites frozen without owner approval. Pilot (0.5-1.5 M steps) + contact sheet + adversarial reviewer before every full run. Max 3 knob iterations per stage, then design change,
+then method review. Budget runs in steps (~2k steps/s with 10 envs), not hours.
 
-## Token-cost rules (binding, owner request 2026-11-23: credits)
-1. No polling crons. Idle checking is done by `scripts/rl/event_watch.sh` (plain shell, zero tokens); Claude wakes only on an event line (STOP_/DONE/driver dead/idle machine).
-2. Routine decisions follow the written stop rules automatically; the expert (Opus) is consulted only when a rule is ambiguous or a stage failed twice with different causes.
-3. Do not read `archive/` or the full log; read this file plus the log tail (`tail -c 3000`).
-4. Do not look at progress videos/contact sheets unless an event or a gate verdict needs it. Rendering is free; viewing is not. One best video per stage at its end.
-5. Batch work into one executor directive; do small edits in the main session; no cold-start subagent for a < 10 min task.
+## Token-cost rules (binding)
+1. No polling crons: `scripts/rl/event_watch.sh` (plain shell) wakes Claude on STOP_* / DONE / driver dead / idle machine.
+2. Routine decisions follow written stop rules; Opus subagents only for the adversarial review and method reviews.
+3. Read this file + `tail -c 3000 CURRICULUM_LOG.md`; never `archive/` or the whole log.
+4. REQUIRED: one contact-sheet review per pilot and per full-run end. Videos optional and event-driven (rendered after a run ends, never viewed by default).
+5. Batch work; small edits in the main session; no subagent for a < 10 min task.
 6. Log entries: result + decision, <= 5 lines.

@@ -233,13 +233,18 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
     from petctl.rl.hug_buffer import BUFFER_ENV
     from petctl.rl.records import HugBufferCallback
     buf_cbs = [HugBufferCallback(os.environ[BUFFER_ENV])] if os.environ.get(BUFFER_ENV) else []     # hug start buffer: merged / persisted / broadcast once per rollout
-    callback = CallbackList([callback, ProgressExportCallback(out), *buf_cbs, *(extra_callbacks or [])])      # progress_policy.npz / progress.json every 20 min (PETCTL_PROGRESS_EXPORT_S)
+    wd_cbs: list[Any] = []
+    if os.environ.get("PETCTL_WATCHDOG", "1") != "0":                    # reward-term logging + stop rules (petctl/rl/watchdog.py); PETCTL_WATCHDOG_BASELINE: pilot run dir with the baseline term shares
+        from petctl.rl.watchdog import WatchdogCallback
+        base = os.environ.get("PETCTL_WATCHDOG_BASELINE")
+        wd_cbs = [WatchdogCallback(out, baseline=Path(base) if base else None)]
+    callback = CallbackList([callback, ProgressExportCallback(out), *buf_cbs, *wd_cbs, *(extra_callbacks or [])])      # progress_policy.npz / progress.json every 20 min (PETCTL_PROGRESS_EXPORT_S)
     model.learn(total_timesteps=steps, progress_bar=False, callback=callback)
     model.save(str(out / "model"))
     venv.save(str(out / "vecnormalize.pkl"))
     (out / "config.json").write_text(json.dumps(cfg.to_dict(), indent=1))
     (out / "meta.json").write_text(json.dumps({"git": _git_hash(), "mujoco": mujoco.__version__, "sb3": sb3.__version__, "torch": torch.__version__,
-                                               "steps": steps, "n_envs": n_envs, "seed": seed, "algo": algo, "wall_s": time.time() - t0,
+                                               "steps": steps, "n_envs": n_envs, "seed": seed, "n_modules": cfg.n_modules, "watchdog_stop": (out / "STOP_watchdog").exists(), "algo": algo, "wall_s": time.time() - t0,
                                                **({"asymmetric": True} if asymmetric else {})}, indent=1))
     venv.close()
     if algo == "ppo":

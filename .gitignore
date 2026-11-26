@@ -33,7 +33,10 @@ config/fsr_offsets.json
 config/imu_tare.json
 
 # Script output data (logs, calibration runs, sweeps)
-data/
+data/*
+!data/rl/
+data/rl/*
+!data/rl/eval_suite/
 
 # MuJoCo writes this into the working directory
 MUJOCO_LOG.TXT

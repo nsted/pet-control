@@ -1,0 +1,650 @@
+[
+ {
+  "command": [
+   -0.04,
+   -0.04,
+   -0.5
+  ],
+  "dr_level": 0.6,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 0.6,
+  "goal": [
+   180.0,
+   1.7103033383174617
+  ],
+  "id": "locomotion-t00",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000000,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 1.5,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   -0.04,
+   -0.04,
+   0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 0.6,
+  "goal": [
+   -45.0,
+   2.0311069577985212
+  ],
+  "id": "locomotion-t01",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000001,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "rolling",
+  "terrain_level": 0.6
+ },
+ {
+  "command": [
+   -0.04,
+   0.04,
+   0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 1.2,
+  "goal": [
+   -90.0,
+   1.9166162608150996
+  ],
+  "id": "locomotion-t02",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000002,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   -0.04,
+   -0.04,
+   0.0
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 1.0,
+  "goal": [
+   -135.0,
+   1.1602722639036638
+  ],
+  "id": "locomotion-t03",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000003,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 3,
+  "start_pose_rad": 0.6,
+  "terrain": "rolling",
+  "terrain_level": 0.3
+ },
+ {
+  "command": [
+   0.08,
+   0.04,
+   0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 2.5,
+  "friction_mean": 0.8,
+  "goal": [
+   45.0,
+   1.6341394505485434
+  ],
+  "id": "locomotion-t04",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000004,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.6,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   0.04,
+   -0.04,
+   0.0
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 1.0,
+  "goal": [
+   135.0,
+   2.004741584919727
+  ],
+  "id": "locomotion-t05",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000005,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.6,
+  "terrain": "rolling",
+  "terrain_level": 0.3
+ },
+ {
+  "command": [
+   -0.04,
+   0.04,
+   0.0
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 1.0,
+  "goal": [
+   -135.0,
+   2.1002758216835966
+  ],
+  "id": "locomotion-t06",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000006,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   0.06,
+   0.0,
+   0.0
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 0.8,
+  "goal": [
+   -90.0,
+   2.4536787585776634
+  ],
+  "id": "locomotion-t07",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000007,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.6,
+  "terrain": "rolling",
+  "terrain_level": 0.6
+ },
+ {
+  "command": [
+   0.04,
+   0.04,
+   -0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 2.5,
+  "friction_mean": 0.6,
+  "goal": [
+   90.0,
+   2.0863507372398167
+  ],
+  "id": "locomotion-t08",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000008,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   0.04,
+   0.04,
+   -0.5
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.6,
+  "goal": [
+   -90.0,
+   2.34633043801858
+  ],
+  "id": "locomotion-t09",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000009,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 3,
+  "start_pose_rad": 0.0,
+  "terrain": "rolling",
+  "terrain_level": 0.6
+ },
+ {
+  "command": [
+   0.04,
+   0.04,
+   -0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.8,
+  "goal": [
+   180.0,
+   1.074132649426925
+  ],
+  "id": "locomotion-t10",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000010,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.6,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   0.06,
+   0.0,
+   0.0
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.6,
+  "goal": [
+   90.0,
+   1.846562852712005
+  ],
+  "id": "locomotion-t11",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000011,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "rolling",
+  "terrain_level": 0.3
+ },
+ {
+  "command": [
+   0.08,
+   -0.04,
+   -0.5
+  ],
+  "dr_level": 0.6,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.8,
+  "goal": [
+   0.0,
+   1.406022214995288
+  ],
+  "id": "locomotion-t12",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000012,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   -0.04,
+   0.04,
+   -0.5
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.6,
+  "goal": [
+   180.0,
+   2.4283127995479328
+  ],
+  "id": "locomotion-t13",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000013,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 1.5,
+  "terrain": "rolling",
+  "terrain_level": 0.6
+ },
+ {
+  "command": [
+   0.08,
+   -0.04,
+   0.0
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 2.5,
+  "friction_mean": 1.0,
+  "goal": [
+   180.0,
+   2.1846633946556206
+  ],
+  "id": "locomotion-t14",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000014,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   -0.04,
+   -0.04,
+   -0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 0.8,
+  "goal": [
+   90.0,
+   1.1580598195620933
+  ],
+  "id": "locomotion-t15",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000015,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 3,
+  "start_pose_rad": 1.5,
+  "terrain": "rolling",
+  "terrain_level": 0.6
+ },
+ {
+  "command": [
+   0.04,
+   0.0,
+   0.5
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 1.0,
+  "goal": [
+   180.0,
+   2.431791035008824
+  ],
+  "id": "locomotion-t16",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000016,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.6,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   0.0,
+   -0.04,
+   -0.5
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.6,
+  "goal": [
+   -45.0,
+   1.205143966651124
+  ],
+  "id": "locomotion-t17",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000017,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.6,
+  "terrain": "rolling",
+  "terrain_level": 0.6
+ },
+ {
+  "command": [
+   -0.04,
+   0.04,
+   0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.8,
+  "goal": [
+   180.0,
+   1.7805254311180971
+  ],
+  "id": "locomotion-t18",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000018,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 1.5,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   0.04,
+   0.0,
+   0.5
+  ],
+  "dr_level": 0.6,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 0.6,
+  "goal": [
+   -45.0,
+   2.0020933692266714
+  ],
+  "id": "locomotion-t19",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000019,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 1.5,
+  "terrain": "rolling",
+  "terrain_level": 0.3
+ },
+ {
+  "command": [
+   0.08,
+   0.0,
+   -0.5
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.5,
+  "friction_mean": 1.0,
+  "goal": [
+   90.0,
+   2.244057846747102
+  ],
+  "id": "locomotion-t20",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000020,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   0.04,
+   0.04,
+   0.0
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 1.2,
+  "goal": [
+   180.0,
+   1.6785573090286852
+  ],
+  "id": "locomotion-t21",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000021,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 3,
+  "start_pose_rad": 1.5,
+  "terrain": "rolling",
+  "terrain_level": 0.3
+ },
+ {
+  "command": [
+   -0.04,
+   0.0,
+   0.5
+  ],
+  "dr_level": 0.0,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 2.5,
+  "friction_mean": 1.2,
+  "goal": [
+   180.0,
+   2.4087061932720877
+  ],
+  "id": "locomotion-t22",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000022,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "flat",
+  "terrain_level": 0.0
+ },
+ {
+  "command": [
+   -0.04,
+   -0.04,
+   0.0
+  ],
+  "dr_level": 0.3,
+  "episode_s": 30.0,
+  "extra": {},
+  "friction_aniso": 1.0,
+  "friction_mean": 0.8,
+  "goal": [
+   -135.0,
+   1.9687807634345778
+  ],
+  "id": "locomotion-t23",
+  "notes": "",
+  "obstacle_density": 0.0,
+  "pose_family": "",
+  "seed": 7000023,
+  "skill": "locomotion",
+  "split": "test",
+  "start_orient": 0,
+  "start_pose_rad": 0.0,
+  "terrain": "rolling",
+  "terrain_level": 0.3
+ }
+]

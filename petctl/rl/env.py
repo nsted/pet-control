@@ -210,6 +210,36 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         plant = [float(pv.get(k, 0.0)) for k in ("kp", "delay_s", "armature", "coulomb_scale", "cap_nm", "floor_friction")]
         return np.concatenate([plant, th, post, fld, [bus]]).astype(np.float32)
 
+    def _apply_start_orient(self, orient: int) -> None:
+        """Roll the freshly reset body about its long (x) axis: 1 = 180 deg (upside-down), 2 = +90, 3 = -90, 4 = uniform random roll; lifts the root so no module starts in the floor."""
+        assert self.sim is not None
+        roll = {1: np.pi, 2: np.pi / 2, 3: -np.pi / 2}.get(orient, float(self._rng.uniform(-np.pi, np.pi)))
+        self.sim.data.qpos[3:7] = [np.cos(roll / 2), np.sin(roll / 2), 0.0, 0.0]
+        self.sim.data.qpos[2] += 0.04
+        import mujoco  # type: ignore[import-untyped]
+        mujoco.mj_forward(self.sim.model, self.sim.data)
+
+    def _orient_step(self) -> None:
+        """Orientation diagnostics (flips, time inverted, recovery time); never affects the reward or termination."""
+        o = self._orient
+        inverted = self._up_dot() < self.cfg.flip_up_dot
+        o["inv_s"] += self.dt if inverted else 0.0
+        if inverted and not o["inv"]:
+            o["inv"], o["spell_s"] = True, 0.0
+            o["flips"] += o["armed"]
+        elif o["inv"] and self._up_dot() > 0.5:                                 # recovered (hysteresis: back above 0.5)
+            o["inv"] = False
+            o["rec_sum"] += o["spell_s"]
+            o["rec_n"] += 1
+        if o["inv"]:
+            o["spell_s"] += self.dt
+        o["armed"] = 1 if not o["inv"] else o["armed"]
+
+    def _orient_metrics(self) -> dict[str, float]:
+        o = self._orient
+        return {"orient_inverted_s": o["inv_s"], "orient_flips": float(o["flips"]), "orient_recoveries": float(o["rec_n"]),
+                "orient_recovery_s": o["rec_sum"] / o["rec_n"] if o["rec_n"] else 0.0, "orient_end_inverted": float(o["inv"])}
+
     def _up_dot(self) -> float:
         assert self.sim is not None
         return float(self.sim.data.site_xmat[self.sim.imu_id].reshape(3, 3)[2, 2])
@@ -277,15 +307,19 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             new_goal = arrange(self.sim, self._rng)
             if new_goal is not None:
                 goal_xy, arranged = new_goal, True
-        for _ in range(8 if amp > 0 else 1):                                  # resample start poses that topple while settling (episode would end at once)
+        orient = int(self.cfg.task_params.get("start_orient", 0.0))           # eval-suite start orientation: 0 upright, 1 upside-down, 2 on the left side, 3 on the right side, 4 random roll
+        for _ in range(8 if amp > 0 and orient <= 0 else 1):                  # resample start poses that topple while settling (episode would end at once)
             if arranged:
                 break
-            if amp > 0:
-                q0 = self._rng.uniform(-amp, amp, self.cfg.n_joints)
+            if amp > 0 or orient > 0:
+                if amp > 0:
+                    q0 = self._rng.uniform(-amp, amp, self.cfg.n_joints)
                 self.sim.reset(q0)
+                if orient > 0:
+                    self._apply_start_orient(orient)
                 self.sim.lift_clear_of_terrain()                              # terrain only: a curled start pose may begin below the heightfield
             self.sim.step(q0, SETTLE_S)                                       # hold the start pose while the body settles on the floor
-            if self._up_dot() >= self.cfg.flip_up_dot or amp <= 0:
+            if self._up_dot() >= self.cfg.flip_up_dot or amp <= 0 or orient > 0:
                 break
         else:
             q0 = np.zeros(self.cfg.n_joints)
@@ -316,6 +350,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         # random start poses: begin from where the body actually settled (curled modules can block a joint); else from the zero pose (as GaitPolicy.reset)
         self._tgt = restored if restored is not None else self.sim.joint_pos().copy() if amp > 0 or arranged else np.zeros(self.cfg.n_joints)
         self._term_sums: dict[str, float] = {}
+        self._orient = {"inv": self._up_dot() < self.cfg.flip_up_dot, "inv_s": 0.0, "spell_s": 0.0, "flips": 0, "armed": 0, "rec_sum": 0.0, "rec_n": 0}
+        self._orient["armed"] = 0 if self._orient["inv"] else 1
         self._h_sum = self._h_wrap_sum = self._state_run = self._state_best = 0
         self._h_wrap_n = 0
         self._h_wrap1_sum, self._h_wrap1_n = 0.0, 0
@@ -429,6 +465,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if c.action_mode == "hold":
             self._hold_step(hold_value(a_full))
         self._t += 1
+        self._orient_step()
         store = getattr(self.task, "maybe_store", None)
         if store is not None:
             store(self.sim, self._tgt)
@@ -439,13 +476,14 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             if probe is not None:
                 gt = probe.read()
                 self._cap_out = self.cap_sensor.step(gt.touch, gt.force, gt.face_dist)
-        terminated = (self.task.terminate_on_flip and self._up_dot() < c.flip_up_dot) or self.task.terminated(self.sim)
+        terminated = (self.task.terminate_on_flip and c.task_params.get("allow_flip", 0.0) <= 0.0 and self._up_dot() < c.flip_up_dot) or self.task.terminated(self.sim)
         truncated = self._t >= self.max_steps
         info = {"terms": terms, "distance": getattr(self.task, "distance", lambda s: 0.0)(self.sim)}
         if hasattr(self.task, "metrics"):
             info["metrics"] = self.task.metrics(self.sim)
-        if (terminated or truncated) and self.task.name.startswith("goal_"):
+        if terminated or truncated:                                                   # every task: per-term episode sums + orientation diagnostics (watchdog / TensorBoard read them)
             info.setdefault("metrics", {}).update({f"term_{k}": v for k, v in self._term_sums.items()})
+            info["metrics"].update(self._orient_metrics())
         if self.bus is not None:
             info.setdefault("metrics", {}).update({"bus_mean_a": float(np.mean(self._bus_means)), "bus_peak_a": self._bus_peak, "bus_peak_applied_a": self._bus_peak_applied,
                                                    "frac_ticks_over_10a": self._bus_over / len(self._bus_means),
