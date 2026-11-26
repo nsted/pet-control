@@ -23,7 +23,7 @@ Components are swappable ABCs. Control schemes never touch the backend directly 
 - **Odd modules have left/right sensors swapped** for body-frame consistency (handled in RobotBackend.\_read_sensors, transparent to everything above)
 - **m0 and all odd modules**: top-row pad order is front↔rear reversed (index 0↔2 swapped) on both side faces — corrected in `_parse_sensor_response`. m0 additionally has its middle pads fully reversed.
 - **All joints are single-axis Z revolute** — positive angle = one direction, negative = the other, muli-turn
-- **Motor hardware:** CubeMars GL40 II BLDC motors in MIT mode over CAN bus
+- **Motor hardware:** SteadyWin GIM3505-8 (8:1 planetary BLDC) motors in MIT mode over CAN bus (1 Mbps). Data and measurements: `docs/plans/MOTOR_GIM3505.md`. The driver profile in `petctl/motors/gl40.py` is still the old CubeMars GL40 II profile (same MIT frame layout, different encoding ranges and current model) until a GIM3505-8 profile is written.
 - **Position units:** radians (`0.0` = software home offset per motor)
 - **Protocol:** SLCAN text frames over WebSocket (`t{id:03X}8...`), no binary WS frames
 - **Robot hostname:** pet-robot.local:8080
