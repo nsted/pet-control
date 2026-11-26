@@ -8,7 +8,7 @@ Generated with `urdf_gen.variant_dir(n)` (the builder already did this for every
 orange, even blue). The generator's own tests (`tests/` urdf / n8-identity / tail-flip) pass.
 
 ### UNVERIFIED geometric / physical assumptions — owner to confirm in CAD or on the bench
-1. **Odd-n tail orientation (the big one).** For odd n the tail is turned 180 deg about the chain axis (`tail_flip` auto), derived from mating-patch coincidence. Confirm the physical
+1. **Odd-n tail orientation (the big one). CONFIRMED by the owner 2026-11-26: the tail is rolled 180 deg about the lengthwise axis for odd n (generator default `tail_flip` auto, unchanged).** Original note: For odd n the tail is turned 180 deg about the chain axis (`tail_flip` auto), derived from mating-patch coincidence. Confirm the physical
    tail module can be mounted in that orientation (and which orientation the real odd-length robot will use). Affects 11 and 13 only.
 2. **Even-n tail position.** For even n the tail end sits ~0.2 cm off the pitch grid and the lying chain is tilted ~5 deg (frame from head->tail centres). Confirm the real even-length
    chain geometry and that the tilt is a frame artefact, not a real bend.
