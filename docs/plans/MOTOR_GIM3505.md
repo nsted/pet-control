@@ -51,3 +51,22 @@ Motor Wizard, torque mode, holding a cantilever load at 3 cm lever arm, 13 V sup
 - MIT-mode / gain protocol of the GDK driver: kp, kd ranges, torque-feedforward, reply frame and rate, command delay (needed for dynamic gains and the delay randomisation).
 - Rotation speed during the "rotate" runs; supply voltage of the finished robot; whether a 24 V -8 variant is used (the manual lists only 48 V for -8).
 - Joint friction / back-drivability (turn a joint by hand with the motor off: torque to move it), rotor + gear inertia.
+
+## GDK driver manual: MIT mode (`GIM User Manual.pdf`, 69 pages; read 2026-11-26)
+- **Control law** (section 4.4): `iq_ref = ((p_des - p) Kp + (v_des - v) Kd + tau_des / k_tff) / k_out` with `k_out` ~ the motor constant, so the output torque is
+  `tau = Kp (p_des - p) + Kd (v_des - v) + tau_ff`: the same law the sim implements (position actuator with kp, kv). Units: Kp N.m/rad, Kd N.m.s/rad. Position-only mode (v_des = 0, tau_ff = 0) has
+  steady-state error (proportional only).
+- **Frame:** CAN 1 Mbps, 8 bytes, id = motor id + MIT_MODE offset; packing 16 / 12 / 12 / 12 / 12 bits (position, velocity, Kp, Kd, torque): the same layout as the existing GL40 profile in
+  `petctl/motors/gl40.py`, only the ENCODING RANGES differ. Feedback: id + state nibble, position 16 bit, velocity 12 bit, torque 12 bit, T_MOS and T_coil (deg C, 1 byte each): real motor
+  and driver temperatures are available. Modes: 0 current, 1 speed, 3 position, 6 MIT. A temperature-limit register exists (read as 80 C in the manual's example); I found no current-limit register in the
+  text (the owner's test also ran without one).
+- **Encoding ranges are REGISTERS (0.01 units) the host must match**, defaults: position +-12.5 rad (regs 330 / 332), speed +-30 rad/s (334 / 336), torque +-10 N.m (338 / 340, 0.002 units), Kp 0..100
+  (342 / 344), Kd 0..5 (346 / 348); stored default control gains Kp 72, Kd 1.5 (350 / 352). The demo script uses other example ranges (Kp 0..500, Kd 0..5, torque +-18). The ranges are free to change
+  (uint16 registers), so multi-turn position commands beyond +-12.5 rad are possible by widening the position range (at the cost of position resolution: 16 bits over the span).
+- **Consequences for the project:**
+  1. Dynamic gains (owner decision) are natively supported: kp and kd are sent in every frame. Allowed range = whatever the Kp / Kd registers are set to; defaults 0..100 N.m/rad, 0..5 N.m.s/rad.
+     Resolution is 12 bits over the span: with Kp max 100 one step is 0.024 N.m/rad (coarse for soft gains around 0.8), so the register ranges should be narrowed (e.g. Kp 0..5, Kd 0..0.5) before
+     fine stiffness control. The old GL40 values (kp 0.8, kd 0.035) are therefore a choice, not a motor limit.
+  2. With the 0.5 N.m cap and Kp 72 the actuator saturates at a 0.007 rad error: at high gain the joint behaves like a torque-limited bang-bang servo. The sim's `forcerange` cap models this.
+  3. Motor temperature feedback (T_mos, T_coil) means thermal state can be a sim/observation quantity later (not modelled now).
+  4. The manual gives no command delay, rotor inertia or friction. The MIT demo runs a 1 kHz loop; the delay still has to be measured.
