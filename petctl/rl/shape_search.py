@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 import time
 from typing import Any
 
@@ -39,7 +40,13 @@ class ShapeSearchSim:
         """Build the model with the shape (yaw 0) and the real cap / bus model."""
         self.n, self.shape0 = n_modules, dataclasses.replace(shape, yaw=0.0)
         self.sim = PetSim(BuildParams(n_modules=n_modules, urdf_dir=urdf_dir, dt=SIM_DT, cap_nm=(cap_nm,) * (n_modules - 1), post=(5.0, 5.0), post_shape=self.shape0))
-        self.sim.bus = BusClamp(self.sim.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=True)
+        if os.environ.get("PETCTL_BUS_MOTOR", "gl40") == "gim3505":                   # SteadyWin GIM3505-8 current model (owner data, docs/plans/MOTOR_GIM3505.md); default: legacy GL40 II
+            from petctl.config import GIM3505_HOLD_A_PER_NM2, GIM3505_IDLE_PER_MOTOR_A, GIM3505_MOVE_A_PER_NM2, GIM3505_MOVE_OMEGA0_RAD_S
+            from petctl.sim.bus import IDLE_ELECTRONICS_A
+            self.sim.bus = BusClamp(self.sim.model, GIM3505_HOLD_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=True, move_coeff=GIM3505_MOVE_A_PER_NM2, move_omega0=GIM3505_MOVE_OMEGA0_RAD_S,
+                                    idle_a=IDLE_ELECTRONICS_A + GIM3505_IDLE_PER_MOTOR_A * (n_modules - 1))
+        else:
+            self.sim.bus = BusClamp(self.sim.model, BUS_A_PER_NM2, REGIMEN_BUS_PEAK_A, clamp=True)
         self.probe = PostProbe.of(self.sim)
         assert self.probe is not None
         self.ids = post_geom_ids(self.sim.model)
