@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from multiprocessing import get_context
 from pathlib import Path
@@ -23,6 +24,8 @@ from petctl.rl.gait_eval import build_sim, evaluate_gait
 
 LO = np.array([PARAM_BOUNDS[k][0] for k in PARAM_NAMES])
 HI = np.array([PARAM_BOUNDS[k][1] for k in PARAM_NAMES])
+if os.environ.get("PETCTL_FMAX"):                                              # experiment: relax the frequency bound (workers inherit the env)
+    HI[0] = float(os.environ["PETCTL_FMAX"])
 OBJECTIVES = {"forward": lambda r: r.vx, "reverse": lambda r: -r.vx, "left": lambda r: r.vy, "right": lambda r: -r.vy, "turn_left": lambda r: r.yaw_rate, "turn_right": lambda r: -r.yaw_rate,
               "roll": lambda r: abs(r.roll_rate), "roll_travel": lambda r: abs(r.roll_rate) + 4.0 * r.speed}
 _SIM: dict = {}
