@@ -22,7 +22,7 @@ orange, even blue). The generator's own tests (`tests/` urdf / n8-identity / tai
 8. **Shared bus current model:** 13.3 A per (N.m)^2 per motor was measured on the 8-module robot (hanging tests); assumed to scale linearly in n with the same 10 A peak / 4 A mean
    limit shared by all motors. A longer body therefore has less current per joint on average.
 9. **Multi-turn joints:** assumed physically possible without cable wind-up (slip ring or wireless joints). If not, the policy needs a turn limit after all.
-10. **Skin friction** is unmeasured: `floor_friction` 0.4-1.5 (existing DR) and anisotropy 1-2.5 lateral/forward (new, `skin.py`) are guesses covering plausible silicone / fabric / vinyl skins.
+10. **Skin friction** is unmeasured: `floor_friction` 0.4-1.5 (existing DR) is randomised in training; the skin is assumed isotropic (bare ABS). Anisotropy (1-2.5 lateral/forward, `skin.py`) is only a robustness check. Revisit if a fabric / silicone cover or printed texture is planned.
 
 ## 2. Multi-turn joint state in the observation
 Finding: with unbounded joint actions the observed joint angles AND the commanded targets were wrapped to [-pi, pi) (`obs.py`), so two states 2 pi apart gave identical observations,
@@ -33,7 +33,7 @@ Phase 7 note: with a CPG action space the multi-turn quantity lives in the integ
 
 ## 3. Friction: randomisation and anisotropy
 - Floor friction DR already existed (`DomainRand.floor_friction` 0.4-1.5); eval scenarios can now fix it (`task_params["floor_friction"]`, `["friction_aniso"]`, set by `evalsuite.task_params`).
-- NEW anisotropic skin friction (`petctl/sim/skin.py`, `BuildParams.skin_aniso`, `DomainRand.friction_aniso`, default (1, 1) = off for old runs; the trainer should use (1.0, 2.5)).
+- NEW anisotropic skin friction (`petctl/sim/skin.py`, `BuildParams.skin_aniso`, `DomainRand.friction_aniso`, default (1, 1) = isotropic, the default for all runs (owner decision 2026-11-26: ABS is isotropic); use (1.0, 2.5) only for occasional robustness checks).
   MuJoCo friction is isotropic, so the floor friction acts as the FORWARD (chain-axis) friction and the missing lateral share (r - 1) mu N is added as an extra Coulomb force per
   robot-vs-world contact along the lateral direction, with the chain axis fixed in each module's body frame (so it follows a rolling body). Per-contact force is capped so a body's
   contacts cannot reverse its slip within one hold interval (the uncapped force was unstable: explicit gain ~ 1000 N s/m against 0.27 kg modules).

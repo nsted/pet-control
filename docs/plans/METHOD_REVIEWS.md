@@ -5,7 +5,7 @@ with different causes. Newest first.
 
 ## 2026-11-26 Phase 2 design decisions (model checks; no reward / task change)
 - `turn_obs` knob (obs.py): turn counts of joint angle / target appended last, because wrapped observations hid the multi-turn state. Default off.
-- Anisotropic skin friction (`petctl/sim/skin.py`): lateral/forward ratio via an extra Coulomb force; `DomainRand.friction_aniso` default (1, 1) (old runs unchanged), trainer uses (1.0, 2.5).
+- Anisotropic skin friction (`petctl/sim/skin.py`): lateral/forward ratio via an extra Coulomb force; `DomainRand.friction_aniso` default (1, 1) = isotropic for all training (owner decision: ABS is isotropic); anisotropy is an optional robustness check only (e.g. final gaits at ratios 1.5 and 2.5).
   Costs ~45 % throughput; stride 2 chosen after testing 2/3/4. Eval-suite scenarios now realise `friction_mean` and `friction_aniso` (suite files unchanged, hashes OK; only the generator comment changed
   from "forward/lateral" to "lateral/forward").
 - n_envs = 10. Details and the CAD-assumption list: PHASE2_MODEL_CHECKS.md.
