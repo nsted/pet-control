@@ -80,6 +80,11 @@ Reading: all lengths bridge 15 cm, the EVEN lengths (10, 12) reach 20 cm, the od
 ahead), so there is no consistent odd-length advantage in the statics: each skill favours a different parity, differences are one 5 cm step or one pose, single seed. Bridging ability is limited by the
 cap (the straight beam alone bridges ~10 cm at n = 11, the search roughly doubles it); it does NOT scale with body length the way the old `arch` proxy suggested. Video: `docs/media/gap_bridge_n10-13.mp4`.
 
+## 5b. Owner decisions after Phase 3 (2026-11-26)
+- **The static gap bridge is dropped as a skill.** The useful skill is a dynamic CROSSING: start on one platform and cross the gap fully to the other platform (inchworm / cantilever-and-pull motions), found by
+  CPG search in Phase 4 / trained in Phase 8 (obstacle negotiation). The static numbers above stay only as a strength bound (beam alone ~10 cm, held pose 15-20 cm).
+- `cma` 4.6.0 installed (owner approval, approval 5; added to the `rl` extra in `pyproject.toml`).
+
 ## 6. Phase 3 summary
 - CPG basis done and validated (exact baseline equivalence, 67 tests); coarse sweeps show all behaviours at all lengths, speeds 3-4 cm/s (lower bound, torque-limited).
 - Statics at 0.5 N.m: head lift ~19 cm at every length; gap bridge 15-20 cm; wrap radius 9-11 cm; self-right from the side feasible for most lengths, from inverted NOT by a held pose (dynamic skill).
