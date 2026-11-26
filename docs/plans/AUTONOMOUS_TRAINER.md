@@ -230,3 +230,7 @@ Then act on it.
 - Magic Snake 3D conformations: https://pmc.ncbi.nlm.nih.gov/articles/PMC8208313/
 - Rubik's Snakes on a plane: https://math.uni.lu/eml/assets/reports/2021/snakes_WS21.pdf
 - Claude Code hooks: https://code.claude.com/docs/en/hooks
+
+## Owner amendments after the brief was saved
+- 2026-11-26: motor is the SteadyWin GIM3505-8 (not GL40 II); the current model may be incorrect (treat current as an unvalidated proxy); joint gains kp / kd are dynamic control outputs, not fixed. See PHASE2_MODEL_CHECKS.md and METHOD_REVIEWS.md.
+- 2026-11-26: skin friction defaults to isotropic (anisotropy only for robustness checks); odd-n tail = rolled 180 deg about the lengthwise axis (confirmed).

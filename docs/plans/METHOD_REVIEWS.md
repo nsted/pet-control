@@ -8,6 +8,7 @@ with different causes. Newest first.
 - Anisotropic skin friction (`petctl/sim/skin.py`): lateral/forward ratio via an extra Coulomb force; `DomainRand.friction_aniso` default (1, 1) = isotropic for all training (owner decision: ABS is isotropic); anisotropy is an optional robustness check only (e.g. final gaits at ratios 1.5 and 2.5).
   Costs ~45 % throughput; stride 2 chosen after testing 2/3/4. Eval-suite scenarios now realise `friction_mean` and `friction_aniso` (suite files unchanged, hashes OK; only the generator comment changed
   from "forward/lateral" to "lateral/forward").
+- **Gains are part of the control (action space, Phase 7)**: stiffness / damping are commanded dynamically (CPG-level modulation, smoothed, observed), not fixed; sim support `PetSim.set_gains` is in. **Current model is possibly wrong**: current is an unvalidated proxy, no gate or decisive length criterion on it (Phase 6 criteria must say so before approval 7).
 - Owner correction: motor = SteadyWin GIM3505-8 (CLAUDE.md / motor profile still say GL40 II). No sim change made yet; waiting for the owner's numbers.
 - n_envs = 10. Details and the CAD-assumption list: PHASE2_MODEL_CHECKS.md.
 

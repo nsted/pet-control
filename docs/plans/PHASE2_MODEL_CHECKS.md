@@ -24,8 +24,9 @@ orange, even blue). The generator's own tests (`tests/` urdf / n8-identity / tai
    the bus-current model (13.3 A per (N.m)^2 per motor, measured at V_bus 14.7 V; the GIM3505-8 is a 24 V nominal part), the 24 W worst-case per motor, thermal limits, and the speed
    limit (retailer listings: 225-384 rpm after the reducer; slew limit in the sim is 6 rad/s). The 0.5 N.m torque cap stays (owner: correct). Retailer pages list rated torque ~0.65 N.m,
    rated power 29-37 W, 84 g motor; they disagree with each other, no official datasheet was found, no peak torque figure.
-8. **Shared bus current model:** 13.3 A per (N.m)^2 per motor was measured on the 8-module robot (hanging tests); assumed to scale linearly in n with the same 10 A peak / 4 A mean
-   limit shared by all motors. A longer body therefore has less current per joint on average.
+8. **Shared bus current model: owner says it may be INCORRECT (2026-11-26).** It is 13.3 A per (N.m)^2 per motor, measured on the old GL40 II robot at 14.7 V, assumed to scale linearly in n with a
+   10 A peak / 4 A mean limit shared by all motors. Consequence: current / bus numbers are reported as an UNVALIDATED proxy (torque^2 sum, per-length ranking only), never used as a gate or as a
+   decisive length criterion until the owner supplies measurements of the GIM3505-8 system.
 9. **Multi-turn joints:** assumed physically possible without cable wind-up (slip ring or wireless joints). If not, the policy needs a turn limit after all.
 10. **Skin friction** is unmeasured: `floor_friction` 0.4-1.5 (existing DR) is randomised in training; the skin is assumed isotropic (bare ABS). Anisotropy (1-2.5 lateral/forward, `skin.py`) is only a robustness check. Revisit if a fabric / silicone cover or printed texture is planned.
 
@@ -54,3 +55,10 @@ Phase 7 note: with a CPG action space the multi-turn quantity lives in the integ
 Anisotropy costs ~40-45 %. (A first, un-vectorised skin implementation cost 70 %.)
 **Use n_envs = 10** (flat optimum 10-12 on 10 cores; 10 is best with anisotropy on and within 4 % of the best without). PPO updates run in the main process, so real training throughput is lower than these simulator-only numbers (the brief's
 ~2k steps/s is the training figure); budget in steps from the measured training rate of each run. Idea not done yet: `mujoco.rollout` / process pools for black-box gait search (Phase 4).
+
+## 5. Dynamic gains (owner decision 2026-11-26: gains are not fixed)
+The joint gains kp / kd must be open to dynamic variation by the control system. Sim side DONE: `PetSim.set_gains(kp, kd)` / `gains()` (scalar or per joint, effective next step, torque cap still
+binds; `tests/test_gains.py`). Policy side is deferred to Phase 7 on purpose, where the action space is redefined anyway: the action will be CPG parameters + residual + stiffness / damping
+modulation (global scale and optionally per-joint), the gain parameters following the same 2nd-order smoothing as the other CPG parameters so a change never jumps the joints, and the commanded gains
+will be part of the observation. Domain randomisation of kp / kd then stops being "the controller's gain" and becomes a plant mismatch (gain-error multiplier). OPEN: the allowed gain RANGE of the
+GIM3505-8 in the real controller (the GL40 II values kp_max 1.5 / kd_max 0.04 do not carry over); until the owner supplies it the sim range will be a wide provisional one, logged per run.

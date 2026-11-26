@@ -435,6 +435,22 @@ class PetSim:
         self.z0 = self._z0_flat + terrain.footprint_height(self._foot)
         self.reset()
 
+    def set_gains(self, kp: np.ndarray | float | None = None, kd: np.ndarray | float | None = None) -> None:
+        """Set the joint stiffness ``kp`` (N.m/rad) and damping ``kd`` (N.m.s/rad), scalar or per joint, effective from the next step (the MIT law ``tau = kp (q* - q) - kd qdot``; the torque cap still binds).
+
+        The control system may vary the gains at any time (owner decision 2026-11-26: gains are not fixed). Values are NOT range-checked here; the caller applies the motor's limits.
+        """
+        m = self.model
+        if kp is not None:
+            m.actuator_gainprm[:, 0] = kp
+            m.actuator_biasprm[:, 1] = -np.asarray(kp, float)
+        if kd is not None:
+            m.actuator_biasprm[:, 2] = -np.asarray(kd, float)
+
+    def gains(self) -> tuple[np.ndarray, np.ndarray]:
+        """Current (kp, kd) per joint."""
+        return self.model.actuator_gainprm[:, 0].copy(), -self.model.actuator_biasprm[:, 2].copy()
+
     def set_cap(self, cap_nm: np.ndarray) -> None:
         """Set the per-joint torque cap (N.m), e.g. from the power allocator."""
         self.model.actuator_forcerange[:, 0] = -cap_nm
