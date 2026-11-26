@@ -10,6 +10,7 @@ Updated: 2026-11-26. Governing brief: `AUTONOMOUS_TRAINER.md` (overrides older R
   `scripts/rl/eval_suite.py check`), contact sheet (`scripts/rl/contact_sheet.py`), run gating (`launch_run.py`, `mark_pilot.py`), hook + subagent PROPOSALS in `docs/proposals/phase1/`
   (owner installs; rule 8). Waiting for the owner: install, review, go-ahead for Phase 2.
 - **Phase 2 DONE (2026-11-26)**, see `PHASE2_MODEL_CHECKS.md`: URDFs 10-13 verified, 10 CAD assumptions listed for the owner, `turn_obs`, anisotropic skin friction, n_envs = 10. Waiting for the owner's CAD confirmations (results stay provisional).
+- **OPEN (owner, 2026-11-26): the motor is the SteadyWin GIM3505-8, not the GL40 II** the sim parameters came from (kp/kd, friction, armature, delay, bus-current model). Need the owner's data before the length study: see PHASE2_MODEL_CHECKS.md item 7.
 - Next: Phase 3 (CPG basis in joint-pair coordinates + feasibility statics).
 
 ## Fixed rules (do not re-litigate)

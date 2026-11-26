@@ -18,7 +18,12 @@ orange, even blue). The generator's own tests (`tests/` urdf / n8-identity / tai
 5. **Inertias and centre of mass of added modules** are copies of owner modules 5/6 (screw-moved); head/tail inertia identical.
 6. **Collision geometry:** convex hulls of the CAD meshes (<= 200 vertices); adjacent hulls touch (0 mm), skip-one hulls keep 1.76 mm clearance for every n (same as the owner's 8).
    Real clearances with cables / fasteners / skin are unknown.
-7. **Motors for added joints:** same GL40 II, same 0.5 N.m cap, same coulomb friction (median of the measured middle joints), same armature / kp / kd / delay as the existing joints.
+7. **Motor. CORRECTED by the owner 2026-11-26: the rebuilt robot uses the SteadyWin GIM3505-8 (8:1 planetary, CAN), NOT the CubeMars GL40 II** that CLAUDE.md, `petctl/motors/gl40.py`
+   and `docs/plans/POWER_MANAGEMENT.md` describe. The sim's motor-dependent parameters were measured on / derived from the GL40 II and are therefore UNVERIFIED for the new motor:
+   kp / kd defaults (0.8 / 0.035, MIT scale), joint coulomb friction (`COULOMB_NM`), armature (DR 1e-4..1e-3; an 8:1 reducer reflects rotor inertia x64), command delay (0.04-0.14 s),
+   the bus-current model (13.3 A per (N.m)^2 per motor, measured at V_bus 14.7 V; the GIM3505-8 is a 24 V nominal part), the 24 W worst-case per motor, thermal limits, and the speed
+   limit (retailer listings: 225-384 rpm after the reducer; slew limit in the sim is 6 rad/s). The 0.5 N.m torque cap stays (owner: correct). Retailer pages list rated torque ~0.65 N.m,
+   rated power 29-37 W, 84 g motor; they disagree with each other, no official datasheet was found, no peak torque figure.
 8. **Shared bus current model:** 13.3 A per (N.m)^2 per motor was measured on the 8-module robot (hanging tests); assumed to scale linearly in n with the same 10 A peak / 4 A mean
    limit shared by all motors. A longer body therefore has less current per joint on average.
 9. **Multi-turn joints:** assumed physically possible without cable wind-up (slip ring or wireless joints). If not, the policy needs a turn limit after all.
