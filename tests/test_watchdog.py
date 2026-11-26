@@ -72,3 +72,24 @@ def test_start_orient_and_diagnostics_generic_length() -> None:
                 done = term or trunc
             m = info["metrics"]
             assert not term and m["orient_end_inverted"] == float(inv) and any(k.startswith("term_") for k in m)
+
+
+def test_turn_obs_makes_multiturn_state_visible() -> None:
+    """Without ``turn_obs`` two joint states 2 pi apart give identical observations; with it they differ (and the size grows by n_joints / 2 n_joints)."""
+    from petctl.rl.obs import ObsBuilder, Snapshot, turn_count
+
+    assert list(turn_count(np.array([0.0, 3.2, -3.2, 7.0, 13.0, -20.0]))) == [0, 1, -1, 1, 2, -3]
+    for mode, mult in (("abs", 1), ("hold", 2)):
+        sizes, obs = {}, {}
+        for turn in (0.0, 1.0):
+            cfg = EnvConfig(task="goal_reach", n_modules=10, action_mode=mode, task_params={"action_unbounded": 1.0, "turn_obs": turn, "goal_dist_min": 1.0, "goal_dist_max": 2.0})
+            ob = ObsBuilder(cfg)
+            q = np.full(cfg.n_joints, 0.3)
+            for k, qq in enumerate((q, q + 2 * np.pi)):
+                snap = Snapshot(qq, np.array([1.0, 0, 0, 0]), np.zeros(3), np.full(cfg.n_joints, 0.5), np.zeros(ob.extra_dim), target=qq.copy())
+                ob.reset(snap)
+                obs[(turn, k)] = ob.build(snap)
+            sizes[turn] = ob.size
+        assert sizes[1.0] - sizes[0.0] == mult * 9
+        assert np.allclose(obs[(0.0, 0)], obs[(0.0, 1)])
+        assert not np.allclose(obs[(1.0, 0)], obs[(1.0, 1)])

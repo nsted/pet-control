@@ -3,6 +3,13 @@
 Rules (AUTONOMOUS_TRAINER.md): log every redesign of action space / task / reward / curriculum here with its reason; write a review every 10 runs and after a stage fails twice
 with different causes. Newest first.
 
+## 2026-11-26 Phase 2 design decisions (model checks; no reward / task change)
+- `turn_obs` knob (obs.py): turn counts of joint angle / target appended last, because wrapped observations hid the multi-turn state. Default off.
+- Anisotropic skin friction (`petctl/sim/skin.py`): lateral/forward ratio via an extra Coulomb force; `DomainRand.friction_aniso` default (1, 1) (old runs unchanged), trainer uses (1.0, 2.5).
+  Costs ~45 % throughput; stride 2 chosen after testing 2/3/4. Eval-suite scenarios now realise `friction_mean` and `friction_aniso` (suite files unchanged, hashes OK; only the generator comment changed
+  from "forward/lateral" to "lateral/forward").
+- n_envs = 10. Details and the CAD-assumption list: PHASE2_MODEL_CHECKS.md.
+
 ## 2026-11-26 Phase 1 design decisions (safeguards; no reward or task change yet)
 - **Flip is not a failure (env).** `allow_flip` is now honoured for every task in `PetEnv.step` (default 0 = old behaviour, so existing stages are unchanged); new work sets
   `allow_flip: 1`. Reason: brief says flipping never ends an episode; self-righting and rolling gaits need it.
@@ -17,5 +24,5 @@ with different causes. Newest first.
   `scripts/rl/eval_suite.py check`; TEST needs `PETCTL_OPEN_TEST=1` + a reason (logged). `.gitignore` now un-ignores `data/rl/eval_suite/` (was under the blanket `data/`).
   Any later change to these files needs owner approval (approval 1).
 - **Run gating.** `scripts/rl/launch_run.py pilot|full`, `scripts/rl/mark_pilot.py`, `scripts/rl/contact_sheet.py`; the hook proposal in `docs/proposals/phase1/` enforces them.
-- **Known gap:** n_modules 10-13 currently use the existing 8-module-based builder (`MIN/MAX_MODULES` 8..15), not the URDF generator of the brief: Phase 2 item.
+- ~~Known gap: n_modules 10-13 do not use the URDF generator~~ WRONG: the builder has always used `urdf_gen` for n != 8 (corrected in Phase 2, see PHASE2_MODEL_CHECKS.md).
 - **Known pre-existing failure:** `tests/test_gate2.py::test_gate2_hard_fails` fails on f450903 and on this branch alike.

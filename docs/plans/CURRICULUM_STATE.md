@@ -9,7 +9,8 @@ Updated: 2026-11-26. Governing brief: `AUTONOMOUS_TRAINER.md` (overrides older R
 - **Phase 1 DONE except owner installs:** watchdog + reward-term logging (`petctl/rl/watchdog.py`), orientation diagnostics, `start_orient`, frozen eval suites (`data/rl/eval_suite/`,
   `scripts/rl/eval_suite.py check`), contact sheet (`scripts/rl/contact_sheet.py`), run gating (`launch_run.py`, `mark_pilot.py`), hook + subagent PROPOSALS in `docs/proposals/phase1/`
   (owner installs; rule 8). Waiting for the owner: install, review, go-ahead for Phase 2.
-- Next: Phase 2 (URDFs for 10-13 modules + unverified-CAD-assumption list, multi-turn observation check, friction randomisation + anisotropy, n_envs benchmark).
+- **Phase 2 DONE (2026-11-26)**, see `PHASE2_MODEL_CHECKS.md`: URDFs 10-13 verified, 10 CAD assumptions listed for the owner, `turn_obs`, anisotropic skin friction, n_envs = 10. Waiting for the owner's CAD confirmations (results stay provisional).
+- Next: Phase 3 (CPG basis in joint-pair coordinates + feasibility statics).
 
 ## Fixed rules (do not re-litigate)
 Sim only, never move the robot. Torque cap 0.5 N.m; current 10 A peak / 4 A mean, shared bus. Flipping is never a failure. Std-runaway fix stays (ent_coef 0, log_std_init -1).

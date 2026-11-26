@@ -250,6 +250,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         super().reset(seed=seed)
         self._rng = self.np_random
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
+        tp = self.cfg.task_params
+        if "floor_friction" in tp or "friction_aniso" in tp:                          # eval-suite scenarios fix the friction (overrides the randomised draw)
+            params = BuildParams(**{**params.__dict__, "floor_friction": float(tp.get("floor_friction", params.floor_friction)), "skin_aniso": float(tp.get("friction_aniso", params.skin_aniso))})
+            self.privileged.update({"floor_friction": params.floor_friction, "skin_aniso": params.skin_aniso})
         self.task = TASKS[self.cfg.task](self.cfg)
         if hasattr(self.task, "hug_level"):
             self.task.hug_level = self._hug_level                                   # type: ignore[attr-defined]

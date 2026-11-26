@@ -5,7 +5,7 @@ logged to ``data/rl/eval_suite/test_access.log``). A scenario is a pure spec (se
 command or goal): nothing refers to the body length, so every candidate length replays the same scenarios. ``data/rl/eval_suite/manifest.json`` stores the SHA-256
 of every file; ``check_manifest`` (also ``scripts/rl/eval_suite.py check``) fails when anything changed. Changing a suite needs the owner's approval.
 
-Fields consumed by the current env: ``start_orient`` / ``start_pose_rad`` / ``terrain`` / ``dr_level`` / ``goal`` (see ``task_params``). ``command``, ``friction_aniso``,
+Fields consumed by the current env: ``start_orient`` / ``start_pose_rad`` / ``terrain`` / ``dr_level`` / ``goal`` / ``friction_mean`` / ``friction_aniso`` (see ``task_params``). ``command``,
 ``obstacles`` and ``pose_family`` are part of the frozen spec and become live with the Phase 2 / 7 / 8 features.
 """
 
@@ -45,7 +45,7 @@ class Scenario:
     terrain: str = "flat"
     terrain_level: float = 0.0
     friction_mean: float = 1.0
-    friction_aniso: float = 1.0           # forward/lateral friction ratio (1 = isotropic); live from Phase 2
+    friction_aniso: float = 1.0           # lateral / forward skin-friction ratio (1 = isotropic; petctl/sim/skin.py); live since Phase 2
     dr_level: float = 0.3                 # domain-randomisation scale in [0, 1]
     command: tuple[float, float, float] | None = None     # (vx m/s, vy m/s, yaw rad/s) in the principal-axis heading frame; live from Phase 7
     goal: tuple[float, float] | None = None               # (bearing deg relative to the start heading, distance m)
@@ -174,7 +174,8 @@ def load_suite(split: str, skill: str, root: Path = SUITE_DIR, reason: str = "")
 
 def task_params(sc: Scenario) -> dict[str, float]:
     """Env ``task_params`` that realise the parts of ``sc`` the current env understands (goal_reach task); the rest waits for Phase 2 / 7 / 8."""
-    p: dict[str, float] = {"start_orient": float(sc.start_orient), "start_pose_rad": float(sc.start_pose_rad), "allow_flip": 1.0}
+    p: dict[str, float] = {"start_orient": float(sc.start_orient), "start_pose_rad": float(sc.start_pose_rad), "allow_flip": 1.0,
+                           "floor_friction": float(sc.friction_mean), "friction_aniso": float(sc.friction_aniso)}
     if sc.terrain != "flat" and sc.terrain_level > 0.0:
         p["terrain_level"] = float(sc.terrain_level)
         p["terrain_rolling"] = 1.0 if sc.terrain == "rolling" else 0.0

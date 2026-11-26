@@ -23,5 +23,6 @@ def sample_params(dr: DomainRand, rng: np.random.Generator, base: BuildParams | 
     cap = _u(rng, *dr.cap_nm, s)
     p = BuildParams(**{**b.__dict__, "kp": kp, "delay_s": _u(rng, *dr.delay_s, s), "armature": _u(rng, *dr.armature, s),
                        "coulomb": tuple(c * cs for c in b.coulomb), "masses": tuple(m * f for m, f in zip(b.masses, ms)),
-                       "cap_nm": (cap,) * len(b.cap_nm), "floor_friction": _u(rng, *dr.floor_friction, s)})
-    return p, {"kp": kp, "delay_s": p.delay_s, "armature": p.armature, "coulomb_scale": cs, "cap_nm": cap, "floor_friction": p.floor_friction}
+                       "cap_nm": (cap,) * len(b.cap_nm), "floor_friction": _u(rng, *dr.floor_friction, s),
+                       "skin_aniso": _u(rng, *dr.friction_aniso, s, 1.0) if dr.friction_aniso[1] > 1.0 else b.skin_aniso})
+    return p, {"kp": kp, "delay_s": p.delay_s, "armature": p.armature, "coulomb_scale": cs, "cap_nm": cap, "floor_friction": p.floor_friction, "skin_aniso": p.skin_aniso}

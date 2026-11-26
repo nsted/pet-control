@@ -49,6 +49,15 @@ def wrap_angle(x: np.ndarray | float) -> np.ndarray:
     return (np.asarray(x, float) + np.pi) % (2.0 * np.pi) - np.pi
 
 
+TURN_CLIP = 3.0                  # turn_obs: turn counts are clipped to +-3 (3 full turns = 6 pi rad = ~19 rad)
+
+
+def turn_count(x: np.ndarray | float) -> np.ndarray:
+    """Whole turns of an unwrapped angle: ``round((x - wrap_angle(x)) / 2 pi)``, clipped to +-``TURN_CLIP``; with ``wrap_angle(x)`` it identifies ``x`` uniquely (within the clip)."""
+    x = np.asarray(x, float)
+    return np.clip(np.rint((x - wrap_angle(x)) / (2.0 * np.pi)), -TURN_CLIP, TURN_CLIP)
+
+
 def clip_action(cfg: EnvConfig, a: np.ndarray) -> np.ndarray:
     """The action the environment applies: clipped to [-1, 1], except the joint entries when ``unbounded(cfg)`` (the hold channel, last entry in ``hold`` mode, is still clipped)."""
     a = np.asarray(a, float)
@@ -114,14 +123,19 @@ class ObsBuilder:
         self.n_modules = cfg.n_modules
         self.unbounded = unbounded(cfg)                                                    # no angle range: observed joint angles and targets are wrapped to [-pi, pi)
         self.delta = cfg.action_mode in ("delta", "hold")                                  # the current target vector (/ DELTA_LIMIT_RAD) is appended last (delta and hold modes)
+        self.turn_obs = self.unbounded and float(cfg.task_params.get("turn_obs", 0.0)) > 0.0         # multi-turn state: whole turns of each joint angle (and of the commanded target in delta/hold modes), appended last
         self.size = (3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
-                     + (9 * cfg.n_modules if self.capacitive else 0) + (nj if self.delta else 0))
+                     + (9 * cfg.n_modules if self.capacitive else 0) + (nj if self.delta else 0) + (self.n_turn_entries() if self.turn_obs else 0))
         self._cap_ema = np.zeros(3 * cfg.n_modules)
         self._touch_prev = np.zeros(2 * self.n_joints)
         self._touch_ema = np.zeros((2, 2 * self.n_joints))
         self._touch_slow = np.zeros((2, 2 * self.n_joints))
         self._pos: deque[np.ndarray] = deque(maxlen=cfg.pos_window + 1)
         self._act: deque[np.ndarray] = deque(maxlen=cfg.history)
+
+    def n_turn_entries(self) -> int:
+        """Size of the turn-count block: one entry per joint angle, plus one per commanded target in ``delta`` / ``hold`` modes."""
+        return self.n_joints * (2 if self.delta else 1)
 
     def blocks(self) -> list[tuple[str, int]]:
         """Ordered ``(name, size)`` blocks of the observation vector (they sum to ``size``); used to map warm-start columns between tasks whose layouts differ."""
@@ -135,6 +149,8 @@ class ObsBuilder:
             out.append(("capacitive", 9 * self.cfg.n_modules))
         if self.delta:
             out.append(("target", nj))
+        if self.turn_obs:
+            out.append(("turns", self.n_turn_entries()))
         return out
 
     def reset(self, first: Snapshot) -> None:
@@ -181,4 +197,8 @@ class ObsBuilder:
             parts.append(np.concatenate([raw, self._cap_ema]))
         if self.delta:                                       # the brain's own commanded targets (deployable), appended last
             parts.append((wrap_angle(snap.target) if self.unbounded else np.asarray(snap.target, float)) / DELTA_LIMIT_RAD)
+        if self.turn_obs:                                    # whole turns (angle - wrapped angle) / 2 pi, clipped to +-TURN_CLIP: the part the wrapped angles above cannot show
+            parts.append(turn_count(snap.joint_pos))
+            if self.delta:
+                parts.append(turn_count(snap.target))
         return np.concatenate(parts).astype(np.float32)

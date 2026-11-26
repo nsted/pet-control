@@ -53,7 +53,8 @@ class BuildParams:
     masses: tuple[float, ...] = (MODULE_MASS_KG,) * N_MODULES    # head..tail (kg); to be replaced by weighed values
     cap_nm: tuple[float, ...] = (PEAK_TORQUE_NM,) * N_JOINTS
     n_modules: int = N_MODULES              # 8 (the real robot) .. 15: longer bodies use a URDF generated from the owner's (petctl.sim.urdf_gen)
-    floor_friction: float = 1.0             # sliding friction coefficient (carpet: measure)
+    floor_friction: float = 1.0             # sliding friction coefficient (carpet: measure); the FORWARD (chain-axis) friction when skin_aniso > 1
+    skin_aniso: float = 1.0                 # lateral / forward friction ratio of the robot skin (>= 1; petctl/sim/skin.py); 1 = isotropic (not part of the MJCF)
     torsional_friction: float = 0.005
     rolling_friction: float = 0.0002
     floor_solref: tuple[float, float] = (0.004, 1.0)
@@ -419,6 +420,8 @@ class PetSim:
         self.bus: BusClamp | None = None                    # optional petctl.sim.bus.BusClamp (per-robot current estimate / spike clamp); None = off
         self.set_cap(np.array(self.p.cap_nm))
         self.reset()
+        from petctl.sim.skin import SkinFriction
+        self.skin = None if self.p.hanging else SkinFriction(self.model, self.data, self.p.n_modules)      # chain axes from the zero pose just set by reset()
         self._foot = float(np.max(np.hypot(self.data.xipos[1:, 0], self.data.xipos[1:, 1]))) + 0.15      # radius of the lying body about the origin (+margin)
         self._z0_flat = self.z0 - (0.0 if self.p.terrain is None else self.p.terrain.footprint_height(self._foot))
 
@@ -477,6 +480,10 @@ class PetSim:
         """Advance ``seconds`` with the position target ``target`` (rad), delayed by ``delay_s``."""
         tgt = np.asarray(target, float).copy()                 # one private copy per call: the buffer only ever reads its entries
         buf, ctrl, model, data, bus, mj_step = self._buf, self.data.ctrl, self.model, self.data, self.bus, mujoco.mj_step
+        aniso = self.p.skin_aniso
+        skin = self.skin if (self.skin is not None and aniso > 1.0) else None
+        if skin is None and self.skin is not None and self.skin.stride and data.xfrc_applied.any():
+            data.xfrc_applied[:] = 0.0                              # anisotropy switched off: clear the held force
         for _ in range(max(1, int(round(seconds / self.p.dt)))):
             buf.append(tgt)
             if len(buf) > self._delay_steps:
@@ -484,6 +491,8 @@ class PetSim:
             ctrl[:] = self._last_target
             if bus is not None:
                 bus.before(model, data)
+            if skin is not None:
+                skin.apply(aniso)
             mj_step(model, data)
             if bus is not None:
                 bus.after(model, data)

@@ -37,6 +37,7 @@ class DomainRand:
     cap_nm: tuple[float, float] = (REAL_CAP_NM, REAL_CAP_NM)    # the real per-joint cap; the old (0.05, 0.164) default was stale (curriculum runs always overrode it)
     mass_scale: tuple[float, float] = (0.9, 1.1)
     floor_friction: tuple[float, float] = (0.4, 1.5)
+    friction_aniso: tuple[float, float] = (1.0, 1.0)        # lateral / forward skin friction ratio (>= 1; petctl/sim/skin.py); (1, 1) = isotropic (old runs); the autonomous trainer uses (1.0, 2.5)
     joint_offset_rad: float = 0.03
     pos_noise_rad: float = 0.002
     gyro_noise: float = 0.02
