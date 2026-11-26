@@ -11,4 +11,4 @@ are written automatically at the end of every `petctl rl train` run.
 | reach_still, + entropy bonus + peak bonus, 15 min | 8.0 cm held (instant peaks 13-15 cm, not held) | 6.9 cm | `reach_hold_15m_explore_best_ep8613_20261105_073149.mp4` |
 | static pose search (differential evolution, 4 restarts, no RL) | 17.0 cm held | 17.0 cm | `static_pose_search_best_17.0cm_20261105_101200.mp4` (+ `rank2`..`rank4`) |
 
-All at a 0.5 N.m torque cap, far above the real 0.164 N.m.
+All at the 0.5 N.m torque cap (the correct cap for the rebuilt robot; the earlier "far above the real 0.164 N.m" note was wrong).
