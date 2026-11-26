@@ -13,7 +13,8 @@ Updated: 2026-11-26. Governing brief: `AUTONOMOUS_TRAINER.md` (overrides older R
 - **OPEN (owner, 2026-11-26): the motor is the SteadyWin GIM3505-8, not the GL40 II** the sim parameters came from (kp/kd, friction, armature, delay, bus-current model). Need the owner's data before the length study: see PHASE2_MODEL_CHECKS.md item 7.
 - **Motor data in (2026-11-26), `MOTOR_GIM3505.md`:** current is quadratic in torque, I ~ 0.02 + 2.4 tau^2 A (hold, 13 V), old model 5.5x too high; budgets bind only with ~7+ joints near the cap. Sim current model NOT yet changed: awaiting owner approval. GDK manual read: MIT law = ours, kp 0..100 / kd 0..5 default (registers, 12-bit), frame layout same as GL40 profile; still unknown: delay, friction, rotor inertia.
 - Owner decisions 2026-11-26: gains are dynamic control variables (Phase 7 action space; `PetSim.set_gains` done); current model unvalidated -> proxy only, no gate. Open: GIM3505-8 gain range, measurements.
-- Next: Phase 3 (CPG basis in joint-pair coordinates + feasibility statics).
+- **Phase 3 DONE (2026-11-26)**, `PHASE3_CPG_STATICS.md`: CPG basis validated, statics at 0.5 N.m (head lift ~19 cm, wrap r 9-11 cm, self-right from side ok / from inverted needs a dynamic move), no consistent length signal. Owner: static gap bridge dropped, dynamic platform-to-platform crossing instead; `cma` approved + installed; owner leans to n = 11. Next: Phase 4 (CMA-ES + MAP-Elites, seed from old repertoire, gap crossing + inverted self-righting as targets).
+- (superseded) Next: Phase 3 (CPG basis in joint-pair coordinates + feasibility statics).
 
 ## Fixed rules (do not re-litigate)
 Sim only, never move the robot. Torque cap 0.5 N.m; current 10 A peak / 4 A mean, shared bus. Flipping is never a failure. Std-runaway fix stays (ent_coef 0, log_std_init -1).
