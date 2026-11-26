@@ -29,7 +29,8 @@ class GaitResult:
     vx: float = 0.0              # m/s along the initial heading (positive = head first)
     vy: float = 0.0              # m/s to the left
     yaw_rate: float = 0.0        # rad/s, rotation of the tail -> head direction about the vertical axis (left positive)
-    roll_rate: float = 0.0       # rad/s, rotation about the long axis (net, unwrapped)
+    roll_rate: float = 0.0       # rad/s, whole-body rotation about the long axis: the SLOWEST of 5 sampled modules (head, quarter, middle, three-quarter, tail) if all rotate the same way, else 0 (a single module can be fooled by a thrashing body)
+    roll_step_max: float = 0.0   # largest per-tick change of a sampled module's roll angle (rad); > ~1 means the roll estimate aliases (thrashing)
     speed: float = 0.0           # |(vx, vy)| m/s
     speed_bl: float = 0.0        # body lengths / s
     cot: float = float("nan")    # mechanical cost of transport: integral |tau * qdot| dt / (m g d)
@@ -89,6 +90,7 @@ def evaluate_gait(params: CPGParams | np.ndarray, n_modules: int, seconds: float
     bus = sim.bus
     n = int(round(seconds / CONTROL_DT))
     n_warm = int(round(warmup_s / CONTROL_DT))
+    roll_mods = sorted({0, n_modules // 4, n_modules // 2, (3 * n_modules) // 4, n_modules - 1})
     com, yaw, roll, qs, taus, sat, cur_mean, cur_peak, mech = [], [], [], [], [], [], [], [], 0.0
     up_min, ok = 1.0, True
     bus.begin_tick()
@@ -103,9 +105,7 @@ def evaluate_gait(params: CPGParams | np.ndarray, n_modules: int, seconds: float
         fwd, _, _ = _heading(sim)
         up = float(d.site_xmat[sim.imu_id].reshape(3, 3)[2, 2])
         # roll about the long axis: angle of a mid-body module's up vector in the (left0, vertical) plane of the initial heading frame
-        mid = sim.p.n_modules // 2
-        u = d.xmat[sim.m0_id + mid].reshape(3, 3)[:, 2]
-        roll_a = math.atan2(float(u @ left0), float(u[2]))
+        roll_a = [math.atan2(float(d.xmat[sim.m0_id + k].reshape(3, 3)[:, 2] @ left0), float(d.xmat[sim.m0_id + k].reshape(3, 3)[2, 2])) for k in roll_mods]
         if k >= n_warm:
             com.append(d.xipos[sim.m0_id:sim.m0_id + n_modules].mean(axis=0))
             yaw.append(math.atan2(float(fwd @ left0), float(fwd @ fwd0)))
@@ -127,7 +127,11 @@ def evaluate_gait(params: CPGParams | np.ndarray, n_modules: int, seconds: float
     res.speed = math.hypot(res.vx, res.vy)
     res.speed_bl = res.speed / length
     res.yaw_rate = float(np.unwrap(yaw)[-1] - np.unwrap(yaw)[0]) / t_win
-    res.roll_rate = float(np.unwrap(roll)[-1] - np.unwrap(roll)[0]) / t_win
+    ra = np.unwrap(np.array(roll), axis=0)                              # (ticks, modules)
+    rates = (ra[-1] - ra[0]) / t_win
+    sign = float(np.sign(np.median(rates))) or 1.0
+    res.roll_rate = float(sign * np.min(sign * rates)) if np.all(sign * rates > 0) else float(np.median(rates)) * 0.0     # whole-body roll: ALL sampled modules must rotate the same way; value = the slowest one
+    res.roll_step_max = float(np.abs(np.diff(ra, axis=0)).max()) if len(ra) > 1 else 0.0
     dist = res.speed * t_win
     res.cot = mech / (mass * G * dist) if dist > 0.02 else float("nan")
     res.current_mean_a, res.current_peak_a = float(np.mean(cur_mean)), float(np.max(cur_peak))

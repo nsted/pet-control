@@ -90,3 +90,14 @@ cap (the straight beam alone bridges ~10 cm at n = 11, the search roughly double
 - Statics at 0.5 N.m: head lift ~19 cm at every length; gap bridge 15-20 cm; wrap radius 9-11 cm; self-right from the side feasible for most lengths, from inverted NOT by a held pose (dynamic skill).
 - Length signal so far: none consistent. Wrap / self-right (side) lean odd, gap bridging leans even, head lift and speed are flat. Phase 6 must settle it with >= 3 seeds and the pre-registered criteria.
 - Videos: `docs/media/index.html` (gaits for all four lengths, wrap, gap bridge, statics at n = 11) and `index_attempt1.html` (earlier work).
+
+## 7. Corrections and follow-ups (2026-11-26, after the owner's questions)
+- **The roll column of section 2 is SUPERSEDED.** It used the roll angle of one mid-body module; a thrashing body can accumulate that angle without rolling (the first CMA-ES roll search "found" 5.5 rad/s this way:
+  head, middle and tail modules disagreed by +3.8 / -0.2 / +4.2 rad/s with 0.4-0.6 rad of change per tick). `gait_eval` now defines roll as the SLOWEST of five sampled modules (head, quarter, middle, three-quarter,
+  tail), counted only if all rotate the same way, and reports `roll_step_max`. The 0.11-0.14 rad/s "roll" gaits of the coarse grid were slow rotation, not rolling locomotion (the owner noticed). With the fixed metric a CMA-ES
+  search at n = 11 finds a genuine rolling gait: whole-body roll 1.38 rad/s (about 3 turns in 14 s, up-vector of head / middle / tail sweeps +1 to -1), travelling ~7 cm/s (vx +4.0, vy +5.6): about twice the best forward slither of the grid.
+- **Inverted body (owner hypothesis: even lengths behave nearly identically when inverted)** (`scripts/rl/inverted_gaits.py`, 16 fastest grid gaits per length, same CPG parameters, start rolled 180 deg).
+  Unmapped parameters: inverted speed ~0.43-0.50 of upright at every length, no even / odd split. Rolling the body 180 deg about its long axis negates every joint axis (the axes alternate (0, +-s, -s) and the roll maps each to its negative),
+  so the physically equivalent command is the NEGATED target (CPG phase + pi, biases negated). With that mapping: n = 10: speed ratio 0.67, vx correlation +0.84; n = 12: 0.57, +0.81; n = 13: 0.46, +0.83; **n = 11: 0.40, +0.51 (worst)**.
+  So the even lengths retain more of their upright behaviour when inverted and 11 the least, as the owner expected, but nowhere near identical (0.4-0.67 of the speed): the inverted body rests on different prism faces. Consequence for n = 11:
+  upright and inverted need separate gaits or an orientation-aware policy (the policy sees gravity, so this is learnable; the cost is a larger skill library). 16 gaits per length, one rollout each.
