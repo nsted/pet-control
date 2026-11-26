@@ -70,3 +70,16 @@ Motor Wizard, torque mode, holding a cantilever load at 3 cm lever arm, 13 V sup
   2. With the 0.5 N.m cap and Kp 72 the actuator saturates at a 0.007 rad error: at high gain the joint behaves like a torque-limited bang-bang servo. The sim's `forcerange` cap models this.
   3. Motor temperature feedback (T_mos, T_coil) means thermal state can be a sim/observation quantity later (not modelled now).
   4. The manual gives no command delay, rotor inertia or friction. The MIT demo runs a 1 kHz loop; the delay still has to be measured.
+
+## Recommended MIT register set for PET (proposal; the owner changes the registers, the host must send frames with the SAME ranges)
+The manual's defaults are generic across the GIM series, far wider than this motor needs (stall torque 2.01 N.m). The 12-bit fields quantise over the span, so wide ranges waste resolution
+exactly where PET works (torque <= 0.5 N.m, soft gains, a few rad/s).
+| quantity | register (addr; unit) | default | recommended | step at recommended | step at default |
+|---|---|---|---|---|---|
+| torque | 338 / 340 (0.002 N.m) | +-10 N.m (5000) | **+-2 N.m (1000)** = about the stall torque | 0.00098 N.m | 0.0049 N.m |
+| Kp | 342 / 344 (0.01) | 0..100 (10000) | **0..5 N.m/rad (500)** | 0.0012 | 0.024 |
+| Kd | 346 / 348 (0.01) | 0..5 (500) | **0..0.5 N.m.s/rad (50)** | 0.00012 | 0.0012 |
+| velocity | 334 / 336 (0.01 rad/s) | +-30 rad/s (3000) | keep (no-load max is ~17 rad/s at 13 V, 63 rad/s at 48 V) | 0.0147 rad/s | same |
+| position | 330 / 332 (0.01 rad) | +-12.5 rad (1250) | keep for now; widen (e.g. +-40 rad) only if absolute multi-turn targets are used, at 16 bit it costs 0.001 -> 0.0012 rad per step | 0.00038 rad | same |
+Notes: Kp 5 N.m/rad already saturates the 0.5 N.m cap at a 0.1 rad error (the old GL40 setting was 0.8), so 0..5 leaves ample headroom; Kd 0.5 is >10x the old 0.035. If a pose needs
+more, widen later. Sim consequence: use a torque quantisation step of 0.001 N.m (not 0.005) and a joint-torque reading noise on that scale in the reply-frame model once these registers are set.
