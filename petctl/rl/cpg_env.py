@@ -89,6 +89,9 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
             t[[PARAM_NAMES.index("a_yaw"), PARAM_NAMES.index("a_twist"), PARAM_NAMES.index("f")]] = 0.0
             return t
         sc = np.array([self.max_speed, self.max_speed, self.max_yaw])
+        if abs(cmd[2]) > 0.2 * self.max_yaw:                                                         # turning commands: match the yaw rate and ignore translation (blends / 3-D nearest neighbours scored worse: probe 2026-11-27)
+            i = int(np.argmin(np.abs(self.elite_v[:, 2] - cmd[2]) / self.max_yaw + 0.5 * np.linalg.norm(self.elite_v[:, :2], axis=1) / self.max_speed))
+            return self.elites[i].copy()
         i = int(np.argmin(np.linalg.norm((self.elite_v - cmd) / sc, axis=1)))
         return self.elites[i].copy()                                                                 # (frequency scaling to the command speed was tried and made tracking worse: reviewer + probes 2026-11-27)
 
