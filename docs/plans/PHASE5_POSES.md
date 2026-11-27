@@ -8,3 +8,6 @@ Mapping check: the sim was built with 24 modules IN MEMORY ONLY (MAX_MODULES and
 - Alternating-sign mapping: also closes, but 71 self-contacts, 31 mm penetration = interpenetrating, physically impossible, rejected.
 - Sign and a pi offset cannot be told apart by this (symmetric) sequence. They do not matter for a library: R -> R+2 relabels the same reachable set. Only naming of poses would depend on it.
 => Discrete pose search uses q_i = R_i x 90 deg, R in {0..3}^10 at n = 11 (4^10 ~ 1.05 M sequences), self-collision from MuJoCo contacts.
+
+## Staged entry (2026-11-26, night)
+Held poses from all-at-once ramps: 72 / 5259 (99% fail with a joint pinned at the 0.5 N.m cap: the pose is blocked by its own weight or collisions). Folding ONE joint at a time (1 s each, orders: head-first, tail-first, middle-out, ends-in, 4 random) makes 233 / 5259 reachable and holdable (valid = settled, peak torque < 0.49, self-penetration < 8 mm). Best orders: head-first 80, middle-out 52, tail-first 25. Tallest 16.8 cm; the valid poses are mostly compact folded heaps (most modules lifted a few cm). `pose_stage.py`, `render_pose_entry.py`, video pose_entry_n11.mp4. Next: path planning over the stable-pose graph for taller/structured poses, restricting the search to motif/symmetric families.
