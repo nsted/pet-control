@@ -24,3 +24,5 @@ Length settled at 11 modules by the owner (preference + tie-break), not by a pre
 ## Self-righting (n = 11)
 One open-loop gait cannot do it: the first "success" was a rolling body that was upright only when the clock ended (rejected by video; criterion tightened to upright at EVERY tick of the last 5 s, which no single CPG gait met). Two-stage skill (`self_right2.py`): CPG rolling motion until the median module up-component > 0.8 for 0.3 s (computable from head IMU + joint angles), then amplitudes ease to zero (1.5 s) and the body lies straight and still. Succeeds from the inverted start (stop at ~4.9 s) and from the side start; found within 126 evals. Video selfright2_n11.mp4.
 Dynamic gap crossing (open loop, 25 s, whole body ends on the far platform): n = 10, 11, 13 cross 10 cm; at 15 cm only n = 11 (sideways start) and n = 13 (rolling start) succeeded in 540 evals; n = 10, 12 did not. n = 11 at 20, 25, 30 cm running.
+
+Gap crossing at n=11 (open loop, 25 s): 10, 15, 20 cm succeed (sideways-start gaits); 25 and 30 cm not found (3 starts x 900 evals). Video gap_cross_n11.mp4.

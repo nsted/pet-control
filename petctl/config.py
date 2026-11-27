@@ -353,3 +353,7 @@ REGIMEN_BUS_PEAK_A: float = 10.0    # spike ceiling; the gate evaluates it on th
 
 # Total number of modules: head (0) + 6 middle + tail (7).
 NUM_MODULES: int = 8
+
+# GIM3505-8 MIT-mode encoding ranges (default register set, docs/plans/MOTOR_GIM3505.md): the largest kp / kd the command frame can express. The Phase 7 policy's gain scaling is clipped to these.
+GIM3505_MIT_KP_MAX: float = 100.0       # N.m/rad (encoding range, not a recommended value)
+GIM3505_MIT_KD_MAX: float = 5.0         # N.m.s/rad
