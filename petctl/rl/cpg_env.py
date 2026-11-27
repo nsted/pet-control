@@ -39,7 +39,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.25, w_cur: float = 0.02) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
         self.res_frac = res_frac
@@ -51,6 +51,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         floor = [g for g in range(self.sim.model.ngeom) if self.sim.model.geom_type[g] == 0]
         self.floor_geoms, self.floor_mu0 = floor, self.sim.model.geom_friction[floor, 0].copy()
         self.cpg = CPG(self.nj, smooth_hz=smooth_hz)
+        self.cap = float(self.sim.model.actuator_forcerange[0, 1])
         self.use_prior = use_prior
         self.elites, self.elite_v = self._load_elites()
         self.action_space = gym.spaces.Box(-1.0, 1.0, (NP + 2,), np.float32)
@@ -63,6 +64,10 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         """Library gaits (MAP-Elites archives of this length): parameters and their (vx, vy, yaw rate) so a command can be matched to a gait."""
         out: list[np.ndarray] = []
         vel: list[list[float]] = []
+        lab = Path(f"data/rl/cpg_elite_labels_n{self.n}.json")
+        if lab.exists():                                                                              # env-measured labels (scripts/rl/relabel_elites.py)
+            rows = json.loads(lab.read_text())
+            return [np.array(r["params"]) for r in rows], np.array([r["v"] for r in rows])
         for pat in ARCHIVES:
             f = Path(pat.format(n=self.n))
             if f.exists():
@@ -82,12 +87,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
             return t
         sc = np.array([self.max_speed, self.max_speed, self.max_yaw])
         i = int(np.argmin(np.linalg.norm((self.elite_v - cmd) / sc, axis=1)))
-        t = self.elites[i].copy()
-        v = self.elite_v[i]
-        cs, es = float(np.linalg.norm(cmd[:2])), float(np.linalg.norm(v[:2]))
-        ratio = cs / es if cs > 1e-6 and es > 1e-3 else (abs(cmd[2]) / abs(v[2]) if abs(cmd[2]) > 1e-6 and abs(v[2]) > 1e-3 else 1.0)
-        t[PARAM_NAMES.index("f")] = np.clip(t[PARAM_NAMES.index("f")] * float(np.clip(ratio, 0.25, 1.5)), LO[0], HI[0])      # gait speed rises roughly with frequency
-        return t
+        return self.elites[i].copy()                                                                 # (frequency scaling to the command speed was tried and made tracking worse: reviewer + probes 2026-11-27)
 
     # ---- helpers -------------------------------------------------------------------------------------------------
     def _chord_angles(self) -> np.ndarray:
@@ -128,9 +128,10 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self.cpg.reset(self.target, 0.0)
         self.hist: deque = deque(maxlen=int(1.0 / self.dt) + 1)
         self._push()
+        self.seg_k = 0
         self.h0, self.mask = float(np.median(self._chord_angles())), int(1.0 / self.dt) + 1             # heading frame fixed per command segment; first second masked
         self.sums = {"vel": 0.0, "yaw": 0.0, "rate": 0.0, "sat": 0.0, "cur": 0.0}
-        self.n_scored = 0
+        self.n_scored, self.mode_sum, self.mode_n = 0, {}, {}
         self.kernel_sum, self.flips, self.was_up = 0.0, 0, float(sim.data.site_xmat[sim.imu_id].reshape(3, 3)[2, 2]) > 0
         return self._obs(), {}
 
@@ -152,19 +153,19 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self._push()
         self.k += 1
         if self.k % self.cmd_ticks == 0:
-            self.cmd, self.mask, self.h0 = self._sample_cmd(), int(1.0 / self.dt) + 1, float(np.median(self._chord_angles()))
+            self.cmd, self.mask, self.h0, self.seg_k = self._sample_cmd(), int(1.0 / self.dt) + 1, float(np.median(self._chord_angles())), self.k
             if self.use_prior:
                 self.base = self.prior(self.cmd)                                                      # selector sets the gait of each segment; the policy adds a bounded residual
         c0, c1 = self.hist[0][0], self.hist[-1][0]
         t = (len(self.hist) - 1) * self.dt
         dv = (c1 - c0)[:2] / t if t > 0 else np.zeros(2)
-        h = self.h0
+        h = self.h0 + self.cmd[2] * (self.k - self.seg_k) * self.dt                                       # reference heading follows the commanded turn (a curved path is not penalised)
         vb = np.array([math.cos(h) * dv[0] + math.sin(h) * dv[1], -math.sin(h) * dv[0] + math.cos(h) * dv[1]])
         ang = np.unwrap(np.stack([x[1] for x in self.hist]), axis=0)                                   # per-chord unwrapped angle along the whole window
         dchord = (ang[-1] - ang[0]) / t if t > 0 else np.zeros(len(self.chords))
         yaw = float(np.median(dchord)) if float(np.ptp(dchord)) * t < 0.3 else 0.0                       # chords must agree (a shape change is not a turn)
         tau = self.sim.joint_torque()
-        terms = {"rate": -self.w["rate"] * float(np.mean((a - self.prev_a) ** 2)), "sat": -self.w["sat"] * float(np.mean(np.abs(tau) >= 0.98 * 0.5)),
+        terms = {"rate": -self.w["rate"] * float(np.mean((a - self.prev_a) ** 2)), "sat": -self.w["sat"] * float(np.mean(np.abs(tau) >= 0.98 * self.cap)),
                  "cur": -self.w["cur"] * max(0.0, 0.02 * self.nj + 0.25 + 4.6 * float(np.sum(tau ** 2)) - 4.0), "vel": 0.0, "yaw": 0.0}
         score = None
         if self.mask > 0:
@@ -177,18 +178,21 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
                 sig = max(0.03, 0.4 * sp)
                 k0 = math.exp(-sp ** 2 / (2 * sig ** 2))
                 acc = (math.exp(-float(np.linalg.norm(vb - self.cmd[:2])) ** 2 / (2 * sig ** 2)) - k0) / (1 - k0)
-                terms["vel"] = self.w["vel"] * (0.5 * (min(1.2, max(-1.0, along / sp)) - 0.5 * min(1.0, side / sp)) + 0.5 * acc)
+                terms["vel"] = self.w["vel"] * (0.5 * (min(1.0, max(-1.0, along / sp)) - 0.5 * min(1.0, side / sp)) + 0.5 * acc)
             else:                                                                                        # commanded to stay put: moving is penalised, standing earns 0
-                terms["vel"] = -self.w["vel"] * 0.3 * min(1.0, float(np.linalg.norm(vb)) / 0.1)
+                terms["vel"] = -self.w["vel"] * 0.3 * min(1.0, max(0.0, float(np.linalg.norm(vb)) - 0.05) / 0.1)          # a turning gait wanders a little: allow 5 cm/s
             if sw > 1e-6:
                 sg = max(0.15, 0.4 * sw)
                 k0 = math.exp(-sw ** 2 / (2 * sg ** 2))
                 accw = (math.exp(-(yaw - self.cmd[2]) ** 2 / (2 * sg ** 2)) - k0) / (1 - k0)
-                terms["yaw"] = self.w["yaw"] * (0.5 * min(1.2, max(-1.0, yaw * np.sign(self.cmd[2]) / sw)) + 0.5 * accw)
+                terms["yaw"] = self.w["yaw"] * (0.5 * min(1.0, max(-1.0, yaw * np.sign(self.cmd[2]) / sw)) + 0.5 * accw)
             else:
                 terms["yaw"] = -self.w["yaw"] * 0.3 * min(1.0, abs(yaw) / 0.5)
             self.n_scored += 1
-            score = (terms["vel"] / self.w["vel"] * (sp > 1e-6) + terms["yaw"] / self.w["yaw"] * (sw > 1e-6)) / max(1, int(sp > 1e-6) + int(sw > 1e-6))
+            score = 0.5 * (terms["vel"] / self.w["vel"] + terms["yaw"] / self.w["yaw"])                    # every unmasked tick counts, stand and cross-axis penalties included
+            mode = "stand" if sp < 1e-6 and sw < 1e-6 else "turn" if sp < 1e-6 else "move" if sw < 1e-6 else "mixed"
+            self.mode_sum[mode] = self.mode_sum.get(mode, 0.0) + score
+            self.mode_n[mode] = self.mode_n.get(mode, 0) + 1
         for k_, v_ in terms.items():
             self.sums[k_] += v_
         if score is not None:
@@ -200,5 +204,5 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         done = self.k >= self.episode_ticks
         info: dict[str, Any] = {}
         if done:
-            info["metrics"] = {"success": self.kernel_sum / max(self.n_scored, 1), "orient_flips": float(self.flips), **{f"term_{k_}": v_ / self.k for k_, v_ in self.sums.items()}}
+            info["metrics"] = {"success": self.kernel_sum / max(self.n_scored, 1), "orient_flips": float(self.flips), **{f"term_{k_}": v_ / self.k for k_, v_ in self.sums.items()}, **{f"mode_{m}": self.mode_sum[m] / self.mode_n[m] for m in self.mode_sum}}
         return self._obs(), float(sum(terms.values())), False, done, info
