@@ -40,9 +40,10 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.05, w_act: float = 0.02, mask_s: float = 1.0) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.05, w_act: float = 0.02, mask_s: float = 1.0, act_alpha: float = 0.15) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
+        self.act_alpha = act_alpha
         self.res_frac, self.mask_ticks = res_frac, int(mask_s / dt) + 1
         self.episode_ticks, self.cmd_ticks, self.step_frac, self.gain_range = int(episode_s / dt), int(cmd_s / dt), step_frac, gain_range
         self.max_speed, self.max_yaw, self.randomise = max_speed, max_yaw, randomise
@@ -124,6 +125,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
             sim.data.qpos[2] += 0.04
         sim.set_gains(self.kp0, self.kd0)
         sim.step(np.zeros(self.nj), 0.8)
+        self.a_f = np.zeros(NP + 2)
         self.prev_a, self.k, self.cmd, self.meas = np.zeros(NP + 2, np.float32), 0, self._sample_cmd(), np.zeros(3)
         self.target = self.prior(self.cmd) if (self.use_prior and self.rng.random() < 0.7) else self.elites[self.rng.integers(len(self.elites))].copy()
         self.base = self.target.copy()
@@ -142,7 +144,9 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self.hist.append((d.xipos[self.sim.m0_id:self.sim.m0_id + self.n].mean(axis=0).copy(), self._chord_angles()))
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        a = np.clip(np.asarray(action, float), -1.0, 1.0)
+        a_raw = np.clip(np.asarray(action, float), -1.0, 1.0)
+        self.a_f = (1.0 - self.act_alpha) * self.a_f + self.act_alpha * a_raw                          # low-pass: exploration noise becomes temporally coherent
+        a = self.a_f.copy()
         if self.use_prior:                                                                               # residual: target = selector gait + bounded offset (zero action = the library baseline)
             self.target = np.clip(self.base + a[:NP] * self.res_frac * (HI - LO), LO, HI)
         else:
