@@ -33,3 +33,6 @@ Fix: `scripts/rl/map_elites_robust.py` measures every candidate under 4 conditio
 
 ## Gap crossing robustness (2026-11-27)
 `gap_robust.py`: the first open-loop crossings (10, 15, 20 cm) succeeded only from the exact search start (start heading +-0.15 / +-0.3 rad: 0/4 succeed; friction x1.3: 1/3), the same overfitting as the first gait library. `gap_cross_robust.py` scores each candidate over 4 starts (nominal, heading +-0.15, friction x1.3): at 10 cm it finds a crossing that succeeds from all 4 and from 5 of 6 test perturbations (fails at heading -0.3 rad). 15 and 20 cm: no crossing robust to all 4 conditions in 600 evals x (previous + 3 seeds) starts (best 0/4 and 1/4). A reliable 15-20 cm crossing needs closed-loop heading control (align to the platform edge) or a longer search.
+
+## Self-righting robustness (2026-11-27)
+Two-stage self-righting (n11_v2.json) re-tested from 9 start rolls (inverted, inverted +-0.3 rad, side, side +-0.3 rad, side -90 deg, 135 deg tilt both ways) at floor friction x1.0 and x1.3, same strict criterion (whole-body median up > 0.6 at every tick of the last 5 s): 17 / 18 succeed (only side -0.3 rad at friction 1.0 fails). Unlike the gaits and the gap crossings, this skill is robust, probably because it is closed-loop (the upright trigger) and the straight hold pose is a strong attractor.
