@@ -40,7 +40,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.05, w_act: float = 0.02, mask_s: float = 1.0, act_alpha: float = 0.15) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, scale_f: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.05, w_act: float = 0.02, mask_s: float = 1.0, act_alpha: float = 0.15) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
         self.act_alpha = act_alpha
@@ -54,7 +54,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self.floor_geoms, self.floor_mu0 = floor, self.sim.model.geom_friction[floor, 0].copy()
         self.cpg = CPG(self.nj, smooth_hz=smooth_hz)
         self.cap = float(self.sim.model.actuator_forcerange[0, 1])
-        self.use_prior, self.vel_obs = use_prior, vel_obs
+        self.use_prior, self.vel_obs, self.scale_f = use_prior, vel_obs, scale_f
         self.meas = np.zeros(3)
         self.elites, self.elite_v = self._load_elites()
         self.action_space = gym.spaces.Box(-1.0, 1.0, (NP + 2,), np.float32)
@@ -93,7 +93,12 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
             i = int(np.argmin(np.abs(self.elite_v[:, 2] - cmd[2]) / self.max_yaw + 0.5 * np.linalg.norm(self.elite_v[:, :2], axis=1) / self.max_speed))
             return self.elites[i].copy()
         i = int(np.argmin(np.linalg.norm((self.elite_v - cmd) / sc, axis=1)))
-        return self.elites[i].copy()                                                                 # (frequency scaling to the command speed was tried and made tracking worse: reviewer + probes 2026-11-27)
+        t = self.elites[i].copy()
+        if self.scale_f:                                                                             # speed knob: on the ROBUST library, gait speed rises monotonically with frequency for 13/14 fast gaits
+            es, cs = float(np.linalg.norm(self.elite_v[i][:2])), float(np.linalg.norm(cmd[:2]))
+            if cs > 1e-6 and es > 0.05:
+                t[0] = float(np.clip(t[0] * float(np.clip(cs / es, 0.4, 1.1)), LO[0], HI[0]))
+        return t
 
     # ---- helpers -------------------------------------------------------------------------------------------------
     def _chord_angles(self) -> np.ndarray:
