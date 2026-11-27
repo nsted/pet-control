@@ -39,7 +39,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005, w_act: float = 0.02) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005, w_act: float = 0.02) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
         self.res_frac = res_frac
@@ -52,10 +52,11 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self.floor_geoms, self.floor_mu0 = floor, self.sim.model.geom_friction[floor, 0].copy()
         self.cpg = CPG(self.nj, smooth_hz=smooth_hz)
         self.cap = float(self.sim.model.actuator_forcerange[0, 1])
-        self.use_prior = use_prior
+        self.use_prior, self.vel_obs = use_prior, vel_obs
+        self.meas = np.zeros(3)
         self.elites, self.elite_v = self._load_elites()
         self.action_space = gym.spaces.Box(-1.0, 1.0, (NP + 2,), np.float32)
-        d = 3 + 3 + 3 + 2 * self.nj + NP + 2 + NP + 2
+        d = 3 + 3 + 3 + 2 * self.nj + NP + 2 + NP + 2 + (3 if vel_obs else 0)
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (d,), np.float32)
         self.chords = [(0, self.n - 1), (self.n // 4, (3 * self.n) // 4), (self.n // 3, (2 * self.n) // 3)]
         self.rng = np.random.default_rng(0)
@@ -104,7 +105,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         up = d.site_xmat[sim.imu_id].reshape(3, 3)[2, :]
         pn = 2 * (self.target - LO) / (HI - LO) - 1
         return np.concatenate([self.cmd / np.array([self.max_speed, self.max_speed, self.max_yaw]), up, d.sensor("gyro").data * 0.3, sim.joint_pos(), sim.joint_vel() * 0.1, pn,
-                               [math.sin(self.cpg.phase), math.cos(self.cpg.phase)], self.prev_a]).astype(np.float32)
+                               [math.sin(self.cpg.phase), math.cos(self.cpg.phase)], self.prev_a, *([self.meas / np.array([self.max_speed, self.max_speed, self.max_yaw])] if self.vel_obs else [])]).astype(np.float32)
 
     # ---- gym API -------------------------------------------------------------------------------------------------
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
@@ -122,7 +123,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
             sim.data.qpos[2] += 0.04
         sim.set_gains(self.kp0, self.kd0)
         sim.step(np.zeros(self.nj), 0.8)
-        self.prev_a, self.k, self.cmd = np.zeros(NP + 2, np.float32), 0, self._sample_cmd()
+        self.prev_a, self.k, self.cmd, self.meas = np.zeros(NP + 2, np.float32), 0, self._sample_cmd(), np.zeros(3)
         self.target = self.prior(self.cmd) if (self.use_prior and self.rng.random() < 0.7) else self.elites[self.rng.integers(len(self.elites))].copy()
         self.base = self.target.copy()
         self.cpg.reset(self.target, 0.0)
@@ -164,6 +165,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         ang = np.unwrap(np.stack([x[1] for x in self.hist]), axis=0)                                   # per-chord unwrapped angle along the whole window
         dchord = (ang[-1] - ang[0]) / t if t > 0 else np.zeros(len(self.chords))
         yaw = float(np.median(dchord)) if float(np.ptp(dchord)) * t < 0.3 else 0.0                       # chords must agree (a shape change is not a turn)
+        self.meas = np.array([vb[0], vb[1], yaw])                                                       # PRIVILEGED (needs a velocity estimator on the real robot): window velocity in the segment heading frame
         tau = self.sim.joint_torque()
         terms = {"act": -self.w["act"] * float(np.mean(a ** 2)), "rate": -self.w["rate"] * float(np.mean((a - self.prev_a) ** 2)), "sat": -self.w["sat"] * float(np.mean(np.abs(tau) >= 0.98 * self.cap)),
                  "cur": -self.w["cur"] * max(0.0, 0.02 * self.nj + 0.25 + 4.6 * float(np.sum(tau ** 2)) - 4.0), "vel": 0.0, "yaw": 0.0}
