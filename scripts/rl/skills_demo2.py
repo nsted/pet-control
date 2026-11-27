@@ -117,11 +117,12 @@ def main() -> int:
         e.cmd, e.base = cmd, e.prior(cmd)
         e.target = e.base.copy()
         e.cpg.reset(e.target, 0.0)
-        for _ in range(int(2.0 / dt)):
+        burst = min(6.0, max(3.5, 8.0 * min(1.0, max(abs(err) / 0.6 if abs(err) >= 0.1 else 0.0, abs(dx) / 0.5 if abs(dx) >= 0.05 else 0.0, abs(dy) / 0.5))))     # longer bursts (3.5-6 s): the library velocities are steady-state values
+        for _ in range(int(burst / dt)):
             sim.step(e.cpg.step(dt, e.target), dt)
             t, t_app = t + dt, t_app + dt
             frame(f"11 modules | SKILL CHAIN | APPROACH: {what} | position + heading are PRIVILEGED | t={t:5.1f}s")
-        for _ in range(int(0.8 / dt)):                                                                   # pause, settle
+        for _ in range(int(1.5 / dt)):                                                                   # pause, settle
             sim.step(np.zeros(nj), dt)
             t, t_app = t + dt, t_app + dt
             frame(f"11 modules | SKILL CHAIN | APPROACH pause | t={t:5.1f}s")
