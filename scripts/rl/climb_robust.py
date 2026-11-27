@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from multiprocessing import get_context
 from pathlib import Path
@@ -21,6 +22,8 @@ from petctl.rl.cpg import CPG, PARAM_BOUNDS, PARAM_NAMES
 from petctl.sim.model_builder import BuildParams, PetSim
 
 CAP, SECONDS, DT = 0.5, 25.0, 0.05
+H = float(os.environ.get("PETCTL_PLATFORM_H", "0.12"))                      # platform height (m)
+TOP = 0.75 * H
 LO = np.array([PARAM_BOUNDS[k][0] for k in PARAM_NAMES] + [-math.pi])
 HI = np.array([PARAM_BOUNDS[k][1] for k in PARAM_NAMES] + [math.pi])
 CONDS = [(0.0, 1.0), (0.15, 1.0), (-0.15, 1.0), (0.0, 1.3)]
@@ -30,7 +33,7 @@ _SIM: dict = {}
 def sim_for(n: int) -> PetSim:
     """Cached sim with one 12 cm platform ahead."""
     if n not in _SIM:
-        _SIM[n] = PetSim(BuildParams(n_modules=n, cap_nm=(CAP,) * (n - 1), dt=0.004, obstacles=(("box", 0.85, 0.0, 0.0, 0.5, 0.6),)))
+        _SIM[n] = PetSim(BuildParams(n_modules=n, cap_nm=(CAP,) * (n - 1), dt=0.004, obstacles=(("box", 0.85, 0.0, 0.0, 0.5, 0.6),), extra={"obstacle_half_h": H / 2}))
     return _SIM[n]
 
 
@@ -56,7 +59,7 @@ def rollout(n: int, x: np.ndarray, mu: float = 1.0) -> dict:
             if not np.all(np.isfinite(d.qpos)):
                 return {"score": -1.0, "success": False}
             p = d.xipos[sim.m0_id:sim.m0_id + n]
-            on = (p[:, 2] > 0.09) & (p[:, 0] > 0.36) & (p[:, 0] < 1.34) & (np.abs(p[:, 1]) < 0.6)
+            on = (p[:, 2] > TOP) & (p[:, 0] > 0.36) & (p[:, 0] < 1.34) & (np.abs(p[:, 1]) < 0.6)
             best = max(best, float(on.mean()))
             max_x = max(max_x, float(p[0, 0]))
             near = p[:, 0] > 0.2

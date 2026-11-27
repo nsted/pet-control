@@ -14,7 +14,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from gap_cross import DT, H, SECONDS, sim_for
+from gap_cross import DT, H, SECONDS, TOP, sim_for
 from petctl.rl.cpg import CPG
 from petctl.rl.video import burn_caption
 
@@ -50,7 +50,7 @@ def main() -> int:
         for i in range(int(SECONDS / DT)):
             sim.step(cpg.step(DT, p), DT)
             q = d.xipos[sim.m0_id:sim.m0_id + n]
-            if done_at is None and (q[:, 2] > 0.09).all() and q[:, 0].min() > g / 2 + 0.01 and q[:, 0].max() < g / 2 + 1.0:
+            if done_at is None and (q[:, 2] > TOP).all() and q[:, 0].min() > g / 2 + 0.01 and q[:, 0].max() < g / 2 + 1.0:
                 done_at = i * DT
                 t_end = min(t_end, done_at + 2.0)
             if i * DT > t_end:
@@ -58,7 +58,7 @@ def main() -> int:
             cam.lookat[:] = [q[:, 0].mean() * 0.6, 0.0, 0.1]
             rend.update_scene(d, camera=cam)
             state = f"CROSSED at {done_at:.1f} s" if done_at is not None else "crossing..."
-            cap = f"{n} modules | dynamic crossing of a {gap} cm gap between 12 cm platforms, starts fully on the left one | {state} | search start '{r['start']}', open loop, 0.5 N.m cap | t={i * DT:4.1f}s"
+            cap = f"{n} modules | dynamic crossing of a {gap} cm gap between {100 * H:.0f} cm platforms, starts fully on the left one | {state} | search start '{r['start']}', open loop, 0.5 N.m cap | t={i * DT:4.1f}s"
             ff.stdin.write(burn_caption(rend.render(), cap).tobytes())
         rend.close()
         print(f"{path.name}: crossed at {done_at}", flush=True)

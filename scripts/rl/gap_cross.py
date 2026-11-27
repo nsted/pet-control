@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from multiprocessing import get_context
 from pathlib import Path
@@ -22,7 +23,9 @@ import numpy as np
 from petctl.rl.cpg import CPG, PARAM_BOUNDS, PARAM_NAMES
 from petctl.sim.model_builder import BuildParams, PetSim
 
-CAP, H, SECONDS, DT = 0.5, 0.12, 25.0, 0.05
+CAP, SECONDS, DT = 0.5, 25.0, 0.05
+H = float(os.environ.get("PETCTL_PLATFORM_H", "0.12"))                      # platform height (m); the sim takes it as extra['obstacle_half_h'] = H / 2
+TOP = 0.75 * H                                                                # a module is 'on top' when its centre is above this height
 LO = np.array([PARAM_BOUNDS[k][0] for k in PARAM_NAMES] + [-math.pi])
 HI = np.array([PARAM_BOUNDS[k][1] for k in PARAM_NAMES] + [math.pi])
 _SIMS: dict = {}
@@ -33,7 +36,7 @@ def sim_for(n: int, gap_cm: int) -> PetSim:
     if (n, gap_cm) not in _SIMS:
         g = gap_cm / 100.0
         obs = tuple(("box", s * (g / 2 + 0.5), 0.0, 0.0, 0.5, 0.6) for s in (-1.0, 1.0))
-        _SIMS[(n, gap_cm)] = PetSim(BuildParams(n_modules=n, cap_nm=(CAP,) * (n - 1), dt=0.004, obstacles=obs))
+        _SIMS[(n, gap_cm)] = PetSim(BuildParams(n_modules=n, cap_nm=(CAP,) * (n - 1), dt=0.004, obstacles=obs, extra={"obstacle_half_h": H / 2}))
     return _SIMS[(n, gap_cm)]
 
 
@@ -57,7 +60,7 @@ def rollout(n: int, gap_cm: int, x: np.ndarray, record: bool = False) -> dict:
         p = d.xipos[sim.m0_id:sim.m0_id + n]
         if record:
             frames.append(p.copy())
-        top = bool((p[:, 2] > 0.09).all()) and bool((np.abs(p[:, 1]) < 0.6).all())
+        top = bool((p[:, 2] > TOP).all()) and bool((np.abs(p[:, 1]) < 0.6).all())
         if top:
             best_rear = max(best_rear, float(p[:, 0].min()))
         if top and p[:, 0].min() > g / 2 + 0.01 and p[:, 0].max() < g / 2 + 1.0:             # every module on top of the far platform
