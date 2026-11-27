@@ -58,7 +58,7 @@ def main() -> int:
         from petctl.rl.watchdog import WatchdogCallback
         base = os.environ.get("PETCTL_WATCHDOG_BASELINE")
         from petctl.rl.watchdog import WatchdogConfig
-        cbs.append(WatchdogCallback(a.out, baseline=Path(base) if base else None, cfg=WatchdogConfig(min_metric=0.06, no_progress_steps=3_000_000)))   # the library selector alone scores ~0.03-0.06: a run must clear that by 3M steps
+        cbs.append(WatchdogCallback(a.out, baseline=Path(base) if base else None, cfg=WatchdogConfig(min_metric=0.11, no_progress_steps=3_000_000)))   # the library selector alone scores ~0.03-0.06: a run must clear that by 3M steps (min_metric 0.11 > robust selector baseline 0.086)
     from stable_baselines3.common.callbacks import CheckpointCallback
     cbs.append(CheckpointCallback(save_freq=max(500_000 // a.n_envs, 1), save_path=str(a.out / "ckpt"), name_prefix="model", save_vecnormalize=True))
     t0 = time.time()

@@ -22,7 +22,7 @@ from petctl.rl.cpg_env import HI, LO, CPGEnv
 from petctl.rl.video import burn_caption
 
 W, H, FPS = 1280, 720, 20
-CMDS = {"stand": (0, 0, 0), "forward": (0.14, 0, 0), "back": (-0.14, 0, 0), "left": (0, 0.14, 0), "right": (0, -0.14, 0), "turn left": (0, 0, 0.8), "turn right": (0, 0, -0.8), "forward + turn left": (0.12, 0, 0.6)}
+CMDS = {"stand": (0, 0, 0), "forward": (0.14, 0, 0), "back": (-0.14, 0, 0), "left": (0, 0.14, 0), "right": (0, -0.14, 0), "turn left": (0, 0, 0.45), "turn right": (0, 0, -0.45), "forward + turn left": (0.12, 0, 0.3)}
 
 
 def main() -> int:
@@ -54,6 +54,10 @@ def main() -> int:
     for name, cmd in CMDS.items():
         o, _ = env.reset(seed=3)
         env.cmd = np.array(cmd, float)
+        env.base = env.prior(env.cmd)                                                                   # the selector gait for THIS command (was left from the randomly sampled one: invalid evals before 2026-11-27)
+        env.target = env.base.copy()
+        env.cpg.reset(env.target, 0.0)
+        env.mask = env.mask_ticks
         ks, frames = [], []
         for i in range(int(a.seconds / env.dt)):
             if model is None:

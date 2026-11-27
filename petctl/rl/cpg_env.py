@@ -219,4 +219,4 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
             terms["sat"] -= 1.0                                                                          # blow-up penalty
         if done:
             info["metrics"] = {"success": self.kernel_sum / max(self.n_scored, 1), "orient_flips": float(self.flips), **{f"term_{k_}": v_ / self.k for k_, v_ in self.sums.items()}, **{f"mode_{m}": self.mode_sum[m] / self.mode_n[m] for m in self.mode_sum}}
-        return self._obs(), float(sum(terms.values())), False, done, info
+        return self._obs(), float(sum(terms.values())), bool(unstable), bool(done and not unstable), info
