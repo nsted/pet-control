@@ -39,12 +39,12 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.06, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.25, w_cur: float = 0.02) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
         self.episode_ticks, self.cmd_ticks, self.step_frac, self.gain_range = int(episode_s / dt), int(cmd_s / dt), step_frac, gain_range
         self.max_speed, self.max_yaw, self.randomise = max_speed, max_yaw, randomise
-        self.w = {"vel": w_vel, "yaw": w_yaw, "rate": w_rate, "sat": w_sat}
+        self.w = {"vel": w_vel, "yaw": w_yaw, "rate": w_rate, "sat": w_sat, "cur": w_cur}
         self.sim = build_sim(n_modules)
         self.kp0, self.kd0 = (g.copy() for g in self.sim.gains())
         floor = [g for g in range(self.sim.model.ngeom) if self.sim.model.geom_type[g] == 0]
@@ -103,7 +103,9 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self.prev_a, self.k, self.cmd = np.zeros(NP + 2, np.float32), 0, self._sample_cmd()
         self.hist: deque = deque(maxlen=int(1.0 / self.dt) + 1)
         self._push()
-        self.sums = {"vel": 0.0, "yaw": 0.0, "rate": 0.0, "sat": 0.0}
+        self.h0, self.mask = float(np.median(self._chord_angles())), int(1.0 / self.dt) + 1             # heading frame fixed per command segment; first second masked
+        self.sums = {"vel": 0.0, "yaw": 0.0, "rate": 0.0, "sat": 0.0, "cur": 0.0}
+        self.n_scored = 0
         self.kernel_sum, self.flips, self.was_up = 0.0, 0, float(sim.data.site_xmat[sim.imu_id].reshape(3, 3)[2, 2]) > 0
         return self._obs(), {}
 
@@ -122,19 +124,41 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self._push()
         self.k += 1
         if self.k % self.cmd_ticks == 0:
-            self.cmd = self._sample_cmd()
-        (c0, a0), (c1, a1) = self.hist[0], self.hist[-1]
+            self.cmd, self.mask, self.h0 = self._sample_cmd(), int(1.0 / self.dt) + 1, float(np.median(self._chord_angles()))
+        c0, c1 = self.hist[0][0], self.hist[-1][0]
         t = (len(self.hist) - 1) * self.dt
-        yaw = float(np.median(np.unwrap(np.stack([a0, a1]), axis=0)[1] - np.unwrap(np.stack([a0, a1]), axis=0)[0])) / t if t > 0 else 0.0
-        h = float(np.median(a1))
         dv = (c1 - c0)[:2] / t if t > 0 else np.zeros(2)
+        h = self.h0
         vb = np.array([math.cos(h) * dv[0] + math.sin(h) * dv[1], -math.sin(h) * dv[0] + math.cos(h) * dv[1]])
-        ev, ew = float(np.linalg.norm(vb - self.cmd[:2])), yaw - self.cmd[2]
-        terms = {"vel": self.w["vel"] * math.exp(-ev ** 2 / (2 * 0.06 ** 2)), "yaw": self.w["yaw"] * math.exp(-ew ** 2 / (2 * 0.4 ** 2)),
-                 "rate": -self.w["rate"] * float(np.mean((a - self.prev_a) ** 2)), "sat": -self.w["sat"] * float(np.mean(np.abs(self.sim.joint_torque()) >= 0.98 * 0.5))}
+        ang = np.unwrap(np.stack([x[1] for x in self.hist]), axis=0)                                   # per-chord unwrapped angle along the whole window
+        dchord = (ang[-1] - ang[0]) / t if t > 0 else np.zeros(len(self.chords))
+        yaw = float(np.median(dchord)) if float(np.ptp(dchord)) * t < 0.3 else 0.0                       # chords must agree (a shape change is not a turn)
+        tau = self.sim.joint_torque()
+        terms = {"rate": -self.w["rate"] * float(np.mean((a - self.prev_a) ** 2)), "sat": -self.w["sat"] * float(np.mean(np.abs(tau) >= 0.98 * 0.5)),
+                 "cur": -self.w["cur"] * max(0.0, 0.02 * self.nj + 0.25 + 4.6 * float(np.sum(tau ** 2)) - 4.0), "vel": 0.0, "yaw": 0.0}
+        score = None
+        if self.mask > 0:
+            self.mask -= 1
+        else:
+            sp, sw = np.linalg.norm(self.cmd[:2]), abs(self.cmd[2])
+            if sp > 1e-6:                                                                                # improvement over standing still, in [~-1, 1]
+                sig = max(0.03, 0.4 * sp)
+                k0 = math.exp(-sp ** 2 / (2 * sig ** 2))
+                terms["vel"] = self.w["vel"] * (math.exp(-float(np.linalg.norm(vb - self.cmd[:2])) ** 2 / (2 * sig ** 2)) - k0) / (1 - k0)
+            else:                                                                                        # commanded to stay put: moving is penalised, standing earns 0
+                terms["vel"] = -self.w["vel"] * 0.3 * min(1.0, float(np.linalg.norm(vb)) / 0.1)
+            if sw > 1e-6:
+                sg = max(0.15, 0.4 * sw)
+                k0 = math.exp(-sw ** 2 / (2 * sg ** 2))
+                terms["yaw"] = self.w["yaw"] * (math.exp(-(yaw - self.cmd[2]) ** 2 / (2 * sg ** 2)) - k0) / (1 - k0)
+            else:
+                terms["yaw"] = -self.w["yaw"] * 0.3 * min(1.0, abs(yaw) / 0.5)
+            self.n_scored += 1
+            score = (terms["vel"] / self.w["vel"] * (sp > 1e-6) + terms["yaw"] / self.w["yaw"] * (sw > 1e-6)) / max(1, int(sp > 1e-6) + int(sw > 1e-6))
         for k_, v_ in terms.items():
             self.sums[k_] += v_
-        self.kernel_sum += terms["vel"] / self.w["vel"]
+        if score is not None:
+            self.kernel_sum += score
         up = float(self.sim.data.site_xmat[self.sim.imu_id].reshape(3, 3)[2, 2]) > 0
         self.flips += int(up != self.was_up)
         self.was_up = up
@@ -142,5 +166,5 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         done = self.k >= self.episode_ticks
         info: dict[str, Any] = {}
         if done:
-            info["metrics"] = {"success": self.kernel_sum / self.k, "orient_flips": float(self.flips), **{f"term_{k_}": v_ / self.k for k_, v_ in self.sums.items() for k_, v_ in [(k_, v_)]}}
+            info["metrics"] = {"success": self.kernel_sum / max(self.n_scored, 1), "orient_flips": float(self.flips), **{f"term_{k_}": v_ / self.k for k_, v_ in self.sums.items()}}
         return self._obs(), float(sum(terms.values())), False, done, info
