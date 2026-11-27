@@ -22,10 +22,10 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from petctl.rl.cpg_env import CPGEnv
 
 
-def make(rank: int, seed: int, n: int):
+def make(rank: int, seed: int, n: int, kw: dict):
     """Env factory."""
     def f():
-        e = CPGEnv(n_modules=n)
+        e = CPGEnv(n_modules=n, **kw)
         e.reset(seed=seed + rank)
         return Monitor(e)
     return f
@@ -39,11 +39,13 @@ def main() -> int:
     ap.add_argument("--n-envs", type=int, default=9)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--stage", choices=("steady", "switching"), default="switching", help="steady: one command per 20 s episode, upright, 3 s mask; switching: 6 s segments, randomised start")
     ap.add_argument("--resume", type=Path, default=None, help="run directory to continue from (model.zip + vecnormalize.pkl)")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(2)
-    venv = SubprocVecEnv([make(i, a.seed * 1000, a.n) for i in range(a.n_envs)])
+    kw = dict(cmd_s=20.0, episode_s=20.0, mask_s=3.0, randomise=False) if a.stage == "steady" else {}
+    venv = SubprocVecEnv([make(i, a.seed * 1000, a.n, kw) for i in range(a.n_envs)])
     if a.resume:
         venv = VecNormalize.load(str(a.resume / "vecnormalize.pkl"), venv)
         model = PPO.load(str(a.resume / "model"), env=venv)

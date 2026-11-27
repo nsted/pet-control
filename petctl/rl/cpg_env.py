@@ -39,10 +39,10 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005, w_act: float = 0.02) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005, w_act: float = 0.02, mask_s: float = 1.0) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
-        self.res_frac = res_frac
+        self.res_frac, self.mask_ticks = res_frac, int(mask_s / dt) + 1
         self.episode_ticks, self.cmd_ticks, self.step_frac, self.gain_range = int(episode_s / dt), int(cmd_s / dt), step_frac, gain_range
         self.max_speed, self.max_yaw, self.randomise = max_speed, max_yaw, randomise
         self.w = {"vel": w_vel, "yaw": w_yaw, "rate": w_rate, "sat": w_sat, "cur": w_cur, "act": w_act}
@@ -130,7 +130,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self.hist: deque = deque(maxlen=int(1.0 / self.dt) + 1)
         self._push()
         self.seg_k = 0
-        self.h0, self.mask = float(np.median(self._chord_angles())), int(1.0 / self.dt) + 1             # heading frame fixed per command segment; first second masked
+        self.h0, self.mask = float(np.median(self._chord_angles())), self.mask_ticks             # heading frame fixed per command segment; first second masked
         self.sums = {"vel": 0.0, "yaw": 0.0, "rate": 0.0, "sat": 0.0, "cur": 0.0, "act": 0.0}
         self.n_scored, self.mode_sum, self.mode_n = 0, {}, {}
         self.kernel_sum, self.flips, self.was_up = 0.0, 0, float(sim.data.site_xmat[sim.imu_id].reshape(3, 3)[2, 2]) > 0
@@ -154,7 +154,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self._push()
         self.k += 1
         if self.k % self.cmd_ticks == 0:
-            self.cmd, self.mask, self.h0, self.seg_k = self._sample_cmd(), int(1.0 / self.dt) + 1, float(np.median(self._chord_angles())), self.k
+            self.cmd, self.mask, self.h0, self.seg_k = self._sample_cmd(), self.mask_ticks, float(np.median(self._chord_angles())), self.k
             if self.use_prior:
                 self.base = self.prior(self.cmd)                                                      # selector sets the gait of each segment; the policy adds a bounded residual
         c0, c1 = self.hist[0][0], self.hist[-1][0]
