@@ -11,11 +11,11 @@ from petctl.rl.cpg_env import NP, CPGEnv
 I = {k: i for i, k in enumerate(PARAM_NAMES)}
 
 
-def run(policy, seeds: int = 12) -> tuple[float, float, float]:
+def run(policy, seeds: int = 12, use_prior: bool = False) -> tuple[float, float, float]:
     """Mean (success, |yaw| measured on stand-or-translation commands is not available here -> flips, return) over seeds."""
     succ, flips, ret = [], [], []
     for s in range(seeds):
-        e = CPGEnv(randomise=True)
+        e = CPGEnv(randomise=True, use_prior=use_prior)
         o, _ = e.reset(seed=100 + s)
         rng, R, info = np.random.default_rng(s), 0.0, {}
         for _ in range(e.episode_ticks):
@@ -44,3 +44,9 @@ def test_non_tracking_policies_do_not_score(name, policy) -> None:
     success, _flips, _ret = run(policy)
     limit = 0.10 if name == "thrash" else 0.05            # a constant gait travels somewhere and fits the commands that happen to point that way (~0.07): real motion, not an exploit
     assert success < limit, f"{name} scored {success:.3f} improvement over standing still"
+
+
+def test_library_selector_baseline_tracks() -> None:
+    """With the selector prior, doing nothing (zero action) is the library baseline: it must score clearly above the non-tracking policies."""
+    success, _f, _r = run(lambda r: np.zeros(NP + 2), use_prior=True)
+    assert success > 0.05, f"selector baseline scored only {success:.3f}"
