@@ -82,7 +82,12 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
             return t
         sc = np.array([self.max_speed, self.max_speed, self.max_yaw])
         i = int(np.argmin(np.linalg.norm((self.elite_v - cmd) / sc, axis=1)))
-        return self.elites[i].copy()
+        t = self.elites[i].copy()
+        v = self.elite_v[i]
+        cs, es = float(np.linalg.norm(cmd[:2])), float(np.linalg.norm(v[:2]))
+        ratio = cs / es if cs > 1e-6 and es > 1e-3 else (abs(cmd[2]) / abs(v[2]) if abs(cmd[2]) > 1e-6 and abs(v[2]) > 1e-3 else 1.0)
+        t[PARAM_NAMES.index("f")] = np.clip(t[PARAM_NAMES.index("f")] * float(np.clip(ratio, 0.25, 1.5)), LO[0], HI[0])      # gait speed rises roughly with frequency
+        return t
 
     # ---- helpers -------------------------------------------------------------------------------------------------
     def _chord_angles(self) -> np.ndarray:
