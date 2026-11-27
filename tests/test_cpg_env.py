@@ -59,3 +59,20 @@ def test_library_selector_baseline_tracks() -> None:
                 modes.setdefault(k, []).append(v)
     m = {k: float(np.mean(v)) for k, v in modes.items()}
     assert m["mode_turn"] > 0.03, m          # weak guard: the selector alone is a low, noisy baseline (~0.03) that learning must beat
+
+
+def test_gain_extremes_stay_stable() -> None:
+    """Review 3: at the gain extremes the sim must not blow up (no QACC resets, centre of mass below 0.6 m/s)."""
+    for gains in ((1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)):
+        for s in range(4):
+            e = CPGEnv(randomise=True)
+            e.reset(seed=s)
+            a = np.zeros(NP + 2)
+            a[NP:] = gains
+            top = 0.0
+            for _ in range(e.episode_ticks):
+                c0 = e.hist[-1][0]
+                _o, _r, _t, done, _i = e.step(a)
+                top = max(top, float(np.linalg.norm(e.hist[-1][0] - c0)) / e.dt)
+                assert not done or e.k >= e.episode_ticks, f"unstable at gains {gains}"
+            assert top < 0.6, f"speed {top:.2f} m/s at gains {gains}"

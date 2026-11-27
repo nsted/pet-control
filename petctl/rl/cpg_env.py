@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import gymnasium as gym
+import mujoco
 import numpy as np
 
 
@@ -39,7 +40,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005, w_act: float = 0.02, mask_s: float = 1.0) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, vel_obs: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.05, w_act: float = 0.02, mask_s: float = 1.0) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
         self.res_frac, self.mask_ticks = res_frac, int(mask_s / dt) + 1
@@ -147,11 +148,15 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         else:
             self.target = np.clip(self.target + a[:NP] * self.step_frac * (HI - LO), LO, HI)
         sc = self.gain_range ** a[NP:]
-        self.sim.set_gains(np.minimum(self.kp0 * sc[0], GIM3505_MIT_KP_MAX), np.minimum(self.kd0 * sc[1], GIM3505_MIT_KD_MAX))
+        kd_sc = max(sc[1], math.sqrt(sc[0]))                                                             # more stiffness never comes with less damping (kp x2 / kd x0.5 blew the sim up)
+        self.sim.set_gains(np.minimum(self.kp0 * sc[0], GIM3505_MIT_KP_MAX), np.minimum(self.kd0 * kd_sc, GIM3505_MIT_KD_MAX))
+        w0 = int(self.sim.data.warning[mujoco.mjtWarning.mjWARN_BADQACC].number)
+        com0 = self.hist[-1][0]
         self.sim.step(self.cpg.step(self.dt, self.target), self.dt)
         if not np.all(np.isfinite(self.sim.data.qpos)):
             raise FloatingPointError("simulation diverged (NaN)")
         self._push()
+        unstable = int(self.sim.data.warning[mujoco.mjtWarning.mjWARN_BADQACC].number) > w0 or float(np.linalg.norm(self.hist[-1][0] - com0)) > 0.1       # MuJoCo auto-resets on QACC blow-ups: end the episode instead
         self.k += 1
         if self.k % self.cmd_ticks == 0:
             self.cmd, self.mask, self.h0, self.seg_k = self._sample_cmd(), self.mask_ticks, float(np.median(self._chord_angles())), self.k
@@ -203,8 +208,11 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self.flips += int(up != self.was_up)
         self.was_up = up
         self.prev_a = a.astype(np.float32)
-        done = self.k >= self.episode_ticks
+        done = self.k >= self.episode_ticks or unstable
         info: dict[str, Any] = {}
+        if unstable:
+            terms["vel"] = terms["yaw"] = 0.0
+            terms["sat"] -= 1.0                                                                          # blow-up penalty
         if done:
             info["metrics"] = {"success": self.kernel_sum / max(self.n_scored, 1), "orient_flips": float(self.flips), **{f"term_{k_}": v_ / self.k for k_, v_ in self.sums.items()}, **{f"mode_{m}": self.mode_sum[m] / self.mode_n[m] for m in self.mode_sum}}
         return self._obs(), float(sum(terms.values())), False, done, info
