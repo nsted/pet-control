@@ -12,3 +12,7 @@
 5. Tuning of reflex parameters (threshold, retreat time, turn angle) with CMA-ES on the weighted objective. RL only if the classical + CMA version leaves a gap.
 
 **Pass.** Fall rate <= 5% over >= 100 randomised episodes AND mean path length >= 60% of the unprotected wanderer's AND coverage >= 50% of the oracle-reflex coverage. Stand-still must fail the activity test; the unprotected wanderer must fail the fall test (otherwise the task is too easy).
+
+## Status 2026-11-27 (stopped by the owner)
+Done: scene (`edge_sim.py`), data collection, proprioceptive detector (AUC 0.84 for "overhanging now"; the gait's own torques mask the ~0.02 N.m overhang signature), reflex controllers and renderer, baselines (wander falls in 98% of 60 s episodes, stand never falls / never moves), baseline video. NOT done: the oracle-reflex probe (`edge_oracle_probe.py`, 6 variants: instant parameter snap, halt-then-retreat, distance-triggered) was killed before printing results; the first oracle run (trigger at overhang >= 1, slow retreat) still fell 100% of episodes (the body falls a median 1.0 s after the first module overhangs; reversing the gait takes longer). The learned-detector reflex therefore has not been shown to work.
+Direction under discussion with the owner: restart around RL that integrates proprioception (and touch) with a base layer of pose HOLDING under disturbance, possibly preceded by a self-model / compliance layer. See CURRICULUM_STATE.md.
