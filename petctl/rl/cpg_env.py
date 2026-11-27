@@ -38,10 +38,11 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
 
     metadata = {"render_modes": []}
 
-    def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, gain_range: float = 2.0, smooth_hz: float = 1.0,
+    def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
                  max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.25, w_cur: float = 0.02) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
+        self.res_frac = res_frac
         self.episode_ticks, self.cmd_ticks, self.step_frac, self.gain_range = int(episode_s / dt), int(cmd_s / dt), step_frac, gain_range
         self.max_speed, self.max_yaw, self.randomise = max_speed, max_yaw, randomise
         self.w = {"vel": w_vel, "yaw": w_yaw, "rate": w_rate, "sat": w_sat, "cur": w_cur}
@@ -118,6 +119,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         sim.step(np.zeros(self.nj), 0.8)
         self.prev_a, self.k, self.cmd = np.zeros(NP + 2, np.float32), 0, self._sample_cmd()
         self.target = self.prior(self.cmd) if (self.use_prior and self.rng.random() < 0.7) else self.elites[self.rng.integers(len(self.elites))].copy()
+        self.base = self.target.copy()
         self.cpg.reset(self.target, 0.0)
         self.hist: deque = deque(maxlen=int(1.0 / self.dt) + 1)
         self._push()
@@ -133,7 +135,10 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         a = np.clip(np.asarray(action, float), -1.0, 1.0)
-        self.target = np.clip(self.target + a[:NP] * self.step_frac * (HI - LO), LO, HI)
+        if self.use_prior:                                                                               # residual: target = selector gait + bounded offset (zero action = the library baseline)
+            self.target = np.clip(self.base + a[:NP] * self.res_frac * (HI - LO), LO, HI)
+        else:
+            self.target = np.clip(self.target + a[:NP] * self.step_frac * (HI - LO), LO, HI)
         sc = self.gain_range ** a[NP:]
         self.sim.set_gains(np.minimum(self.kp0 * sc[0], GIM3505_MIT_KP_MAX), np.minimum(self.kd0 * sc[1], GIM3505_MIT_KD_MAX))
         self.sim.step(self.cpg.step(self.dt, self.target), self.dt)
@@ -144,7 +149,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         if self.k % self.cmd_ticks == 0:
             self.cmd, self.mask, self.h0 = self._sample_cmd(), int(1.0 / self.dt) + 1, float(np.median(self._chord_angles()))
             if self.use_prior:
-                self.target = self.prior(self.cmd)                                                   # selector sets the starting gait of each segment; the policy corrects it
+                self.base = self.prior(self.cmd)                                                      # selector sets the gait of each segment; the policy adds a bounded residual
         c0, c1 = self.hist[0][0], self.hist[-1][0]
         t = (len(self.hist) - 1) * self.dt
         dv = (c1 - c0)[:2] / t if t > 0 else np.zeros(2)
