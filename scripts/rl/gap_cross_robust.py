@@ -46,9 +46,15 @@ def main() -> int:
     ap.add_argument("--gap", type=int, default=10)
     ap.add_argument("--evals", type=int, default=600)
     ap.add_argument("--workers", type=int, default=9)
+    ap.add_argument("--library", type=int, default=0, help="number of robust-library gaits to add as starts")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
     starts = [(nm, x) for nm, x in gc.starts(a.n, Path("data/rl/map_elites"))]
+    lib = Path(f"data/rl/cpg_elite_labels_n{a.n}.json")
+    if a.library and lib.exists():                                                                      # robust-library seeds: the fastest gaits, rotated so their travel direction points across the gap
+        rows = [r for r in json.loads(lib.read_text()) if float(np.hypot(r["v"][0], r["v"][1])) > 0.08]
+        rows.sort(key=lambda r: -float(np.hypot(r["v"][0], r["v"][1])))
+        starts = [(f"library#{i}", np.array(r["params"] + [-float(np.arctan2(r["v"][1], r["v"][0]))])) for i, r in enumerate(rows[:a.library])] + starts
     prev = Path(f"data/rl/gap_cross/n{a.n}_g{a.gap}.json")
     if prev.exists():
         r = json.loads(prev.read_text())
