@@ -39,13 +39,13 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
     metadata = {"render_modes": []}
 
     def __init__(self, n_modules: int = 11, episode_s: float = 24.0, cmd_s: float = 6.0, dt: float = 0.05, step_frac: float = 0.12, res_frac: float = 0.25, gain_range: float = 2.0, smooth_hz: float = 1.0,
-                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005) -> None:
+                 max_speed: float = 0.18, max_yaw: float = 1.0, randomise: bool = True, use_prior: bool = True, w_vel: float = 1.0, w_yaw: float = 0.5, w_rate: float = 0.02, w_sat: float = 0.05, w_cur: float = 0.005, w_act: float = 0.02) -> None:
         super().__init__()
         self.n, self.nj, self.dt = n_modules, n_modules - 1, dt
         self.res_frac = res_frac
         self.episode_ticks, self.cmd_ticks, self.step_frac, self.gain_range = int(episode_s / dt), int(cmd_s / dt), step_frac, gain_range
         self.max_speed, self.max_yaw, self.randomise = max_speed, max_yaw, randomise
-        self.w = {"vel": w_vel, "yaw": w_yaw, "rate": w_rate, "sat": w_sat, "cur": w_cur}
+        self.w = {"vel": w_vel, "yaw": w_yaw, "rate": w_rate, "sat": w_sat, "cur": w_cur, "act": w_act}
         self.sim = build_sim(n_modules)
         self.kp0, self.kd0 = (g.copy() for g in self.sim.gains())
         floor = [g for g in range(self.sim.model.ngeom) if self.sim.model.geom_type[g] == 0]
@@ -130,7 +130,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         self._push()
         self.seg_k = 0
         self.h0, self.mask = float(np.median(self._chord_angles())), int(1.0 / self.dt) + 1             # heading frame fixed per command segment; first second masked
-        self.sums = {"vel": 0.0, "yaw": 0.0, "rate": 0.0, "sat": 0.0, "cur": 0.0}
+        self.sums = {"vel": 0.0, "yaw": 0.0, "rate": 0.0, "sat": 0.0, "cur": 0.0, "act": 0.0}
         self.n_scored, self.mode_sum, self.mode_n = 0, {}, {}
         self.kernel_sum, self.flips, self.was_up = 0.0, 0, float(sim.data.site_xmat[sim.imu_id].reshape(3, 3)[2, 2]) > 0
         return self._obs(), {}
@@ -165,7 +165,7 @@ class CPGEnv(gym.Env):  # type: ignore[type-arg]
         dchord = (ang[-1] - ang[0]) / t if t > 0 else np.zeros(len(self.chords))
         yaw = float(np.median(dchord)) if float(np.ptp(dchord)) * t < 0.3 else 0.0                       # chords must agree (a shape change is not a turn)
         tau = self.sim.joint_torque()
-        terms = {"rate": -self.w["rate"] * float(np.mean((a - self.prev_a) ** 2)), "sat": -self.w["sat"] * float(np.mean(np.abs(tau) >= 0.98 * self.cap)),
+        terms = {"act": -self.w["act"] * float(np.mean(a ** 2)), "rate": -self.w["rate"] * float(np.mean((a - self.prev_a) ** 2)), "sat": -self.w["sat"] * float(np.mean(np.abs(tau) >= 0.98 * self.cap)),
                  "cur": -self.w["cur"] * max(0.0, 0.02 * self.nj + 0.25 + 4.6 * float(np.sum(tau ** 2)) - 4.0), "vel": 0.0, "yaw": 0.0}
         score = None
         if self.mask > 0:
