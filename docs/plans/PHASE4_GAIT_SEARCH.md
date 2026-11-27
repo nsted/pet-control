@@ -26,3 +26,7 @@ One open-loop gait cannot do it: the first "success" was a rolling body that was
 Dynamic gap crossing (open loop, 25 s, whole body ends on the far platform): n = 10, 11, 13 cross 10 cm; at 15 cm only n = 11 (sideways start) and n = 13 (rolling start) succeeded in 540 evals; n = 10, 12 did not. n = 11 at 20, 25, 30 cm running.
 
 Gap crossing at n=11 (open loop, 25 s): 10, 15, 20 cm succeed (sideways-start gaits); 25 and 30 cm not found (3 starts x 900 evals). Video gap_cross_n11.mp4.
+
+## Library flaw found during Phase 7 (2026-11-27): gaits overfit to one start state
+`scripts/rl/gait_repro.py`: each elite re-measured in CPGEnv from the nominal start reproduces its label exactly (median error 0.00), but at floor friction x1.3 only 5/34 stay within 40% of the label velocity (median error 0.67) and after a 3 s run of another gait only 5/34 (median error 0.94). The first MAP-Elites / CMA-ES gaits were optimised from a single start state, so they exploit the exact body configuration and are not usable as a library for tracking, steering or RL (this explains the failure of pilots 1-11 and of the classical selector). Floor friction x0.7 changed nothing at all (MuJoCo uses the larger of the two contact frictions): the friction randomisation was half effective.
+Fix: `scripts/rl/map_elites_robust.py` measures every candidate under 4 conditions (nominal, friction x1.3, after a 3 s pre-run of two different fixed gaits) and uses fitness = median speed - dispersion over conditions. Result below once done.
