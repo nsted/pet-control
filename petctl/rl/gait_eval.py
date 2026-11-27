@@ -91,6 +91,7 @@ def evaluate_gait(params: CPGParams | np.ndarray, n_modules: int, seconds: float
     n = int(round(seconds / CONTROL_DT))
     n_warm = int(round(warmup_s / CONTROL_DT))
     roll_mods = sorted({0, n_modules // 4, n_modules // 2, (3 * n_modules) // 4, n_modules - 1})
+    chords = [(0, n_modules - 1), (n_modules // 4, (3 * n_modules) // 4), (n_modules // 3, (2 * n_modules) // 3)]              # robust yaw: several head-tail-like chords must agree
     com, yaw, roll, qs, taus, sat, cur_mean, cur_peak, mech = [], [], [], [], [], [], [], [], 0.0
     up_min, ok = 1.0, True
     bus.begin_tick()
@@ -108,7 +109,11 @@ def evaluate_gait(params: CPGParams | np.ndarray, n_modules: int, seconds: float
         roll_a = [math.atan2(float(d.xmat[sim.m0_id + k].reshape(3, 3)[:, 2] @ left0), float(d.xmat[sim.m0_id + k].reshape(3, 3)[2, 2])) for k in roll_mods]
         if k >= n_warm:
             com.append(d.xipos[sim.m0_id:sim.m0_id + n_modules].mean(axis=0))
-            yaw.append(math.atan2(float(fwd @ left0), float(fwd @ fwd0)))
+            ch = []
+            for ia, ib in chords:
+                v = d.xipos[sim.m0_id + ia] - d.xipos[sim.m0_id + ib]
+                ch.append(math.atan2(float(v @ left0), float(v @ fwd0)))
+            yaw.append(ch)
             roll.append(roll_a)
             qs.append(sim.joint_pos().copy())
             taus.append(np.abs(tau).max())
@@ -126,7 +131,10 @@ def evaluate_gait(params: CPGParams | np.ndarray, n_modules: int, seconds: float
     res.vx, res.vy = float(disp @ fwd0) / t_win, float(disp @ left0) / t_win
     res.speed = math.hypot(res.vx, res.vy)
     res.speed_bl = res.speed / length
-    res.yaw_rate = float(np.unwrap(yaw)[-1] - np.unwrap(yaw)[0]) / t_win
+    ya = np.unwrap(np.array(yaw), axis=0)
+    yrates = (ya[-1] - ya[0]) / t_win
+    ysign = float(np.sign(np.median(yrates))) or 1.0
+    res.yaw_rate = float(ysign * np.min(ysign * yrates)) if np.all(ysign * yrates > 0) else 0.0         # whole-body yaw: all chords rotate the same way, value = the slowest (a thrashing head can't fake a turn)
     ra = np.unwrap(np.array(roll), axis=0)                              # (ticks, modules)
     rates = (ra[-1] - ra[0]) / t_win
     sign = float(np.sign(np.median(rates))) or 1.0

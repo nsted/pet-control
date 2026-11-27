@@ -4,7 +4,7 @@ Updated: 2026-11-26. Governing brief: `AUTONOMOUS_TRAINER.md` (overrides older R
 
 ## Where we are
 - Branch `feat/autonomous-trainer` (from f450903; tag `attempt-1-end`). The failed skill-gating experiment is on `exp/skill-gating-wip`. Attempt-1 chain (A1..B5 nav stages, hug parked at 0.12) is
-  reference/seed material only, not a baseline to beat; the rebuilt robot's length (10-13 modules) is undecided.
+  reference/seed material only, not a baseline to beat; the rebuilt robot's length is DECIDED: 11 modules (owner, 2026-11-26).
 - **Phase 0 DONE** (branches/tag, ladder scripts in `scripts/rl/ladders/`, dead drivers in `scripts/rl/archive/`, BEST_RUNS torque note fixed).
 - **Phase 1 DONE except owner installs:** watchdog + reward-term logging (`petctl/rl/watchdog.py`), orientation diagnostics, `start_orient`, frozen eval suites (`data/rl/eval_suite/`,
   `scripts/rl/eval_suite.py check`), contact sheet (`scripts/rl/contact_sheet.py`), run gating (`launch_run.py`, `mark_pilot.py`), hook + subagent PROPOSALS in `docs/proposals/phase1/`
@@ -28,3 +28,6 @@ then method review. Budget runs in steps (~2k steps/s with 10 envs), not hours.
 4. REQUIRED: one contact-sheet review per pilot and per full-run end. Videos optional and event-driven (rendered after a run ends, never viewed by default).
 5. Batch work; small edits in the main session; no subagent for a < 10 min task.
 6. Log entries: result + decision, <= 5 lines.
+
+- **LENGTH DECIDED: n = 11 (owner, 2026-11-26).** Basis: owner preference plus the pre-agreed tie-break (lengths within seed noise on gaits; mixed on poses; even lengths keep more speed when inverted, 57-67% vs 40% for 11, a cost the skill library absorbs). It was NOT decided by a pre-registered data study: Phase 6 (5 seeds per length, robustness, weighted score) is skipped by the owner's choice. Evidence: `PHASE4_GAIT_SEARCH.md`. All further work is at n = 11 only.
+- **Phase 4 at n=11:** CMA-ES + MAP-Elites done, yaw metric fixed (head thrash artefact), dynamic gap crossing works at 10 and 15 cm (open loop), inverted self-righting search next, then Phase 5 poses.
