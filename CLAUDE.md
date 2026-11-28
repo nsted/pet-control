@@ -4,7 +4,7 @@
 
 **Read `docs/PET_PURPOSE.md` first: it states what PET is for (the owner's own statement) and a decision guide derived from it. Use it when choosing between options.**
 
-petctl is the control framework for PET, a robotic art installation exploring embodiment, affect, and AI through human-robot touch interaction. PET is an 8-module snake-like robot (head + 6 middle + tail) with triangular prism body segments. Each module has 3 sensor faces (left, right, middle) with touch and pressure sensors, and a single-axis revolute joint (Z-axis).
+petctl is the control framework for PET, a robotic art installation exploring embodiment, affect, and AI through human-robot touch interaction. PET is an 11-module snake-like robot (head + 9 middle + tail; 10 joints) with triangular prism body segments. The length of 11 modules was chosen by the owner for the rebuilt robot (2026-11-26); the earlier build had 8 modules. Each module has 3 sensor faces (left, right, middle) with touch and pressure sensors, and a single-axis revolute joint (Z-axis).
 
 **PET is a twist chain** (an oblique swivel joint chain with Rubik's Snake geometry), **not a pitch/yaw snake robot.** Each joint axis is at 45° to the chain and neighbouring axes are 90° apart, so no joint bends the body in a single plane on its own: a single joint twists everything downstream, and bending comes from combining neighbouring joints. Do not apply pitch/yaw snake-robot assumptions (planar serpenoid waves, per-joint "horizontal"/"vertical" roles, single-joint bending) without checking them against this geometry. The CPG in `petctl/rl/cpg.py` works in joint-pair coordinates for this reason.
 
@@ -21,7 +21,7 @@ Components are swappable ABCs. Control schemes never touch the backend directly 
 
 ## Key Technical Facts
 
-- **Module 0 is the head — no servo.** Servo IDs are 1–7 (modules 1–7 each have one joint).
+- **Module 0 is the head — no servo.** Servo IDs are 1–10 on the 11-module build (modules 1–10 each have one joint); the earlier 8-module build used 1–7. (The 11-module IDs follow the same convention; verify on the rebuilt hardware.)
 - **Odd modules have left/right sensors swapped** for body-frame consistency (handled in RobotBackend.\_read_sensors, transparent to everything above)
 - **m0 and all odd modules**: top-row pad order is front↔rear reversed (index 0↔2 swapped) on both side faces — corrected in `_parse_sensor_response`. m0 additionally has its middle pads fully reversed.
 - **All joints are single-axis Z revolute** — positive angle = one direction, negative = the other, muli-turn
