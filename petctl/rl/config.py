@@ -19,6 +19,12 @@ BUS_A_PER_NM2 = 13.3      # measured bus current per (N.m)^2 per motor (hanging 
 BUS_LIMIT_A = 4.0         # battery budget (config.POWER_BUDGET), used as a soft penalty threshold in the reward
 
 
+# MIT reply frame of the SteadyWin GIM3505-8 (task knob ``mit_frame``; docs/plans/MOTOR_GIM3505.md, STAGE_1_GATES.md). Torque range is a register assumption (+-2 N.m, owner sets it on the robot).
+MIT_VEL_RANGE_RAD_S = 30.0               # velocity field +-30 rad/s, 12 bit
+MIT_VEL_Q_RAD_S = 2 * MIT_VEL_RANGE_RAD_S / 4096
+MIT_TORQUE_RANGE_NM = 2.0                # torque field +-2 N.m, 12 bit
+MIT_TORQUE_Q_NM = 2 * MIT_TORQUE_RANGE_NM / 4096
+
 DELTA_STEP_RAD = 0.25     # action_mode 'delta': target change per tick for an action of +-1
 HOLD_EMA_BASE = 0.3      # action_mode 'hold': ema_eff = HOLD_EMA_BASE + HOLD_EMA_RANGE * h with h = (a_h + 1) / 2 in [0, 1] (h = 0: the EMA 0.3 mapping that walked, h = 1: frozen pose)
 HOLD_EMA_RANGE = 0.7
@@ -40,6 +46,7 @@ class DomainRand:
     friction_aniso: tuple[float, float] = (1.0, 1.0)        # lateral / forward skin friction ratio (>= 1; petctl/sim/skin.py); (1, 1) = isotropic = the default for ALL runs (ABS is isotropic; owner decision 2026-11-26); anisotropy only for occasional robustness checks (costs ~45 % throughput)
     joint_offset_rad: float = 0.03
     pos_noise_rad: float = 0.002
+    vel_noise_rad_s: float = 0.05                           # velocity-field noise (1-sigma) of the MIT frame (knob mit_frame), scaled by ``scale``
     gyro_noise: float = 0.02
     imu_tilt_rad: float = 0.05
     cap_rate_hz: tuple[float, float] = (10.0, 20.0)         # capacitive face sensors (task knob capacitive_obs), assumption A4

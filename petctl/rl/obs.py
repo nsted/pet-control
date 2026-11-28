@@ -2,7 +2,7 @@
 
 Inputs are exactly what the real robot provides: tail-IMU quaternion + gyro, the joint angles (7 on the real robot) (from MIT feedback), and the previous
 actions. Absolute yaw is NOT used (the BNO085 heading drifts); the gravity direction in the IMU frame replaces the quaternion.
-Velocity comes from a window of positions because MIT velocity feedback clips at +-0.5 rad/s.
+Velocity comes from a window of positions (legacy GL40 II: its MIT velocity feedback clipped at +-0.5 rad/s) unless task knob ``mit_frame`` is set: then it is the GIM3505-8 velocity field (+-30 rad/s, 12 bit).
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from petctl.rl.config import DELTA_LIMIT_RAD, DELTA_STEP_RAD, HOLD_EMA_BASE, HOLD_EMA_RANGE, EnvConfig
+from petctl.rl.config import MIT_VEL_RANGE_RAD_S, DELTA_LIMIT_RAD, DELTA_STEP_RAD, HOLD_EMA_BASE, HOLD_EMA_RANGE, EnvConfig
 
 
 TOUCH_MEMORY_S = (0.5, 3.0)       # time constants (s) of the running averages of the contact signals
@@ -86,6 +86,7 @@ class Snapshot:
     torque: np.ndarray | None = None  # (n_joints,) N.m, from the MIT reply frame (used by tasks with touch_obs); zeros when omitted
     target: np.ndarray | None = None  # (n_joints,) rad, the position target last commanded; zeros when omitted
     capacitive: np.ndarray | None = None  # (6 * n_modules,) post-only face sensors: touch (n,3) then pressure (n,3), faces (left, right, middle); zeros when omitted
+    joint_vel: np.ndarray | None = None   # (n_joints,) rad/s, the MIT frame's velocity field (task knob ``mit_frame``); None = derive the velocity from a position window
 
     def __post_init__(self) -> None:
         """Fill omitted reply-frame fields with zeros of the joint count."""
@@ -120,6 +121,7 @@ class ObsBuilder:
         self.capacitive = float(cfg.task_params.get("capacitive_obs", 0.0)) > 0.0         # post-only face sensors; block appended after everything else (9 per module)
         self.capacitive_off = float(cfg.task_params.get("capacitive_off", 0.0)) > 0.0      # ablation: zero the capacitive block
         self.imu_off = float(cfg.task_params.get("imu_off", 0.0)) > 0.0                    # ablation: zero the IMU channels (gravity direction + gyro)
+        self.mit_frame = float(cfg.task_params.get("mit_frame", 0.0)) > 0.0                # GIM3505 reply frame: the velocity block is the quantised MIT velocity field (+-30 rad/s), not a position-window estimate
         self.n_modules = cfg.n_modules
         self.unbounded = unbounded(cfg)                                                    # no angle range: observed joint angles and targets are wrapped to [-pi, pi)
         self.delta = cfg.action_mode in ("delta", "hold")                                  # the current target vector (/ DELTA_LIMIT_RAD) is appended last (delta and hold modes)
@@ -175,8 +177,10 @@ class ObsBuilder:
         self._pos.append(snap.joint_pos.copy())
         w = len(self._pos) - 1
         vel = (self._pos[-1] - self._pos[0]) / (w * self.dt)
+        if self.mit_frame and snap.joint_vel is not None:
+            vel = np.clip(np.asarray(snap.joint_vel, float), -MIT_VEL_RANGE_RAD_S, MIT_VEL_RANGE_RAD_S)
         grav, gyro = (np.zeros(3), np.zeros(3)) if self.imu_off else (gravity_in_body(snap.quat), snap.gyro)
-        parts = [grav, gyro, wrap_angle(snap.joint_pos) if self.unbounded else snap.joint_pos, np.clip(vel, -10, 10), snap.cap_nm / 0.164,
+        parts = [grav, gyro, wrap_angle(snap.joint_pos) if self.unbounded else snap.joint_pos, vel if self.mit_frame else np.clip(vel, -10, 10), snap.cap_nm / 0.164,
                  np.concatenate(list(self._act)), np.asarray(snap.extra, float).reshape(-1)[:self.extra_dim]]
         if self.touch:                                       # contact is inferred from the MIT reply: torque and tracking error, this tick and the previous one
             cur = np.concatenate([np.clip(snap.torque / np.maximum(snap.cap_nm, 1e-6), -1.5, 1.5), np.clip((snap.target - snap.joint_pos) * TOUCH_ERR_SCALE, -3.0, 3.0)])

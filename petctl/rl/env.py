@@ -13,7 +13,7 @@ from gymnasium import spaces
 from petctl.config import (GIM3505_HOLD_A_PER_NM2, GIM3505_IDLE_PER_MOTOR_A, GIM3505_MOVE_A_PER_NM2, GIM3505_MOVE_OMEGA0_RAD_S, GIM3505_V_TEST, REGIMEN_BUS_MEAN_A,
                           REGIMEN_BUS_PEAK_A)
 from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
-from petctl.rl.config import BUS_A_PER_NM2, EnvConfig
+from petctl.rl.config import BUS_A_PER_NM2, MIT_TORQUE_Q_NM, MIT_TORQUE_RANGE_NM, MIT_VEL_Q_RAD_S, MIT_VEL_RANGE_RAD_S, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.hold_diag import TORQUE_FRAC, HoldBreakTracker
 from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
@@ -71,6 +71,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._cap_out: tuple[np.ndarray, np.ndarray] | None = None
         self.cap_sensor: CapacitiveSensor | None = None
         self._reply_mult, self._reply_buf = 1.0, None
+        self._mit_frame = False
         self.bus: BusClamp | None = None
         self._start_buf: HugStartBuffer | None = None
         self._start_buf_path: str | None = None
@@ -124,6 +125,22 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         pos = self.sim.joint_pos() + self._joint_off + rng.normal(0, dr.pos_noise_rad * dr.scale, self.cfg.n_joints)
         quat = _qmul(self._tilt, self.sim.sensor("quat").copy())
         gyro = self.sim.sensor("gyro") + rng.normal(0, dr.gyro_noise * dr.scale, 3)
+        if self._mit_frame:                                                           # GIM3505-8 reply frame (knob mit_frame): position, velocity and torque arrive together, one delay / drop for all three
+            nj = self.cfg.n_joints
+            vel = quantise(np.clip(self.sim.joint_vel() + rng.normal(0, dr.vel_noise_rad_s * dr.scale, nj), -MIT_VEL_RANGE_RAD_S, MIT_VEL_RANGE_RAD_S), MIT_VEL_Q_RAD_S)
+            trq = quantise(np.clip(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM * self._reply_mult, nj), -MIT_TORQUE_RANGE_NM, MIT_TORQUE_RANGE_NM), MIT_TORQUE_Q_NM)
+            frame = np.concatenate([pos, vel, trq])
+            if self._reply_buf is not None:
+                if not self._reply_buf:
+                    self._reply_buf.extend([frame] * self._reply_buf.maxlen)         # type: ignore[arg-type]
+                    self._reply_last = frame
+                self._reply_buf.append(frame)
+                out = self._reply_buf[0]
+                frame = self._reply_last if self._reply_rng.random() < self._reply_drop else out
+                self._reply_last = frame
+            pos, vel, trq = frame[:nj], frame[nj:2 * nj], frame[2 * nj:]
+            return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy(),
+                            None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]), joint_vel=vel)
         trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM * self._reply_mult, self.cfg.n_joints), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
         if self._reply_buf is not None:                                               # reply-frame DR (knob reply_dr): delay of 1-2 ticks, dropped frames hold the last delivered value
             if not self._reply_buf:
@@ -139,6 +156,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
     def _init_reply_dr(self) -> None:
         """Per-episode reply-frame DR (task knob ``reply_dr``, assumption A3): torque-noise multiplier x0.5-2, 1-2 tick delay, 5% dropped frames, all scaled by ``dr.scale``."""
         self._reply_mult, self._reply_buf = 1.0, None
+        self._mit_frame = self.task.param("mit_frame", 0.0) > 0.0                       # GIM3505-8 reply frame: direct quantised velocity, +-2 N.m torque field, one delay for the whole frame
         if self.task.param("reply_dr", 0.0) <= 0.0:
             return
         dr, s = self.cfg.dr, self.cfg.dr.scale
