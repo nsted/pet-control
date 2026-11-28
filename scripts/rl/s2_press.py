@@ -94,6 +94,10 @@ def main() -> int:
         ys.append(ry["Y"])
         yb.append(rb["Y"])
         print(f"{s.id:50s} mult {s.yield_mult} Y yieldPD {ry['Y']:.2f} Y bestPD {rb['Y']:.2f} return {ry['return']:.0f} vs {rb['return']:.0f}", flush=True)
+        for tag, r in (("yieldPD", ry), ("bestPD ", rb)):
+            pt = r["phase_terms"]
+            print(f"    {tag} load {r['load_mean_overload']:.2f} E_rec {r['E_rec']:.3f} sat {r['sat_joints_overload_max']} | track pre/during/post {pt.get('pre:track', 0):.0f}/{pt.get('during:track', 0):.0f}/{pt.get('post:track', 0):.0f} "
+                  f"yield_load {pt.get('during:yield_load', 0):.0f} bus {sum(v for k, v in pt.items() if 'bus' in k):.0f} rate {sum(v for k, v in pt.items() if 'action_rate' in k):.1f}", flush=True)
     print(f"mean Y: yield PD {np.mean(ys):.3f}  best PD {np.mean(yb):.3f}  (gate: yield PD >= 0.80, and >= best PD + 0.15)")
     Path("data/rl/s2/press_table.json").write_text(json.dumps({"table": table, "Y_yield_pd": float(np.mean(ys)), "Y_best_pd": float(np.mean(yb))}, indent=1))
     if len(table) < 2:

@@ -1,0 +1,28 @@
+decision-L2-head_lift-upright-yield-0              mult 1.2 Y yieldPD 0.56 Y bestPD 0.43 return -2294 vs -1154
+    yieldPD load 0.00 E_rec 0.088 sat 0 | track pre/during/post -10/-798/-1486 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.89 E_rec 0.025 sat 8 | track pre/during/post -10/-614/-424 yield_load -107 bus 0 rate 0.0
+decision-L2-head_lift-upright-yield-1              mult 1.6 Y yieldPD 0.88 Y bestPD 0.42 return -1443 vs -1000
+    yieldPD load 0.00 E_rec 0.024 sat 0 | track pre/during/post -5/-859/-579 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.92 E_rec 0.024 sat 5 | track pre/during/post -5/-594/-291 yield_load -111 bus 0 rate 0.0
+decision-L2-head_lift-upright-yield-2              mult 2.0 Y yieldPD 0.62 Y bestPD 0.40 return -1771 vs -1485
+    yieldPD load 0.00 E_rec 0.077 sat 0 | track pre/during/post -8/-763/-999 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.96 E_rec 0.024 sat 6 | track pre/during/post -8/-806/-556 yield_load -115 bus 0 rate 0.0
+decision-L2-arch_1-upright-yield-0                 mult 1.2 Y yieldPD 0.92 Y bestPD 0.58 return -253 vs -259
+    yieldPD load 0.00 E_rec 0.017 sat 0 | track pre/during/post -0/-84/-169 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.66 E_rec 0.019 sat 5 | track pre/during/post -0/-64/-115 yield_load -79 bus 0 rate 0.0
+decision-L2-arch_1-upright-yield-1                 mult 1.6 Y yieldPD 0.88 Y bestPD 0.11 return -116 vs -5296
+    yieldPD load 0.00 E_rec 0.023 sat 0 | track pre/during/post -0/-61/-54 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.79 E_rec 0.126 sat 6 | track pre/during/post -0/-123/-5078 yield_load -94 bus 0 rate 0.0
+decision-L2-arch_1-upright-yield-2                 mult 2.0 Y yieldPD 0.89 Y bestPD 0.06 return -116 vs -3732
+    yieldPD load 0.00 E_rec 0.022 sat 0 | track pre/during/post -0/-70/-45 yield_load -0 bus 0 rate -0.0
+    bestPD  load 0.87 E_rec 0.147 sat 5 | track pre/during/post -0/-89/-3539 yield_load -104 bus 0 rate 0.0
+decision-L2-arch_2-upright-yield-0                 mult 1.2 Y yieldPD 0.50 Y bestPD 0.16 return -2625 vs -4041
+    yieldPD load 0.00 E_rec 0.113 sat 0 | track pre/during/post -6/-198/-2421 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.68 E_rec 0.153 sat 6 | track pre/during/post -6/-159/-3794 yield_load -82 bus 0 rate 0.0
+decision-L2-arch_2-upright-yield-1                 mult 1.6 Y yieldPD 0.50 Y bestPD 0.42 return -3073 vs -512
+    yieldPD load 0.00 E_rec 0.117 sat 0 | track pre/during/post -5/-213/-2855 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.75 E_rec 0.040 sat 5 | track pre/during/post -5/-188/-229 yield_load -90 bus 0 rate 0.0
+decision-L2-arch_2-upright-yield-2                 mult 2.0 Y yieldPD 0.72 Y bestPD 0.31 return -772 vs -582
+    yieldPD load 0.00 E_rec 0.056 sat 0 | track pre/during/post -7/-301/-464 yield_load 0 bus 0 rate -0.0
+    bestPD  load 0.96 E_rec 0.042 sat 5 | track pre/during/post -7/-270/-190 yield_load -115 bus 0 rate 0.0
+mean Y: yield PD 0.719  best PD 0.321  (gate: yield PD >= 0.80, and >= best PD + 0.15)
