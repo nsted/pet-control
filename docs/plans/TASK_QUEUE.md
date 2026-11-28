@@ -31,7 +31,7 @@ Plan: `docs/plans/RL_RESTART_PLAN.md`. Scope: movements, navigation, environment
 | T23 | TODO | T19 | Start-state bank: settled upright / side / inverted, collapsed (S2 yield and press end states), post-gait end states (10 s of each library gait); cached and hashed |
 | T24 | TODO | T19,T23 | S3 hack tests (reuse the S1 1.12 harness): stand-still, limp, thrash, random from all 6 start types, abs(M) <= 0.05 and normalised return <= 0.05; moving-on-stop penalty test |
 | T25 | TODO | T19 | S3 env throughput at n = 11 with terrain, thermal, history, kp action: >= 2,000 steps/s with 10 envs, else profile |
-| T26 | DOING (after baseline rerun) | - | S2 yield diagnostic for the method review (scripts/rl/s2_yield_diag.py: yield PD + re-entry ramp, observed-torque trigger, 9 + 50 draws x 3 seeds, CIs), if not already queued |
+| T26 | DONE (result in METHOD_REVIEWS.md: cut confirmed, re-entry = S3/S4 start-state requirement) | - | S2 yield diagnostic |
 | T27 | BLOCKED (owner: S2 cut, S3 suites and thresholds) | T20,T22,T23 | Reviewer attacks STAGE_3_GATES_PROPOSAL.md; freeze the S3 suites (320 per level, decision / test) and turn the proposal into STAGE_3_GATES.md |
 | T28 | BLOCKED (owner, via T27) | T27,T21,T24 | S3 baselines on the frozen suites, then the teacher run (headroom 15%), the kp ablation pilots, then the RL pilot via launch_run.py |
 

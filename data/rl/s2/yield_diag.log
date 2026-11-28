@@ -1,0 +1,11 @@
+frozen decision draws (9 x 3 seeds): Y (0.7569369388999848, 0.6968543765938687, 0.8114624632933138) E_rec (0.05240995232542343, 0.03939515988933007, 0.06700782957381084) frac E_rec > 0.05: 0.33  mean load 0.000
+all draws (59 x 3 seeds): Y (0.7808864244957804, 0.7570466432943675, 0.8036261539742423) E_rec (0.05021111402535273, 0.04370459261494771, 0.05709121426194418) frac E_rec > 0.05: 0.29  mean load 0.001
+decision-L2-head_lift-upright-yield-0            Y 0.50 E_rec 0.123 load 0.00 return -5766 track pre/during/post -10/-910/-4847
+decision-L2-head_lift-upright-yield-1            Y 0.89 E_rec 0.022 load 0.00 return -3851 track pre/during/post -5/-839/-3007
+decision-L2-head_lift-upright-yield-2            Y 0.72 E_rec 0.057 load 0.00 return -4889 track pre/during/post -8/-1108/-3772
+decision-L2-arch_1-upright-yield-0               Y 0.50 E_rec 0.112 load 0.00 return -2932 track pre/during/post -0/-140/-2792
+decision-L2-arch_1-upright-yield-1               Y 0.89 E_rec 0.021 load 0.00 return -300 track pre/during/post -0/-59/-240
+decision-L2-arch_1-upright-yield-2               Y 0.92 E_rec 0.017 load 0.00 return -373 track pre/during/post -0/-82/-291
+decision-L2-arch_2-upright-yield-0               Y 0.76 E_rec 0.047 load 0.00 return -1703 track pre/during/post -6/-302/-1394
+decision-L2-arch_2-upright-yield-1               Y 0.80 E_rec 0.040 load 0.00 return -1739 track pre/during/post -5/-313/-1421
+decision-L2-arch_2-upright-yield-2               Y 0.84 E_rec 0.033 load 0.00 return -2687 track pre/during/post -7/-592/-2088
