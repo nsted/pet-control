@@ -55,7 +55,9 @@ class LocoCmd(Task):
 
     def arrange_start(self, sim: PetSim, rng: np.random.Generator) -> np.ndarray | None:
         """Start from a banked state (scenario ``start_state``: path of an npz with qpos / qvel, e.g. a collapsed or post-gait end state); None = the env's normal start (upright / ``start_orient``)."""
-        path = (self.options.get("scenario") or {}).get("start_state")
+        sc = self.options.get("scenario") or {}
+        self._tilt_floor(sim, sc.get("plant") or {})
+        path = sc.get("start_state")
         if not path:
             return None
         c = np.load(path)
@@ -67,6 +69,19 @@ class LocoCmd(Task):
         sim._last_target = sim.joint_pos().copy()
         return np.zeros(3)
 
+    @staticmethod
+    def _tilt_floor(sim: PetSim, plant: dict) -> None:
+        """Slope: rotate the floor plane about the origin by ``slope_deg`` about a horizontal axis at azimuth ``slope_az_rad`` (the robot is placed afterwards, so it settles on the slope)."""
+        deg = float(plant.get("slope_deg", 0.0))
+        if deg <= 0.0:
+            return
+        gid = int(np.flatnonzero(sim.model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE)[0])
+        a, az = np.radians(deg), float(plant.get("slope_az_rad", 0.0))
+        ax = np.array([-np.sin(az), np.cos(az), 0.0])                              # horizontal axis perpendicular to the downhill azimuth
+        sim.model.geom_quat[gid] = [np.cos(a / 2), *(np.sin(a / 2) * ax)]
+        mujoco.mj_setConst(sim.model, sim.data)                                  # static geoms are precomputed: without this the contacts keep the old plane
+        sim.reset()
+
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Pick (or read) the two command segments and start the window history."""
         sc = self.options.get("scenario")
@@ -74,6 +89,7 @@ class LocoCmd(Task):
             fams = [str(rng.choice(FAMILIES[:-1] if rng.random() > 0.15 else FAMILIES)) for _ in range(2)]
             sc = {"segments": [{"family": f, "cmd": command_of(f, rng).tolist()} for f in fams]}
         self.scenario = sc
+        self._apply_plant(sim, sc.get("plant") or {})
         self.segments = [np.asarray(s["cmd"], float) for s in sc["segments"]]
         self.seg_s = float(sc.get("seg_s", SEG_S))
         self.n = sim.p.n_modules
@@ -100,6 +116,18 @@ class LocoCmd(Task):
 
     def _push(self, sim: PetSim) -> None:
         self.hist.append(self._com_ang(sim))
+
+    def _apply_plant(self, sim: PetSim, pl: dict) -> None:
+        """Persistent plant draws of the scenario: mass scale, head mass, torque derate, joint friction, armature (floor friction, delay, noise, zeta and start temperature go through env knobs)."""
+        m = sim.model
+        if not pl:
+            return
+        m.body_mass[:] = m.body_mass * float(pl.get("mass", 1.0))
+        m.body_mass[sim.m0_id] *= float(pl.get("head_mass_x", 1.0))
+        m.actuator_forcerange[:] = m.actuator_forcerange * float(pl.get("derate", 1.0))
+        dofs = slice(6, 6 + sim.p.n_modules - 1)
+        m.dof_frictionloss[dofs] = m.dof_frictionloss[dofs] + float(pl.get("joint_friction_nm", 0.0))
+        m.dof_armature[dofs] = m.dof_armature[dofs] * float(pl.get("armature_x", 1.0))
 
     @property
     def cmd(self) -> np.ndarray:
