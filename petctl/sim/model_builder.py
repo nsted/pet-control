@@ -498,8 +498,9 @@ class PetSim:
         buf, ctrl, model, data, bus, mj_step = self._buf, self.data.ctrl, self.model, self.data, self.bus, mujoco.mj_step
         aniso = self.p.skin_aniso
         skin = self.skin if (self.skin is not None and aniso > 1.0) else None
-        if skin is None and self.skin is not None and self.skin.stride and data.xfrc_applied.any():
-            data.xfrc_applied[:] = 0.0                              # anisotropy switched off: clear the held force
+        if skin is None and self.skin is not None and self.skin.stride and getattr(self, "_skin_dirty", False):
+            data.xfrc_applied[:] = 0.0                              # anisotropy switched off: clear the force the skin left behind (NOT external forces: they used to be wiped here, which made every push a no-op)
+            self._skin_dirty = False
         for _ in range(max(1, int(round(seconds / self.p.dt)))):
             buf.append(tgt)
             if len(buf) > self._delay_steps:
@@ -509,6 +510,7 @@ class PetSim:
                 bus.before(model, data)
             if skin is not None:
                 skin.apply(aniso)
+                self._skin_dirty = True
             mj_step(model, data)
             if bus is not None:
                 bus.after(model, data)

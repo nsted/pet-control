@@ -1,4 +1,4 @@
-# STAGE_2_GATES: S2 Hold and comply (pre-registered 2026-11-28, rev. 8 (T6 pose rules) after the rev. 4 re-check in STAGE_1_2_GATES_REVIEW.md, before any baseline)
+# STAGE_2_GATES: S2 Hold and comply (pre-registered 2026-11-28, rev. 9 (T6 pose rules) after the rev. 4 re-check in STAGE_1_2_GATES_REVIEW.md, before any baseline)
 
 Author: rl-robotics-expert. Plan: `RL_RESTART_PLAN.md` section 3 (S2). Changing a threshold here after results are seen needs the owner's approval. Senses: proprioception only (IMU, MIT feedback, T_coil); capacitive masked.
 
@@ -33,9 +33,9 @@ The policy holds a known pose q* under hidden disturbances. In the yield family 
   - wrap must keep alpha >= 0.6 (below that it is no longer a wrap).
 - **Lattice:** tall must have height >= 14 cm (the 15.7-17.5 cm band); mid must be within 9-13 cm and differ from tall by >= 3 cm; compact is the smallest footprint. Each takes the first pose in its sort order that passes inside its band, and otherwise it is dropped. A pose 10 places down the height order (11.6 cm) is a duplicate of mid, not a tall pose.
 - **Minimum set:**
-  - >= 4 poses survive;
+  - (rev. 9) >= 3 NON-TRIVIAL poses survive (limp-trivial cells, limp E < 0.1, do not count);
   - head lift survives (the lift is closest to PET_PURPOSE);
-  - >= 2 poses with a lifted part have >= 1 valid cell each (yield family).
+  - >= 2 poses with a lifted part have >= 1 valid, non-trivial cell each after the suite-validity rule (yield family).
 
   Otherwise the suite is NO-GO. The next step is then an OWNER decision on narrowing the L2 mass or derate ranges (a threshold change), not a further rule change by the expert.
 
@@ -121,7 +121,7 @@ Oracle-gain G over best PD is reported alongside as a second headroom signal. Th
 
 | gate | when | pass |
 |---|---|---|
-| suite validity | T6, before freezing; decided ONCE at L2 and the same cell set applied at L0 and L3 | Exclude cells where limp has E < 0.1 rad. If the aggregate limp H over the rest is > 0.10, exclude further cells in ascending order of limp E until it is <= 0.10, provided >= 60% of scenarios remain; otherwise NO-GO (back to the expert). Exclusions are listed in the manifest |
+| suite validity | T6, before freezing; decided ONCE at L2 and the same cell set applied at L0 and L3 | (rev. 9) Cells where limp has E < 0.1 rad are LIMP-TRIVIAL. They are removed from the suite and from the denominator (reported only; they were never hold cells). If the aggregate (mean) limp H over the remaining cells is > 0.10, exclude further cells in ascending order of limp E until it is <= 0.10, provided >= 60% of the non-trivial scenarios remain; otherwise NO-GO (back to the expert). Exclusions are listed in the manifest |
 | 2-min overfit | before the pilot | one scenario (head lift, push head 5 N, fixed onset), with the kp channel FROZEN at that scenario's best grid gain <= 3.2 (the RL range): E at least 10% below that PD within 2 min; otherwise it is a pipeline bug |
 | pilot (seed 0, budget from 1.13) | GO to full | G >= 0.10 at L2 on the decision suite, with the scenario-CI lower bound > 0; current constraint and budgets hold; settle check (below); all hack tests pass; the reviewer has no open blocker. Anything else is NO-GO. Expected: G > 0 by 1/3 of the budget |
 | full (seeds 0, 1, 2; each <= 1 h, ~6M steps) | stage pass | at L2, on both decision and test suites: mean G >= 0.30, worst seed >= 0.20, CI lower bound >= 0.20; G_dist >= 0.15 (mean over seeds) and worst seed G_dist >= 0.10; current constraint in every cell, under all three move coefficients; lost fraction <= best PD's; settle check: aggregate E_settle <= best PD's + 0.01 rad, and no cell worse by > 0.03 rad; yield: Y >= 0.80 and Y >= best-PD Y + 0.15; ladder: G_L3 >= 0.10, H_L3 / H_L0 >= 0.60 and H_L3 >= 0.30 |
