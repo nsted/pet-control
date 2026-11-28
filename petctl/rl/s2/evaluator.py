@@ -13,6 +13,7 @@ from petctl.rl.config import EnvConfig
 from petctl.rl.env import PetEnv
 from petctl.rl.s2.ladder import FLOOR_FRICTION, realised_friction
 from petctl.rl.s2.scenario import S2Scenario
+from petctl.rl.s2.yieldload import load_of, yield_score
 
 EPISODE_S = 15.0
 LOST_RAD = 0.6
@@ -80,10 +81,15 @@ def run_scenario(sc: S2Scenario | dict[str, Any], policy: Policy, fixed_kp: floa
     act_rate = np.zeros(n)
     prev = None
     flips = 0
+    loads = np.zeros(n)
+    over = np.zeros(n, bool)
+    ret = 0.0
+    sat3 = np.zeros(n, int)
     for t in range(n):
         a = np.asarray(policy(obs, env, t), float)
         obs, r, term, trunc, info = env.step(a)
         assert not term, "S2 never terminates"
+        ret += float(r)
         e = (env.sim.joint_pos() - qs + np.pi) % (2 * np.pi) - np.pi
         err[t], tau[t], vel[t] = np.abs(e), np.abs(env.sim.joint_torque()), env.sim.joint_vel()
         cur_tick[t] = env._bus_means[-1]
@@ -91,6 +97,10 @@ def run_scenario(sc: S2Scenario | dict[str, Any], policy: Policy, fixed_kp: floa
         act_rate[t] = 0.0 if prev is None else float(np.mean((a - prev) ** 2))
         prev = a
         flips += int(env._up_dot() < env.cfg.flip_up_dot)
+        cap_eff = env.sim.model.actuator_forcerange[:, 1]
+        loads[t] = load_of(env.sim.joint_torque(), cap_eff)
+        over[t] = env.task.overload()
+        sat3[t] = int((np.abs(env.sim.joint_torque()) >= 0.95 * cap_eff).sum())
     assert trunc, "episode must be truncated at 15 s"
     on = int(round(d["onset_s"] / dt))
     dist_end = min(n, on + int(round(4.0 / dt)))
@@ -98,6 +108,8 @@ def run_scenario(sc: S2Scenario | dict[str, Any], policy: Policy, fixed_kp: floa
     lost_ticks = (err.max(axis=1) > LOST_RAD)
     return {"id": d["id"], "E": float(Em.mean()), "E_settle": float(Em[:on].mean()), "E_dist": float(Em[on:dist_end].mean()), "E_rec": float(Em[-int(1.0 / dt):].mean()),
             "lost": bool(lost_ticks.sum() * dt > 1.0), "flip_ticks": int(flips), "I_mean": float(cur_tick.mean()), "I_max_2s": float(cur_2s.max()), "I_peak_tick": float(cur_tick.max()),
+            "return": ret, "Y": yield_score(loads[over], float(Em[-int(1.0 / dt):].mean())) if over.any() else None, "load_mean_overload": float(loads[over].mean()) if over.any() else None,
+            "sat_joints_overload_max": int(sat3[over].max()) if over.any() else 0, "loaded_joints": [int(j) for j in np.argsort(-tau[over].mean(axis=0))[:3]] if over.any() else [],
             "chatter_vel_rms": float(np.sqrt(np.mean(vel[on:dist_end] ** 2))), "action_rate": float(act_rate.mean()), "tau_max": float(tau.max()), "applied": cfg_applied}
 
 

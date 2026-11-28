@@ -1,0 +1,71 @@
+{
+ "table": {
+  "head lift|upright": {
+   "press_n": 32.319140625,
+   "loaded_joints": [
+    1,
+    4,
+    3
+   ],
+   "best_pd": [
+    5.0,
+    2.0
+   ],
+   "sat_joints": 3
+  },
+  "arch 1|upright": {
+   "press_n": 60.0,
+   "loaded_joints": [
+    0,
+    9,
+    4
+   ],
+   "best_pd": [
+    5.0,
+    2.0
+   ],
+   "sat_joints": 0
+  },
+  "arch 1|right": {
+   "press_n": 60.0,
+   "loaded_joints": [
+    8,
+    4,
+    0
+   ],
+   "best_pd": [
+    5.0,
+    2.0
+   ],
+   "sat_joints": 0
+  },
+  "arch 2|upright": {
+   "press_n": 60.0,
+   "loaded_joints": [
+    2,
+    3,
+    1
+   ],
+   "best_pd": [
+    5.0,
+    2.0
+   ],
+   "sat_joints": 2
+  },
+  "lattice mid|upright": {
+   "press_n": 44.81640625,
+   "loaded_joints": [
+    1,
+    0,
+    2
+   ],
+   "best_pd": [
+    5.0,
+    2.0
+   ],
+   "sat_joints": 4
+  }
+ },
+ "Y_yield_pd": 0.7007969337168372,
+ "Y_best_pd": 0.5918247005460745
+}

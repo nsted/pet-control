@@ -25,7 +25,15 @@ MIT_VEL_Q_RAD_S = 2 * MIT_VEL_RANGE_RAD_S / 4096
 MIT_TORQUE_RANGE_NM = 2.0                # torque field +-2 N.m, 12 bit
 MIT_TORQUE_Q_NM = 2 * MIT_TORQUE_RANGE_NM / 4096
 
-KP_SCALE_BASE = 4.0       # action_mode 'delta_kp': kp = kp_ref * 4**a_kp with a_kp in [-1, 1] (scale 0.25..4); kd = kd_ref * sqrt(scale) * zeta_m (damping ratio tied to the stiffness)
+KP_SCALE_MIN, KP_SCALE_MAX = 0.25, 6.25   # action_mode 'delta_kp' (rev. 10): kp = kp_ref * scale with scale = MIN * (MAX / MIN) ** ((a_kp + 1) / 2), a_kp in [-1, 1]: kp 0.2 .. 5.0 N.m/rad at kp_ref 0.8 (was 0.2..3.2); kd = kd_ref * sqrt(scale) * zeta_m
+
+
+def kp_scale(a_kp: object) -> object:
+    """Stiffness scale of a kp action in [-1, 1] (exponential map between KP_SCALE_MIN and KP_SCALE_MAX)."""
+    import numpy as _np
+    return KP_SCALE_MIN * (KP_SCALE_MAX / KP_SCALE_MIN) ** ((_np.asarray(a_kp, float) + 1.0) / 2.0)
+
+
 ZETA_M_RANGE = (0.7, 1.4)  # per-episode damping multiplier (a DR parameter, not an action); 1 at dr.scale 0 and whenever the task knob ``zeta_m`` fixes it
 LOG_STD_RANGE = (-3.0, -1.0)  # PPO policy log_std is clamped to this range (owner accepted the -3 lower bound 2026-11-28; init -1, ent_coef 0)
 DELTA_STEP_RAD = 0.25     # action_mode 'delta': target change per tick for an action of +-1

@@ -17,10 +17,11 @@ import numpy as np
 from petctl.rl.config import EnvConfig
 from petctl.rl.s2.cells import CACHE_DIR, ORIENTS, cache_path
 from petctl.rl.s2.ladder import LEVELS
+from petctl.rl.s2.yieldload import load_of
 from petctl.rl.tasks.base import Task
 from petctl.sim.model_builder import PetSim
 
-W_TRACK, W_BUS_MEAN, W_BUS_PEAK, W_TCOIL, W_RATE = 1.0, 0.5, 0.5, 0.2, 0.05           # pre-registered starting weights (STAGE_2_GATES, Reward)
+W_TRACK, W_BUS_MEAN, W_BUS_PEAK, W_TCOIL, W_RATE, W_YIELD = 1.0, 0.5, 0.5, 0.2, 0.05, 1.0           # pre-registered starting weights (STAGE_2_GATES, Reward)
 TRACK_DEAD_RAD, TRACK_SCALE_RAD = 0.02, 0.05
 BUS_MEAN_A, BUS_PEAK_A = 4.0, 10.0
 T_KNEE_C = 80.0
@@ -144,4 +145,6 @@ class PoseHold(Task):
         prev = self._prev_full if self._prev_full is not None else np.zeros_like(a_full)
         out["action_rate"] = -W_RATE * float(np.mean((np.asarray(a_full) - prev) ** 2))
         self._prev_full = np.asarray(a_full, float).copy()
+        if self.overload():                                                       # yield load on OVERLOAD ticks only (privileged flag); true actuator force vs the derated cap
+            out["yield_load"] = -W_YIELD * load_of(sim.joint_torque(), sim.model.actuator_forcerange[:, 1])
         return out

@@ -13,7 +13,7 @@ from gymnasium import spaces
 from petctl.config import (GIM3505_HOLD_A_PER_NM2, GIM3505_IDLE_PER_MOTOR_A, GIM3505_MOVE_A_PER_NM2, GIM3505_MOVE_OMEGA0_RAD_S, GIM3505_V_TEST, REGIMEN_BUS_MEAN_A,
                           REGIMEN_BUS_PEAK_A)
 from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
-from petctl.rl.config import BUS_A_PER_NM2, KP_SCALE_BASE, ZETA_M_RANGE, MIT_TORQUE_Q_NM, MIT_TORQUE_RANGE_NM, MIT_VEL_Q_RAD_S, MIT_VEL_RANGE_RAD_S, EnvConfig
+from petctl.rl.config import BUS_A_PER_NM2, ZETA_M_RANGE, kp_scale, MIT_TORQUE_Q_NM, MIT_TORQUE_RANGE_NM, MIT_VEL_Q_RAD_S, MIT_VEL_RANGE_RAD_S, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.hold_diag import TORQUE_FRAC, HoldBreakTracker
 from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
@@ -494,7 +494,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             pre(self.sim, self._t * self.dt)
         if c.action_mode == "delta_kp":                                                  # per-joint stiffness from the kp channels, kd tied to it (damping ratio fixed per episode)
             fixed = self.task.param("fixed_kp", 0.0)
-            scale = KP_SCALE_BASE ** a_full[c.n_joints:] if fixed <= 0.0 else np.full(c.n_joints, fixed / float(np.mean(self._kp_ref)))     # knob fixed_kp: scripted PD baselines (the kp channels are ignored, any kp)
+            scale = kp_scale(a_full[c.n_joints:]) if fixed <= 0.0 else np.full(c.n_joints, fixed / float(np.mean(self._kp_ref)))     # knob fixed_kp: scripted PD baselines (the kp channels are ignored, any kp)
             self.sim.set_gains(self._kp_ref * scale, self._kd_ref * np.sqrt(scale) * self._zeta_m)
         self.sim.step(self._tgt, self.dt)
         if self.thermal is not None:                                                     # heat from the applied torque, then derate the cap for the next tick

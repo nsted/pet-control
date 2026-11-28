@@ -8,7 +8,7 @@ pytest.importorskip("gymnasium")
 pytest.importorskip("mujoco")
 torch = pytest.importorskip("torch")
 
-from petctl.rl.config import EnvConfig  # noqa: E402
+from petctl.rl.config import EnvConfig, kp_scale  # noqa: E402
 from petctl.rl.env import PetEnv  # noqa: E402
 from petctl.rl.logstd import clamp_log_std  # noqa: E402
 
@@ -38,11 +38,11 @@ def test_kp_channel_maps_to_scale_and_kd_is_tied() -> None:
     a[NJ:] = np.linspace(-1, 1, NJ)
     env.step(a)
     kp, kd = env.sim.gains()
-    s = 4.0 ** np.linspace(-1, 1, NJ)
+    s = kp_scale(np.linspace(-1, 1, NJ))
     assert np.allclose(kp, kp0 * s) and np.allclose(kd, kd0 * np.sqrt(s))
     a[NJ:] = 7.0                                              # kp channel is clipped to [-1, 1]
     env.step(a)
-    assert np.allclose(env.sim.gains()[0], kp0 * 4.0)
+    assert np.allclose(env.sim.gains()[0], kp0 * 6.25)
 
 
 def test_zeta_is_an_episode_parameter() -> None:
