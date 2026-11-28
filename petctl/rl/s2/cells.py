@@ -81,11 +81,11 @@ def _apply_orient(sim: Any, code: int) -> None:
     mujoco.mj_forward(sim.model, sim.data)
 
 
-def enter(sim: Any, pose: Pose, orient: int, settle_s: float = 4.0) -> list[np.ndarray]:
+def enter(sim: Any, pose: Pose, orient: int, settle_s: float = 4.0, kp: float = REF_KP) -> list[np.ndarray]:
     """Scripted entry with the nominal PD (the sim's own gains) and a settle; returns the joint-error samples (rad, per control tick) of the settle phase."""
     q = pose.q
     kp0, kd0 = sim.gains()
-    sim.set_gains(kp0 * 0 + REF_KP, kd0 * 0 + kd0.mean() * math.sqrt(REF_KP / kp0.mean()) * REF_ZETA)       # reference PD (rev. 6): kp 3.2, zeta_m 1, kd = kd_ref sqrt(kp / kp_ref)
+    sim.set_gains(kp0 * 0 + kp, kd0 * 0 + kd0.mean() * math.sqrt(kp / kp0.mean()) * REF_ZETA)       # reference PD (rev. 6): kp 3.2, zeta_m 1, kd = kd_ref sqrt(kp / kp_ref)
     try:
         return _enter(sim, pose, q, orient, settle_s)
     finally:
@@ -122,14 +122,40 @@ def tau_peak(sim: Any) -> float:
     return float(getattr(sim, "_s2_tau", np.abs(sim.joint_torque()).max()))
 
 
+ENTRY_KP = 0.8                       # rev. 8: the scripted entry uses the nominal kp 0.8
+DROP_RAD = 0.3                       # a cell is dropped when its measured q* is more than this from the commanded shape on any joint (it never reached the pose)
+
+
+def enter_two_phase(sim: Any, pose: Pose, orient_name: str, qstar: np.ndarray | None = None) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Rev. 8 cell procedure: entry with the stored vector at kp 0.8 and a 4 s settle; q* = the measured joint angles (or the given frozen ``qstar``); then 4 s more on q* with the reference PD
+    (kp 3.2, zeta 1), which removes the contact preload. Returns (q*, joint-error samples against q* of the second settle). The sim is left in the cached state."""
+    enter(sim, pose, ORIENTS[orient_name], kp=ENTRY_KP)
+    qs = sim.joint_pos().copy() if qstar is None else np.asarray(qstar, float)
+    kp0, kd0 = sim.gains()
+    sim.set_gains(kp0 * 0 + REF_KP, kd0 * 0 + kd0.mean() * math.sqrt(REF_KP / kp0.mean()) * REF_ZETA)
+    errs, n = [], int(4.0 / DT)
+    sim._s2_tau = 0.0
+    try:
+        for i in range(n):
+            sim.step(qs, DT)
+            errs.append(np.abs(sim.joint_pos() - qs))
+            if i >= n - int(2.0 / DT):
+                sim._s2_tau = max(sim._s2_tau, float(np.abs(sim.joint_torque()).max()))
+    finally:
+        sim.set_gains(kp0, kd0)
+    return qs, errs
+
+
 def settle_cell(pose: Pose, orient_name: str, sim: Any | None = None) -> dict[str, Any]:
-    """Enter and settle one cell with the nominal PD; returns the cached state and its validity numbers."""
+    """Nominal-plant cell: q*, cached state, E / tau_peak against q*, and validity (E < 0.1, no loss, q* within 0.3 rad of the commanded shape)."""
     sim = sim or build_sim(N_MODULES)
-    errs = enter(sim, pose, ORIENTS[orient_name])
-    e_last = np.array(errs[-20:])                                          # last second
+    qs, errs = enter_two_phase(sim, pose, orient_name)
+    e_last = np.array(errs[-20:])
     E = float(e_last.mean())
-    lost = bool(np.array(errs).max() > LOST_RAD and (np.array(errs).max(axis=1) > LOST_RAD).sum() * DT > 1.0 and e_last.max() > LOST_RAD)
-    return {"qpos": sim.data.qpos.copy(), "qvel": sim.data.qvel.copy(), "E": E, "lost": lost, "valid": bool(E < VALID_E_RAD and not lost), "tau_peak": tau_peak(sim)}
+    lost = bool(e_last.max() > LOST_RAD)
+    reached = bool(np.abs(qs - pose.q).max() <= DROP_RAD)
+    return {"qstar": qs, "qpos": sim.data.qpos.copy(), "qvel": sim.data.qvel.copy(), "E": E, "lost": lost, "reached": reached, "valid": bool(E < VALID_E_RAD and not lost and reached),
+            "tau_peak": tau_peak(sim), "head_z": head_z(sim)}
 
 
 def head_z(sim: Any) -> float:
@@ -137,7 +163,7 @@ def head_z(sim: Any) -> float:
     return float(sim.data.xipos[sim.m0_id, 2])
 
 
-def corner_check(pose: Pose, orient_name: str, sim: Any, head_mass_x: float = 1.0) -> tuple[bool, float, float]:
+def corner_check(pose: Pose, orient_name: str, sim: Any, qstar: np.ndarray, head_mass_x: float = 1.0) -> tuple[bool, float, float]:
     """Holdability of one cell at the L2 DR corner (mass x1.2, derate 0.8; rev. 7: head mass x2 is a load-family disturbance, only ``head_mass_x=2`` as a stress) with the reference PD: (ok, tau_peak, E).
     ok = tau_peak (last 2 s of the settle) <= 0.8 x cap_eff and no loss."""
     m = sim.model
@@ -146,7 +172,7 @@ def corner_check(pose: Pose, orient_name: str, sim: Any, head_mass_x: float = 1.
         m.body_mass[:] = mass0 * L2_WORST["mass"]
         m.body_mass[sim.m0_id] = mass0[sim.m0_id] * L2_WORST["mass"] * head_mass_x
         m.actuator_forcerange[:] = fr0 * L2_WORST["derate"]
-        errs = enter(sim, pose, ORIENTS[orient_name])
+        _, errs = enter_two_phase(sim, pose, orient_name, qstar)
         cap_eff = float(m.actuator_forcerange[:, 1].min())
         tp, E = tau_peak(sim), float(np.array(errs[-20:]).mean())
         return bool(tp <= HOLD_TAU_FRAC * cap_eff and float(np.array(errs[-20:]).max()) < LOST_RAD), tp, E
@@ -158,10 +184,10 @@ def corner_check(pose: Pose, orient_name: str, sim: Any, head_mass_x: float = 1.
 def cell_report(pose: Pose, orient_name: str, sim: Any) -> dict[str, Any]:
     """Validity (nominal plant: E < 0.1, no loss) and holdability (L2 corner) of one cell."""
     nom = settle_cell(pose, orient_name, sim)
-    ok, tp, Ec = corner_check(pose, orient_name, sim)
-    _, tps, Es = corner_check(pose, orient_name, sim, head_mass_x=L2_WORST["head_mass"])
+    ok, tp, Ec = corner_check(pose, orient_name, sim, nom["qstar"])
+    _, tps, Es = corner_check(pose, orient_name, sim, nom["qstar"], head_mass_x=L2_WORST["head_mass"])
     return {"tau_peak_stress": tps, "E_stress": Es, "pose": pose.name, "orient": orient_name, "E_nominal": nom["E"], "lost_nominal": nom["lost"], "tau_peak_nominal": nom["tau_peak"], "tau_peak_corner": tp, "E_corner": Ec,
-            "holdable": ok, "head_z": head_z(sim), "valid": bool(nom["valid"] and ok)}
+            "holdable": ok, "reached": nom["reached"], "head_z": nom["head_z"], "qstar": [float(x) for x in nom["qstar"]], "valid": bool(nom["valid"] and ok)}
 
 
 HEAD_LIFT_MIN_GAIN_M = 0.05
