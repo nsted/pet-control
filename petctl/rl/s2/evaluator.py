@@ -49,10 +49,10 @@ def applied_config(env: PetEnv) -> dict[str, float]:
             "zeta_m": float(env._zeta_m), "start_t_coil": float(env.thermal.temp.mean()) if env.thermal is not None else float("nan"), "gravity_z": float(m.opt.gravity[2])}
 
 
-def assert_applied(sc: dict[str, Any], a: dict[str, float], mass0: float, cap0: float, zeta: float = 1.0) -> None:
+def assert_applied(sc: dict[str, Any], a: dict[str, float], mass0: float, cap0: float, zeta: float = 1.0, thermal_derate: float = 1.0) -> None:
     """Fail loudly when a scenario's configuration did not reach the sim (floor friction below 1.0 is NOT realised until T12: the realised value is asserted instead)."""
     pl = sc["plant"]
-    chk = [("floor_geom_friction", float(pl["friction"]), 1e-6), ("mass_total", mass0 * float(pl["mass"]), 1e-3 * mass0), ("cap_nm", cap0 * float(pl["derate"]), 1e-6), ("reply_delay_ticks", float(pl["delay_ticks"]), 0.0),
+    chk = [("floor_geom_friction", float(pl["friction"]), 1e-6), ("mass_total", mass0 * float(pl["mass"]), 1e-3 * mass0), ("cap_nm", cap0 * float(pl["derate"]) * thermal_derate, 1e-6), ("reply_delay_ticks", float(pl["delay_ticks"]), 0.0),
            ("reply_noise_mult", float(pl["noise_mult"]), 1e-9), ("zeta_m", float(zeta), 1e-9), ("start_t_coil", float(pl["start_t_coil"]), 1e-6)]
     for k, want, tol in chk:
         if abs(a[k] - want) > tol + 1e-12:
@@ -70,7 +70,7 @@ def run_scenario(sc: S2Scenario | dict[str, Any], policy: Policy, fixed_kp: floa
     cfg_applied = applied_config(env)
     if check:
         # nominal references for the assertions: the unscaled model values captured by the task
-        assert_applied(d, cfg_applied, float(env.task._mass0.sum()), float(env.task._fr0[:, 1].mean()), zeta)
+        assert_applied(d, cfg_applied, float(env.task._mass0.sum()), float(env.task._fr0[:, 1].mean()), zeta, float(env.thermal.derating().mean()) if env.thermal is not None else 1.0)
     dt, n = env.dt, env.max_steps
     err = np.zeros((n, NJ))
     tau = np.zeros((n, NJ))
