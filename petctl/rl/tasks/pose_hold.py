@@ -21,7 +21,8 @@ from petctl.rl.s2.yieldload import load_of
 from petctl.rl.tasks.base import Task
 from petctl.sim.model_builder import PetSim
 
-W_TRACK, W_BUS_MEAN, W_BUS_PEAK, W_TCOIL, W_RATE, W_YIELD = 1.0, 0.5, 0.5, 0.2, 0.05, 1.0           # pre-registered starting weights (STAGE_2_GATES, Reward)
+W_TRACK, W_BUS_MEAN, W_BUS_PEAK, W_TCOIL, W_RATE, W_YIELD = 1.0, 0.5, 0.5, 0.2, 0.05, 2.0       # rev. 10 re-weight (once): yield load 2.0
+W_TRACK_OVERLOAD = 0.05                                                                          # rev. 10: tracking weight on overload ticks (all joints)           # pre-registered starting weights (STAGE_2_GATES, Reward)
 TRACK_DEAD_RAD, TRACK_SCALE_RAD = 0.02, 0.05
 BUS_MEAN_A, BUS_PEAK_A = 4.0, 10.0
 T_KNEE_C = 80.0
@@ -80,9 +81,15 @@ class PoseHold(Task):
         self._sc = sc
         self._lv = LEVELS[sc["level"]]
         n = sim.p.n_modules
-        self._body = {"head": sim.m0_id, "mid": sim.m0_id + n // 2, "tail-1": sim.m0_id + n - 2}[sc["body"]]
+        self._body = {"head": sim.m0_id, "mid": sim.m0_id + n // 2, "tail-1": sim.m0_id + n - 2, "apex": sim.m0_id}[sc["body"]]
         self._on = False
         self._prev_full = None
+        self.cap_factor = 1.0                                                      # family 'derate' multiplier on the torque cap (read by the env each tick)
+        self.policy_cap = 1.0                                                      # scripted yield policies: cap fraction while yielding
+        z = sim.data.xipos[sim.m0_id:sim.m0_id + n, 2]
+        self.apex_body = sim.m0_id + int(np.argmax(z))                              # highest module of the cached pose: where the yield press acts
+        if sc["family"] == "yield":
+            self._body = self.apex_body
         self.onset_s, self.end_s = float(sc["onset_s"]), float(sc["onset_s"]) + float(sc["duration_s"])
         if self.q_star is None or not np.any(self.q_star) and sc["pose"] != "straight":
             raise RuntimeError("q* not loaded")
@@ -123,7 +130,8 @@ class PoseHold(Task):
             elif fam == "load" and sc["load_kind"] == "head_mass":
                 m.body_mass[self._body] = self._mass0[self._body] * float(sc["plant"].get("mass", 1.0)) * (1 + sc["mag"] * (self._lv.head_mass[1] - 1)) if on else self._mass0[self._body] * float(sc["plant"].get("mass", 1.0))
             elif fam == "derate":
-                m.actuator_forcerange[:] = self._fr0 * float(sc["plant"].get("derate", 1.0)) * (sc["derate_x"] if on else 1.0)
+                self.cap_factor = float(sc["derate_x"]) if on else 1.0
+                m.actuator_forcerange[:] = self._fr0 * float(sc["plant"].get("derate", 1.0)) * self.cap_factor
             self._on = on
 
     # ------------------------------------------------------------------ reward
@@ -134,7 +142,7 @@ class PoseHold(Task):
     def reward(self, sim: PetSim, action: np.ndarray, prev_action: np.ndarray) -> tuple[float, dict[str, float]]:
         """Tracking cost on the wrapped joint error (every tick, settle included)."""
         e = np.abs((sim.joint_pos() - self.q_star + np.pi) % (2 * np.pi) - np.pi)
-        track = -W_TRACK * float(np.mean((np.maximum(e - TRACK_DEAD_RAD, 0.0) / TRACK_SCALE_RAD) ** 2))
+        track = -(W_TRACK_OVERLOAD if self.overload() else W_TRACK) * float(np.mean((np.maximum(e - TRACK_DEAD_RAD, 0.0) / TRACK_SCALE_RAD) ** 2))
         return track, {"track": track}
 
     def reward_extra(self, sim: PetSim, a_full: np.ndarray, prev_action: np.ndarray, st: dict[str, Any]) -> dict[str, float]:
@@ -146,5 +154,5 @@ class PoseHold(Task):
         out["action_rate"] = -W_RATE * float(np.mean((np.asarray(a_full) - prev) ** 2))
         self._prev_full = np.asarray(a_full, float).copy()
         if self.overload():                                                       # yield load on OVERLOAD ticks only (privileged flag); true actuator force vs the derated cap
-            out["yield_load"] = -W_YIELD * load_of(sim.joint_torque(), sim.model.actuator_forcerange[:, 1])
+            out["yield_load"] = -W_YIELD * load_of(sim.joint_torque(), st.get("cap_eff", sim.model.actuator_forcerange[:, 1]))
         return out

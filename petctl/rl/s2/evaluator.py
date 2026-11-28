@@ -97,7 +97,7 @@ def run_scenario(sc: S2Scenario | dict[str, Any], policy: Policy, fixed_kp: floa
         act_rate[t] = 0.0 if prev is None else float(np.mean((a - prev) ** 2))
         prev = a
         flips += int(env._up_dot() < env.cfg.flip_up_dot)
-        cap_eff = env.sim.model.actuator_forcerange[:, 1]
+        cap_eff = env.cap_eff()
         loads[t] = load_of(env.sim.joint_torque(), cap_eff)
         over[t] = env.task.overload()
         sat3[t] = int((np.abs(env.sim.joint_torque()) >= 0.95 * cap_eff).sum())

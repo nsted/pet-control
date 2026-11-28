@@ -1,50 +1,11 @@
 {
  "table": {
   "head lift|upright": {
-   "press_n": 32.319140625,
+   "press_n": 31.384765625000007,
    "loaded_joints": [
-    1,
-    4,
-    3
-   ],
-   "best_pd": [
-    5.0,
-    2.0
-   ],
-   "sat_joints": 3
-  },
-  "arch 1|upright": {
-   "press_n": 60.0,
-   "loaded_joints": [
-    0,
-    9,
-    4
-   ],
-   "best_pd": [
-    5.0,
-    2.0
-   ],
-   "sat_joints": 0
-  },
-  "arch 1|right": {
-   "press_n": 60.0,
-   "loaded_joints": [
-    8,
-    4,
-    0
-   ],
-   "best_pd": [
-    5.0,
-    2.0
-   ],
-   "sat_joints": 0
-  },
-  "arch 2|upright": {
-   "press_n": 60.0,
-   "loaded_joints": [
-    2,
     3,
-    1
+    1,
+    2
    ],
    "best_pd": [
     5.0,
@@ -52,20 +13,33 @@
    ],
    "sat_joints": 2
   },
-  "lattice mid|upright": {
-   "press_n": 44.81640625,
+  "arch 1|upright": {
+   "press_n": 27.880859375,
    "loaded_joints": [
-    1,
-    0,
-    2
+    4,
+    5,
+    8
    ],
    "best_pd": [
     5.0,
     2.0
    ],
-   "sat_joints": 4
+   "sat_joints": 2
+  },
+  "arch 2|upright": {
+   "press_n": 40.8453125,
+   "loaded_joints": [
+    8,
+    6,
+    9
+   ],
+   "best_pd": [
+    5.0,
+    2.0
+   ],
+   "sat_joints": 2
   }
  },
- "Y_yield_pd": 0.7007969337168372,
- "Y_best_pd": 0.5918247005460745
+ "Y_yield_pd": 0.7186009675998952,
+ "Y_best_pd": 0.3208457028384649
 }

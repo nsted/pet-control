@@ -1,4 +1,4 @@
-# STAGE_2_GATES: S2 Hold and comply (pre-registered 2026-11-28, rev. 9 (T6 pose rules) after the rev. 4 re-check in STAGE_1_2_GATES_REVIEW.md, before any baseline)
+# STAGE_2_GATES: S2 Hold and comply (pre-registered 2026-11-28, rev. 10 (yield recipe) after the rev. 4 re-check in STAGE_1_2_GATES_REVIEW.md, before any baseline)
 
 Author: rl-robotics-expert. Plan: `RL_RESTART_PLAN.md` section 3 (S2). Changing a threshold here after results are seen needs the owner's approval. Senses: proprioception only (IMU, MIT feedback, T_coil); capacitive masked.
 
@@ -51,7 +51,7 @@ The policy holds a known pose q* under hidden disturbances. In the yield family 
 | tilt | gravity rotated about a random horizontal axis | 2 |
 | derate | torque cap scaled | 1 |
 | none | no disturbance | 1 |
-| yield | overload at 1.2, 1.6 and 2.0 x the press that saturates >= 3 joints under the L2 best PD (best PD selected on the NON-yield scenarios first, then the press calibrated; one press per cell, used at every level; frozen in yield section B, see Two-phase freeze); only on cells with a lifted part (head lift, lattice tall, lattice mid), so that yielding lets the floor carry the press | 3 |
+| yield | (rev. 10) a downward world-frame press on the cell's APEX module (the highest module at q*, not the head), at 1.2, 1.6 and 2.0 x F_sat. F_sat is the smallest force (bisection over 0.2-60 N, nominal plant) at which the L2 best PD has >= 2 joints at >= 0.95 x cap_eff during the overload. Cells where no F_sat <= 60 N exists are DROPPED from the yield family and listed. Best PD is selected on the NON-yield scenarios first, then the press is calibrated; one press per cell, used at every level; frozen in yield section B. Yield needs >= 2 cells, else back to the expert | 3 |
 
 - Suite size: decision and test suites are built from this recipe with disjoint seeds, about 320 scenarios each per level.
 - **Training mix:** push 0.20, shove 0.15, load 0.15, tilt 0.15, derate 0.10, yield 0.15, none 0.10. "Double yield" means yield 0.30, with the others scaled down in proportion. Training samples ONLY valid, non-excluded cells (the suite-validity set).
@@ -105,7 +105,7 @@ Evaluation always uses zeta_m = 1.
 ## Baselines
 
 1. **T8 (`pose_hold_baseline.py`) is a headroom preview only.** It runs in a different plant (no env pipeline, unwrapped error, other grid). Its numbers are never a gate denominator.
-2. **Gate baseline (T14):** zero-delta PD through the frozen PetEnv evaluator, after 1.10 passes, on the L0, L2 and L3 decision and test suites. Grid: kp in {0.2, 0.4, 0.8, 1.6, 3.2, 5.0} N.m/rad x zeta_m in {0.5, 1, 2}, with kd = kd_ref sqrt(kp / kp_ref), giving 18 configs. Unstable configs are recorded. RL can reach at most kp 3.2, so keeping 5.0 in the grid is conservative.
+2. **Gate baseline (T14):** zero-delta PD through the frozen PetEnv evaluator, after 1.10 passes, on the L0, L2 and L3 decision and test suites. Grid: kp in {0.2, 0.4, 0.8, 1.6, 3.2, 5.0} N.m/rad x zeta_m in {0.5, 1, 2}, with kd = kd_ref sqrt(kp / kp_ref), giving 18 configs. Unstable configs are recorded. Since rev. 10 the RL kp range is 0.2-5.0, so the policy can reach every grid gain.
 3. **References (not gates):**
    - oracle-gain PD: the best config per scenario;
    - a scripted PI: a target-offset integrator on best PD. If G comes only from integral action, it is labelled as such.
@@ -122,7 +122,7 @@ Oracle-gain G over best PD is reported alongside as a second headroom signal. Th
 | gate | when | pass |
 |---|---|---|
 | suite validity | T6, before freezing; decided ONCE at L2 and the same cell set applied at L0 and L3 | (rev. 9) Cells where limp has E < 0.1 rad are LIMP-TRIVIAL. They are removed from the suite and from the denominator (reported only; they were never hold cells). If the aggregate (mean) limp H over the remaining cells is > 0.10, exclude further cells in ascending order of limp E until it is <= 0.10, provided >= 60% of the non-trivial scenarios remain; otherwise NO-GO (back to the expert). Exclusions are listed in the manifest |
-| 2-min overfit | before the pilot | one scenario (head lift, push head 5 N, fixed onset), with the kp channel FROZEN at that scenario's best grid gain <= 3.2 (the RL range): E at least 10% below that PD within 2 min; otherwise it is a pipeline bug |
+| 2-min overfit | before the pilot | one scenario (head lift, push head 5 N, fixed onset), with the kp channel FROZEN at that scenario's best grid gain: E at least 10% below that PD within 2 min; otherwise it is a pipeline bug |
 | pilot (seed 0, budget from 1.13) | GO to full | G >= 0.10 at L2 on the decision suite, with the scenario-CI lower bound > 0; current constraint and budgets hold; settle check (below); all hack tests pass; the reviewer has no open blocker. Anything else is NO-GO. Expected: G > 0 by 1/3 of the budget |
 | full (seeds 0, 1, 2; each <= 1 h, ~6M steps) | stage pass | at L2, on both decision and test suites: mean G >= 0.30, worst seed >= 0.20, CI lower bound >= 0.20; G_dist >= 0.15 (mean over seeds) and worst seed G_dist >= 0.10; current constraint in every cell, under all three move coefficients; lost fraction <= best PD's; settle check: aggregate E_settle <= best PD's + 0.01 rad, and no cell worse by > 0.03 rad; yield: Y >= 0.80 and Y >= best-PD Y + 0.15; ladder: G_L3 >= 0.10, H_L3 / H_L0 >= 0.60 and H_L3 >= 0.30 |
 | student vs teacher | after full | if the student's G is > 20% below the teacher's, teacher-student (RMA) goes to a method review |
@@ -144,12 +144,12 @@ A failure is NO-GO for the pilot.
 | partial drop: best PD with the lifted joints' targets moved 0.3 rad toward the floor | return-ordering test below |
 | one joint pinned: on yield cells, all lifted joints relaxed (kp 0.2) except the most loaded one, held at >= 0.95 x cap through the overload | Y <= 0.70 |
 | redistribute: on yield cells, PD with best PD's 3 most-loaded joints at kp 0.2 and the rest at 5.0 | Y <= 0.50 |
-| max kp at 3.2 and at 5.0 (a = 0) | Y <= 0.50 |
+| max kp at 5.0 (a = 0) | Y <= 0.50 |
 | kp 5 PD with the cap scaled to 0.94 | Y <= 0.50 |
 
 **Return ordering (reward side):** best PD must earn a higher training return than each of stand-still (when its gains differ from best PD), limp, thrash, random, sag, pre-lean and partial drop, on 1,000 L2 training draws. Otherwise the reward is NO-GO.
 
-**Yield PD check (feasibility of the yield gate and the reward), at T14 before section B is frozen:** a scripted "yield PD" uses the L2 best PD, with the lifted joints at kp 0.2 while the privileged overload flag is on, then back to the best gains. It must:
+**Yield PD check (feasibility of the yield gate and the reward), at T14 before section B is frozen:** a scripted "yield PD" (rev. 10) uses the L2 best PD. While the privileged overload flag is on, the torque of EVERY joint is capped at 0.5 x cap_eff (torque-limited compliance, not a limp joint); afterwards it returns to the full cap. It must:
 - reach Y >= 0.80 on the L2 yield decision scenarios;
 - earn a higher training return than best PD on 1,000 L2 yield training draws.
 
@@ -167,13 +167,13 @@ If Y < 0.80, the yield gate is not reachable even by a privileged scripted yield
 
 | term | per-tick cost | weight |
 |---|---|---|
-| tracking | mean_j (max(abs(e_j) - 0.02, 0) / 0.05)^2; every tick, settle included | 1.0 |
+| tracking | mean_j (max(abs(e_j) - 0.02, 0) / 0.05)^2; every tick, settle included | 1.0; 0.05 on overload ticks (rev. 10 re-set) |
 | bus mean | ((I_2s - 4 A) / 1 A)^2 above 4 A | 0.5 |
 | bus peak | ((I_tick - 10 A) / 1 A)^2 above 10 A | 0.5 |
 | T_coil | ((T - knee) / 10 degC)^2 above the knee | 0.2 |
 | action rate | mean (a_t - a_{t-1})^2 | 0.05 |
 | current reference | ((I_2s - thr) / 0.5 A)^2 above thr | 0.3 |
-| yield load | the same load function as Y, on OVERLOAD ticks only | 1.0 |
+| yield load | the same load function as Y, on OVERLOAD ticks only | 2.0 (rev. 10 re-set) |
 
 The current-reference threshold, per (cell, family), is thr = 1.05 x (the 99.5th percentile, over >= 200 L2 training draws, of best PD's 2 s running mean) + 0.05 A. It is cached at T14 and is not applied in yield scenarios.
 

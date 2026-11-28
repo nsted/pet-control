@@ -1,7 +1,7 @@
 """T14 (yield part): calibrate the press per yield cell, then run the yield-PD feasibility check (STAGE_2_GATES, Yield PD check). Dry run unless --write (section B is write-once).
 
-Press = the smallest downward force on the head at which the L2 best PD of the cell saturates (|tau| >= 0.95 x derated cap) at least 3 joints during the overload. The yield PD (best PD, the 3 loaded joints at kp 0.2
-while the privileged overload flag is on) must reach Y >= 0.80 on the L2 decision yield draws.
+Press (rev. 10) = the smallest downward world-frame force on the cell's APEX module (highest module at q*) at which the L2 best PD saturates (|tau| >= 0.95 x derated cap) at least 2 joints during the overload;
+cells with no such force <= 60 N leave the yield family (>= 2 cells needed). The scripted yield PD (best PD; every joint's torque capped at 0.5 x cap while the overload flag is on) must reach Y >= 0.80 on the L2 decision yield draws.
 
     python scripts/rl/s2_press.py [--write]
 """
@@ -42,23 +42,21 @@ def best_pd(cell: tuple[str, str]) -> tuple[float, float]:
     return float(kp), float(z)
 
 
-def yield_policy(kp: float, loaded: list[int], kp_low: float = 0.2):
-    """Best PD gains through the kp channels; the loaded joints drop to ``kp_low`` while the overload flag is on."""
+def yield_policy(kp: float, loaded: list[int] | None = None, cap_frac: float = 0.5):
+    """Rev. 10 scripted yield PD: best PD gains through the kp channels; while the privileged overload flag is on EVERY joint's torque is capped at ``cap_frac`` x the effective cap, full cap afterwards."""
     base = a_of_kp(kp)
-    low = a_of_kp(kp_low)
 
     def pol(obs, env, t):
         a = np.zeros(2 * NJ)
         a[NJ:] = base
-        if env.task.overload():
-            a[NJ + np.array(loaded)] = low
+        env.task.policy_cap = cap_frac if env.task.overload() else 1.0
         return a
     return pol
 
 
 def scenario(cell: tuple[str, str], press: float, mult: float = 1.0, level: str = "L2") -> dict:
     """A nominal-plant yield scenario at ``mult`` x ``press`` (calibration only; the frozen draws come from the suite)."""
-    return {"id": f"press-{cell[0]}-{cell[1]}-{press:.2f}", "split": "decision", "level": level, "pose": cell[0], "orient": cell[1], "family": "yield", "seed": 7, "onset_s": 4.0, "duration_s": 3.0, "body": "head",
+    return {"id": f"press-{cell[0]}-{cell[1]}-{press:.2f}", "split": "decision", "level": level, "pose": cell[0], "orient": cell[1], "family": "yield", "seed": 7, "onset_s": 4.0, "duration_s": 3.0, "body": "apex",
             "axis": "-z", "mag": 1.0, "tilt_axis_deg": 0.0, "load_kind": "force", "derate_x": 1.0, "yield_mult": mult, "press_n": press, "plant": dict(NOMINAL)}
 
 
@@ -75,24 +73,32 @@ def main() -> int:
         for _ in range(9):                                                  # bisection on the force
             mid = 0.5 * (lo + hi)
             r = run_scenario(scenario(cell, mid), pd_policy, fixed_kp=kp, zeta=z, check=False)
-            lo, hi = (lo, mid) if r["sat_joints_overload_max"] >= 3 else (mid, hi)
+            lo, hi = (lo, mid) if r["sat_joints_overload_max"] >= 2 else (mid, hi)
         press = hi
         r = run_scenario(scenario(cell, press), pd_policy, fixed_kp=kp, zeta=z, check=False)
+        if r["sat_joints_overload_max"] < 2:
+            print(cell, "NO press <= 60 N saturates 2 joints: dropped from the yield family", flush=True)
+            continue
         table[f"{cell[0]}|{cell[1]}"] = {"press_n": press, "loaded_joints": r["loaded_joints"], "best_pd": [kp, z], "sat_joints": r["sat_joints_overload_max"]}
         print(cell, "best PD", (kp, z), "press", round(press, 2), "N loaded", r["loaded_joints"], "sat", r["sat_joints_overload_max"], flush=True)
     # yield PD check on the frozen L2 decision draws (press from the table)
     ys, yb = [], []
     for s in suite.load("decision", "L2", "yield_draws"):
+        if f"{s.pose}|{s.orient}" not in table:
+            continue
         t = table[f"{s.pose}|{s.orient}"]
         d = s.to_dict() | {"press_n": t["press_n"]}
         kp, z = t["best_pd"]
-        ry = run_scenario(d, yield_policy(kp, t["loaded_joints"]), fixed_kp=0.0, zeta=z, check=False)
+        ry = run_scenario(d, yield_policy(kp), fixed_kp=0.0, zeta=z, check=False)
         rb = run_scenario(d, pd_policy, fixed_kp=kp, zeta=z, check=False)
         ys.append(ry["Y"])
         yb.append(rb["Y"])
         print(f"{s.id:50s} mult {s.yield_mult} Y yieldPD {ry['Y']:.2f} Y bestPD {rb['Y']:.2f} return {ry['return']:.0f} vs {rb['return']:.0f}", flush=True)
     print(f"mean Y: yield PD {np.mean(ys):.3f}  best PD {np.mean(yb):.3f}  (gate: yield PD >= 0.80, and >= best PD + 0.15)")
     Path("data/rl/s2/press_table.json").write_text(json.dumps({"table": table, "Y_yield_pd": float(np.mean(ys)), "Y_best_pd": float(np.mean(yb))}, indent=1))
+    if len(table) < 2:
+        print("yield family has < 2 cells: back to the expert")
+        return 4
     if a.write:
         suite.write_yield_b({k: {"press_n": v["press_n"], "loaded_joints": v["loaded_joints"]} for k, v in table.items()})
         print("section B written")

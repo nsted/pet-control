@@ -158,6 +158,13 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                         None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]),
                         temp=None if self.thermal is None else self.thermal.reading())
 
+    def cap_eff(self) -> np.ndarray:
+        """Effective (derated) torque cap per joint, WITHOUT a scripted policy's own cap reduction: thermal derating x the task's cap factor x the plant cap."""
+        assert self.sim is not None
+        if self.thermal is None or self._cap_nom is None:
+            return self.sim.model.actuator_forcerange[:, 1].copy()
+        return self._cap_nom * self.thermal.derating() * float(getattr(self.task, "cap_factor", 1.0))
+
     def _init_reply_dr(self) -> None:
         """Per-episode reply-frame DR (task knob ``reply_dr``, assumption A3): torque-noise multiplier x0.5-2, 1-2 tick delay, 5% dropped frames, all scaled by ``dr.scale``."""
         self._reply_mult, self._reply_buf = 1.0, None
@@ -492,6 +499,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         pre = getattr(self.task, "pre_step", None)
         if pre is not None:                                                              # task hook: time-dependent disturbances (S2)
             pre(self.sim, self._t * self.dt)
+        if self.thermal is not None and self._cap_nom is not None:                      # torque cap of this tick: thermal derating x the task's cap factors (family derate; scripted yield policies)
+            self.sim.set_cap(self._cap_nom * self.thermal.derating() * float(getattr(self.task, "cap_factor", 1.0)) * float(getattr(self.task, "policy_cap", 1.0)))
         if c.action_mode == "delta_kp":                                                  # per-joint stiffness from the kp channels, kd tied to it (damping ratio fixed per episode)
             fixed = self.task.param("fixed_kp", 0.0)
             scale = kp_scale(a_full[c.n_joints:]) if fixed <= 0.0 else np.full(c.n_joints, fixed / float(np.mean(self._kp_ref)))     # knob fixed_kp: scripted PD baselines (the kp channels are ignored, any kp)
@@ -499,7 +508,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.sim.step(self._tgt, self.dt)
         if self.thermal is not None:                                                     # heat from the applied torque, then derate the cap for the next tick
             self.thermal.step(np.abs(self.sim.joint_torque()))
-            self.sim.set_cap(self._cap_nom * self.thermal.derating())
+            self.sim.set_cap(self._cap_nom * self.thermal.derating() * float(getattr(self.task, "cap_factor", 1.0)))
         if not np.all(np.isfinite(self.sim.data.qpos)):
             raise FloatingPointError("simulation diverged (NaN)")
         self.obs_builder.push_action((a_full if c.action_mode == "delta_kp" else a) * c.action_obs_scale)
@@ -523,7 +532,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         rx = getattr(self.task, "reward_extra", None)
         if rx is not None:                                                            # task hook: terms that need the bus / thermal state of this tick (S2)
             extra = rx(self.sim, a_full, self._prev_action, {"bus_mean_2s": float(np.mean(self._bus_win)) if self.bus is not None and self._bus_win else 0.0,
-                                                            "bus_tick": float(tick["mean"]) if self.bus is not None else 0.0, "temp": None if self.thermal is None else self.thermal.temp})
+                                                            "bus_tick": float(tick["mean"]) if self.bus is not None else 0.0, "temp": None if self.thermal is None else self.thermal.temp,
+                                                            "cap_eff": self.cap_eff()})
             for k, v in extra.items():
                 terms[k] = v
                 reward += v
