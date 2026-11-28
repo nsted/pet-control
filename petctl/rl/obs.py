@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from petctl.rl.thermal import T_AMB_C, T_OBS_SCALE_C
 from petctl.rl.config import MIT_VEL_RANGE_RAD_S, DELTA_LIMIT_RAD, DELTA_STEP_RAD, HOLD_EMA_BASE, HOLD_EMA_RANGE, EnvConfig
 
 
@@ -86,6 +87,7 @@ class Snapshot:
     torque: np.ndarray | None = None  # (n_joints,) N.m, from the MIT reply frame (used by tasks with touch_obs); zeros when omitted
     target: np.ndarray | None = None  # (n_joints,) rad, the position target last commanded; zeros when omitted
     capacitive: np.ndarray | None = None  # (6 * n_modules,) post-only face sensors: touch (n,3) then pressure (n,3), faces (left, right, middle); zeros when omitted
+    temp: np.ndarray | None = None        # (n_joints,) T_coil in degC from the MIT frame (task knob ``thermal``)
     joint_vel: np.ndarray | None = None   # (n_joints,) rad/s, the MIT frame's velocity field (task knob ``mit_frame``); None = derive the velocity from a position window
 
     def __post_init__(self) -> None:
@@ -122,12 +124,13 @@ class ObsBuilder:
         self.capacitive_off = float(cfg.task_params.get("capacitive_off", 0.0)) > 0.0      # ablation: zero the capacitive block
         self.imu_off = float(cfg.task_params.get("imu_off", 0.0)) > 0.0                    # ablation: zero the IMU channels (gravity direction + gyro)
         self.mit_frame = float(cfg.task_params.get("mit_frame", 0.0)) > 0.0                # GIM3505 reply frame: the velocity block is the quantised MIT velocity field (+-30 rad/s), not a position-window estimate
+        self.thermal = float(cfg.task_params.get("thermal", 0.0)) > 0.0                    # motor T_coil block (n_joints entries, (T - 25 C) / 75) appended last
         self.n_modules = cfg.n_modules
         self.unbounded = unbounded(cfg)                                                    # no angle range: observed joint angles and targets are wrapped to [-pi, pi)
         self.delta = cfg.action_mode in ("delta", "hold")                                  # the current target vector (/ DELTA_LIMIT_RAD) is appended last (delta and hold modes)
         self.turn_obs = self.unbounded and float(cfg.task_params.get("turn_obs", 0.0)) > 0.0         # multi-turn state: whole turns of each joint angle (and of the commanded target in delta/hold modes), appended last
         self.size = (3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
-                     + (9 * cfg.n_modules if self.capacitive else 0) + (nj if self.delta else 0) + (self.n_turn_entries() if self.turn_obs else 0))
+                     + (9 * cfg.n_modules if self.capacitive else 0) + (nj if self.delta else 0) + (self.n_turn_entries() if self.turn_obs else 0) + (nj if self.thermal else 0))
         self._cap_ema = np.zeros(3 * cfg.n_modules)
         self._touch_prev = np.zeros(2 * self.n_joints)
         self._touch_ema = np.zeros((2, 2 * self.n_joints))
@@ -153,6 +156,8 @@ class ObsBuilder:
             out.append(("target", nj))
         if self.turn_obs:
             out.append(("turns", self.n_turn_entries()))
+        if self.thermal:
+            out.append(("thermal", nj))
         return out
 
     def reset(self, first: Snapshot) -> None:
@@ -205,4 +210,6 @@ class ObsBuilder:
             parts.append(turn_count(snap.joint_pos))
             if self.delta:
                 parts.append(turn_count(snap.target))
+        if self.thermal:                                     # T_coil of each motor, whole degrees from the reply frame
+            parts.append(np.zeros(self.n_joints) if snap.temp is None else (np.asarray(snap.temp, float) - T_AMB_C) / T_OBS_SCALE_C)
         return np.concatenate(parts).astype(np.float32)

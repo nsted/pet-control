@@ -9,7 +9,7 @@ Plan: `docs/plans/RL_RESTART_PLAN.md`. Scope: movements, navigation, environment
 | T1 | DONE | - | S1 audit (<= 20 lines): what PetEnv / obs / config / asym / capacitive / watchdog / evalsuite / launch_run already provide vs what is missing (thermal model, control rate 20 vs 30 Hz, stale GL40 velocity clip in obs.py, per-joint kp scale with tied kd, golden eval test, ladder levels) |
 | T2 | DONE | T1 | Expert writes docs/plans/STAGE_1_GATES.md and STAGE_2_GATES.md; reviewer attacks them; show the owner |
 | T3 | DONE (knob mit_frame; tests/test_mit_frame.py; rate = 20 Hz kept, open for owner) | T1 | Fix obs.py velocity clip for the GIM3505-8 and resolve the control-rate question (report the decision to the owner) |
-| T4 | TODO | T1 | Thermal RC model (I^2 R) + quantised T_coil observation + torque derating near the limit; randomised starting temperature; unit tests |
+| T4 | DONE (petctl/rl/thermal.py, knobs thermal + thermal_accel; tests/test_thermal.py) | T1 | Thermal RC model (I^2 R) + quantised T_coil observation + torque derating near the limit; randomised starting temperature; unit tests |
 | T5 | TODO | T1 | Action option: joint-target deltas with one kp scale per joint and kd tied to a damping ratio (no CPG parameters); tests incl. the gain-extreme stability test |
 | T6 | TODO | T2 | Robustness-ladder level definitions + NEW frozen decision/test suites for S2 and S3 (never edit existing frozen suites) with SHA manifest |
 | T7 | TODO | T6 | Golden evaluation test: a scripted policy must reproduce known per-scenario numbers; evaluation asserts each scenario's config was applied |

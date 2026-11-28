@@ -19,6 +19,7 @@ from petctl.rl.hold_diag import TORQUE_FRAC, HoldBreakTracker
 from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
 from petctl.rl.layout_cache import LayoutCache, uses_cache
 from petctl.rl.obs import ObsBuilder, Snapshot, clip_action, hold_value, next_target, unbounded
+from petctl.rl.thermal import ThermalModel
 from petctl.rl.target_shapes import V2_SAMPLER, heldout_index, heldout_shape, sample_training_shape
 from petctl.rl.tasks import TASKS
 from petctl.sim.bus import IDLE_ELECTRONICS_A, BusClamp
@@ -72,6 +73,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self.cap_sensor: CapacitiveSensor | None = None
         self._reply_mult, self._reply_buf = 1.0, None
         self._mit_frame = False
+        self.thermal: ThermalModel | None = None
+        self._cap_nom: np.ndarray | None = None
         self.bus: BusClamp | None = None
         self._start_buf: HugStartBuffer | None = None
         self._start_buf_path: str | None = None
@@ -129,7 +132,7 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             nj = self.cfg.n_joints
             vel = quantise(np.clip(self.sim.joint_vel() + rng.normal(0, dr.vel_noise_rad_s * dr.scale, nj), -MIT_VEL_RANGE_RAD_S, MIT_VEL_RANGE_RAD_S), MIT_VEL_Q_RAD_S)
             trq = quantise(np.clip(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM * self._reply_mult, nj), -MIT_TORQUE_RANGE_NM, MIT_TORQUE_RANGE_NM), MIT_TORQUE_Q_NM)
-            frame = np.concatenate([pos, vel, trq])
+            frame = np.concatenate([pos, vel, trq] + ([self.thermal.reading()] if self.thermal is not None else []))
             if self._reply_buf is not None:
                 if not self._reply_buf:
                     self._reply_buf.extend([frame] * self._reply_buf.maxlen)         # type: ignore[arg-type]
@@ -138,9 +141,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                 out = self._reply_buf[0]
                 frame = self._reply_last if self._reply_rng.random() < self._reply_drop else out
                 self._reply_last = frame
-            pos, vel, trq = frame[:nj], frame[nj:2 * nj], frame[2 * nj:]
+            pos, vel, trq = frame[:nj], frame[nj:2 * nj], frame[2 * nj:3 * nj]
+            temp = frame[3 * nj:4 * nj] if self.thermal is not None else None
             return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy(),
-                            None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]), joint_vel=vel)
+                            None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]), joint_vel=vel, temp=temp)
         trq = quantise(self.sim.joint_torque() + rng.normal(0, REPLY_TORQUE_NOISE_NM * self._reply_mult, self.cfg.n_joints), REPLY_TORQUE_Q_NM)       # MIT reply frame: noisy, coarsely quantised
         if self._reply_buf is not None:                                               # reply-frame DR (knob reply_dr): delay of 1-2 ticks, dropped frames hold the last delivered value
             if not self._reply_buf:
@@ -151,7 +155,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             trq = self._reply_last if self._reply_rng.random() < self._reply_drop else out
             self._reply_last = trq
         return Snapshot(pos, quat, gyro, self.sim.model.actuator_forcerange[:, 1].copy(), self.task.extra_obs(self.sim), trq, self._tgt.copy(),
-                        None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]))
+                        None if self._cap_out is None else np.concatenate([self._cap_out[0].reshape(-1), self._cap_out[1].reshape(-1)]),
+                        temp=None if self.thermal is None else self.thermal.reading())
 
     def _init_reply_dr(self) -> None:
         """Per-episode reply-frame DR (task knob ``reply_dr``, assumption A3): torque-noise multiplier x0.5-2, 1-2 tick delay, 5% dropped frames, all scaled by ``dr.scale``."""
@@ -361,6 +366,11 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                                                enabled=PostProbe.of(self.sim) is not None)
             self._cap_out = (np.zeros((n, 3)), np.zeros((n, 3)))
         self._init_reply_dr()
+        self.thermal = self._cap_nom = None
+        if self.task.param("thermal", 0.0) > 0.0:                                          # motor heat (S1 1.4): separate rng stream, so knob off leaves the env stream untouched
+            self.thermal = ThermalModel.sample(self.cfg.n_joints, self.dt, np.random.default_rng(int(self._rng.integers(2 ** 31 - 1))), self.cfg.dr.scale, self.task.param("thermal_accel", 1.0))
+            self._cap_nom = np.asarray(self.sim.model.actuator_forcerange[:, 1], float).copy()
+            self.sim.set_cap(self._cap_nom * self.thermal.derating())
         self.bus = None
         if self.task.param("bus_model", 0.0) > 0.0 or self.task.param("bus_penalty", 0.0) > 0.0:       # per-robot current model, spike clamp and metrics (plan sec 5.5); off by default
             gim = self.task.param("bus_motor", 0.0) > 0.0                                  # 1: SteadyWin GIM3505-8 model (owner measurements, MOTOR_GIM3505.md); 0: legacy GL40 II model
@@ -464,6 +474,9 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._tgt = next_target(c, self._tgt, a_full)
         a = a_full[:c.n_joints]                                                          # joint outputs; in ``hold`` mode the last entry is the hold channel (history / reward see the joints only)
         self.sim.step(self._tgt, self.dt)
+        if self.thermal is not None:                                                     # heat from the applied torque, then derate the cap for the next tick
+            self.thermal.step(np.abs(self.sim.joint_torque()))
+            self.sim.set_cap(self._cap_nom * self.thermal.derating())
         if not np.all(np.isfinite(self.sim.data.qpos)):
             raise FloatingPointError("simulation diverged (NaN)")
         self.obs_builder.push_action(a * c.action_obs_scale)
