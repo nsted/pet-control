@@ -1,0 +1,63 @@
+# RL_RESTART_PLAN: the accepted plan for the RL restart (n = 11, sim only)
+
+Status: ACCEPTED by the owner 2026-11-28, after an Opus "RL Robotics Expert" review of the draft. This replaces the CMA-ES / MAP-Elites / CPG-parameter line of work as the way new behaviours are developed. It does not replace `docs/PET_PURPOSE.md` (the north star) or the rules in `CLAUDE.md` and `docs/plans/AUTONOMOUS_TRAINER.md` (permissions, approvals, safeguards), which all still apply.
+
+Starting point: git tag `before-rl-restart` (everything up to and including the PET purpose doc). Work on branch `feat/rl-restart`. Old code (CPG env, CMA-ES, MAP-Elites, the gait library, edge/gap/climb search) stays in the repo as a speed baseline and reference only: do not extend it, do not delete it.
+
+## 1. Goal and scope
+
+Develop increasingly robust movements that integrate proprioception and homeostasis, by model-free RL acting directly on the joints, using every sensor the robot has: head IMU, MIT-mode motor feedback, capacitive skin.
+
+IN SCOPE NOW: movement, navigation, interaction with the environment (edges, bumps, steps, obstacles), holding and complying under disturbance, homeostasis.
+DEFERRED BY THE OWNER (do not build yet): reading a person's interest through touch, the contact-time reward, the human-proxy limb, wrap-and-carry stages, the lifetime contact policy. The capacitive input stays in the observation interface (so nothing needs redesigning later) but is not trained on yet; the existing post-only sensor model stays as it is.
+DROPPED TO A FALLBACK: self-righting. The robot can manoeuvre on any side, so flipping is not a failure (standing rule). Instead every locomotion/hold task must work from ANY start orientation, and starts include inverted and side orientations. The two-stage self-righting skill from before stays available as scaffolding if a stage needs it.
+DEFERRED: climbing, gaps beyond 10 cm, Rubik's poses beyond transitions, lifelong learning, full Horde / TD-learned general value functions.
+
+## 2. Design rules
+
+- **Action space:** joint-target deltas (not CPG parameters) through the existing low-pass and slew limit, within the 0.5 N.m torque cap. Stiffness: ONE kp scale per joint, with kd tied to a damping ratio (not independent kd: kp x2 / kd x0.5 blew the simulation up before). No joint angle limits (standing rule).
+- **Observation (only what the real robot has):** head IMU (gravity direction in the IMU frame, gyro, accelerometer; absolute yaw is NOT used, the heading drifts), MIT motor feedback per joint (position, velocity, torque/current, T_coil and T_mos temperatures) with the real frame's quantisation, noise and delay, capacitive touch/pressure channels (interface only, see scope), a stacked history of 0.5 s (10 ticks at the env's 20 Hz) and the last action. Resolve the control-rate question (20 Hz in `EnvConfig` vs 30 Hz in CLAUDE.md) first. `obs.py` still assumes the old GL40 velocity clip of +-0.5 rad/s; update for the GIM3505-8 (see `docs/plans/MOTOR_GIM3505.md`).
+- **Algorithm:** PPO (SB3), ~10 envs, MLP over the stacked history, asymmetric critic (privileged truth: contacts, external forces, true friction/mass; `petctl/rl/asym.py`). No recurrent PPO on CPU. SAC / CrossQ only as one method-review comparison if PPO stalls twice on a stage. RMA-style teacher-student only where the history-MLP student falls more than 20% short of the privileged teacher.
+- **Exploration noise:** `ent_coef` 0 and `log_std_init` -1 stay. The owner's "accept" covers the expert's request for a LOWER BOUND of -3 on log_std (init and upper bound stay at -1): action noise of 0.37 rad per tick degraded working behaviours in the last RL pilot. This does not allow std to grow. Record it in METHOD_REVIEWS.md and tell the owner it was used.
+- **Homeostasis:** internal variables kept in a band as part of every task's reward: motor heat (first-order thermal RC driven by I^2 R, observing a quantised T_coil; randomise the starting temperature and derate torque near the limit, because 10-20 s episodes barely heat a motor), bus current against the 4 A mean / 10 A peak budgets (the GIM current model stays an unvalidated proxy), torque saturation and impact stress, posture against gravity. Costs are a deadband: zero inside the band, quadratic outside. NEVER a positive reward for low activity. Hack test: stand-still must score <= 0.05 on every task even with perfect homeostasis.
+- **Robustness ladder:** each primitive has levels of increasing disturbance (friction both directions, module friction, mass, motor derating, command delay, sensor noise, slopes, pushes, support loss, start states that are the END states of other skills: only 18/43 old gaits worked after another gait). Fixed domain-randomisation ranges per level. Evaluate at the trained level and one beyond. Score = retained ratio (metric at level / metric at nominal) WITH an absolute task floor, so "robust by doing nothing" fails. Stand-still, limp and random policies are scored at every level. The evaluation never runs the training curriculum.
+- **Friction fix (needs the owner's approval first, it touches the contact model):** MuJoCo uses the larger of the two contacting geoms' friction, so lowering floor friction did nothing. Proposed: geom `priority` so the floor's friction wins; check `tests/test_skin.py`.
+- **Structure:** train expert primitives separately, then distil them into ONE student conditioned on a skill/goal vector (multi-task DAgger); a high-level policy emits that vector. Do NOT blend the actions of separate policies (chaining failed on start-pose sensitivity). An optional sin/cos rhythm clock (two fixed frequencies) may be offered as an observation in the locomotion stage only; keep it only if an ablation shows a gain beyond the seed confidence interval. No CPG as an action space.
+- **Pilots:** a 2-minute single-disturbance overfit check first; pre-register the expected learning curve; a pilot of <= 10 minutes (about 1.2-1.8M steps at 2-3k steps/s) must beat the best gain-swept PD baseline by >= 10% at 1.5M steps or it is NO-GO. Full runs <= 1 hour. Seeds: >= 3 for any claim.
+
+## 3. Stages (each passes its frozen decision suite before the next gets compute)
+
+**S1 Foundations (timebox about 3 working days; keep minimal).** Audit what `PetEnv` already supports and reuse it: reply-frame noise, quantisation and delay (`env.py`, REPLY_*, `reply_dr`), `privileged_vector` and `asym.py`, `CapacitiveSensor`, the GIM bus model (`bus_motor=1`), `turn_obs`, the watchdog, the eval-suite SHA manifest, `launch_run.py` gating. Add: the thermal model and temperature observation, the control-rate and velocity-clip fixes, the friction fix (after approval), robustness-ladder level definitions, frozen decision/test suites for S2 and S3, and the golden evaluation test (a scripted policy must reproduce known per-scenario numbers; the evaluation asserts that every scenario's configuration was actually applied: an earlier evaluation script ran the same gait for every command).
+**Prediction side track (runs inside S2, not a gate).** Supervised multi-horizon predictors on logged rollouts: a 2-layer MLP over a 10-tick history; targets joint torques, tracking error, gravity vector, gyro, bus current, T_coil; horizons 0.1, 0.5, 2 s. Gate A: normalised MSE >= 30% below the no-change baseline at 0.5 s. Gate B (edge): AUC >= 0.90 AND >= 1 s of lead time at 10% false positives, against the old detector's 0.84 (lead time, not AUC, was what was missing). Gate C: an A/B pilot with versus without predictor inputs must improve the S2 metric beyond the seed CI; if not, drop the predictor inputs. Freeze the predictor for each stage (a moving surprise input is non-stationary). Auxiliary policy heads (UNREAL-style) only after Gate C. No off-policy TD (Horde) for now.
+**S2 Hold and comply (proprioception only for now).** Pose holding under disturbance: pushes (external forces on modules), tilted support, added load, motor derating, delay, partial support loss. Poses: straight, head lift, the staged lattice poses (233 reachable), wrap radius poses. Baseline FIRST: `scripts/rl/pose_hold_baseline.py` (written, never run) with a gain sweep. Gates over 3 seeds: pose error under gravity and pushes >= 30% below the gain-swept PD at equal or lower mean current; hack tests: limp (kp 0) <= 0.1 on hold, maximum kp scores poorly on a "yield to damage" scenario; stand-still/thrash/random tests in `tests/`. The yield-to-a-human part is deferred with the human proxy; keep a load-adaptive-stiffness scenario instead.
+**S3 Locomotion with feedback.** Primitives from scratch by RL: translation in four directions, turning, combined, from ANY orientation, with homeostatic costs and the robustness ladder. Baselines: the old robust library selector (the speed bar: `docs/plans/PHASE7_CPG_RL.md`) and a privileged-teacher upper bound. If the headroom of the teacher over the baseline is < 15%, change the task, not the knobs. Optional rhythm-clock ablation. Before this stage the owner is asked for real-motor measurements (command delay, joint friction, rotor inertia, thermal time constant, battery voltage and limits); widen the randomisation until then.
+**S4 Navigation and environment contact.** Goal reaching around obstacles (reuse the goal tasks of attempt 1 as seeds: `petctl/rl/tasks/goal_*.py`), edge avoidance on the 25 cm platform (`scripts/rl/edge_sim.py` is the scene, baselines: wander falls 98%, stand never moves; the prediction side track supplies the early-warning signal; success = fall rate <= 5% AND activity >= 60% of the unprotected wanderer), bump detection and adaptation, steps.
+**S5 Distillation and the high-level policy.** Distil the primitives into one skill-conditioned student; the high-level policy emits the skill/goal vector for navigation. Evaluation: lifelike-ness by video review by the owner, plus the frozen suites.
+Later (not now): human contact stages, interest reading, contact-time reward, wrap-and-carry, lifetime policy.
+
+## 4. Trainer hierarchy (same as before, plus the expert)
+
+- **Main trainer (Sonnet):** implements, runs, logs, renders videos, commits. Does not decide go/no-go on long runs or method changes.
+- **RL Robotics Expert (Opus, `rl-robotics-expert`):** drives decisions: writes each stage's pre-registered gate file `docs/plans/STAGE_n_GATES.md` BEFORE the stage's baseline, decides stage go/no-go, reward and curriculum design, method changes, and what to cut. Never reviews its own design.
+- **reviewer (Opus):** attacks the expert's reward, eval and curriculum design before every pilot and every full run (finds ways to earn reward without the task; writes `<run>/reviewer.md`).
+- **method-review (Opus):** after two failures with different causes, or every 10 runs.
+- **explore (Haiku):** file search and log summaries only; never contact-sheet judgments or gate decisions.
+- Safeguards unchanged: the PreToolUse guard hook, `scripts/rl/launch_run.py` (pilot -> full gating, `mark_pilot.py`), frozen suites with SHA manifest, the watchdog (extend it: a run must clear the pre-registered baseline, not a fixed 0.02).
+
+## 5. Every stage ships
+
+Baseline measured first; hack tests in `tests/` (stand-still, limp, thrash, random policies must score about nothing); the expert's gate file; the reviewer's report; a pilot; correct evaluation (golden test); captioned videos including failures; an entry in `docs/plans/METHOD_REVIEWS.md` for every redesign; commit and push; a short update of `CURRICULUM_STATE.md`. Videos go in `docs/media` (git-ignored, never committed), grouped by training scheme > task > run.
+
+## 6. Top failure risks and mitigations
+
+1. RL never beats a strong scripted baseline (the library selector problem): measure the privileged-teacher upper bound first.
+2. Overfitting to one start state: mixed starts, post-other-skill scenarios and inverted/side starts in every suite.
+3. Evaluation bugs: golden test, config-applied assertions.
+4. Reward hacks (stand-still earned 0.47 once): stand/limp/thrash/random tests per stage.
+5. Foundations never ending while unknown plant parameters dominate: timebox S1; ask the owner for the real-motor measurements before S3.
+
+## 7. Open questions for the owner (not blocking S1/S2)
+
+- Real-motor measurements (see S3).
+- Approval for the friction fix (contact model).
+- Deferred with the human-contact work: how contact time is measured without being gamed; what counts as a person's interest through touch; whether a scripted proxy is acceptable.
