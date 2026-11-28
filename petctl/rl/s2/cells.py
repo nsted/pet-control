@@ -107,15 +107,19 @@ def _enter(sim: Any, pose: Pose, q: np.ndarray, orient: int, settle_s: float) ->
                 cur[j] = a + (q[j] - a) * (i + 1) / 20
                 sim.step(cur, DT)
     errs = []
-    for _ in range(int(settle_s / DT)):
+    n = int(settle_s / DT)
+    sim._s2_tau = 0.0                                                       # peak applied torque over the last 2 s of the settle (rev. 7: not the entry ramp)
+    for i in range(n):
         sim.step(q, DT)
         errs.append(np.abs(sim.joint_pos() - q))
+        if i >= n - int(2.0 / DT):
+            sim._s2_tau = max(sim._s2_tau, float(np.abs(sim.joint_torque()).max()))
     return errs
 
 
 def tau_peak(sim: Any) -> float:
-    """Peak applied actuator torque (N.m) of the current state."""
-    return float(np.abs(sim.joint_torque()).max())
+    """Peak applied actuator torque (N.m) over the last 2 s of the latest ``enter`` settle (falls back to the current state)."""
+    return float(getattr(sim, "_s2_tau", np.abs(sim.joint_torque()).max()))
 
 
 def settle_cell(pose: Pose, orient_name: str, sim: Any | None = None) -> dict[str, Any]:
@@ -133,13 +137,14 @@ def head_z(sim: Any) -> float:
     return float(sim.data.xipos[sim.m0_id, 2])
 
 
-def corner_check(pose: Pose, orient_name: str, sim: Any) -> tuple[bool, float, float]:
-    """Holdability of one cell at the L2 worst corner (mass x1.2, head mass x2, derate 0.8) with the reference PD: (ok, tau_peak, E). ok = tau_peak <= 0.8 x cap_eff and no loss."""
+def corner_check(pose: Pose, orient_name: str, sim: Any, head_mass_x: float = 1.0) -> tuple[bool, float, float]:
+    """Holdability of one cell at the L2 DR corner (mass x1.2, derate 0.8; rev. 7: head mass x2 is a load-family disturbance, only ``head_mass_x=2`` as a stress) with the reference PD: (ok, tau_peak, E).
+    ok = tau_peak (last 2 s of the settle) <= 0.8 x cap_eff and no loss."""
     m = sim.model
     mass0, fr0 = m.body_mass.copy(), m.actuator_forcerange.copy()
     try:
         m.body_mass[:] = mass0 * L2_WORST["mass"]
-        m.body_mass[sim.m0_id] = mass0[sim.m0_id] * L2_WORST["mass"] * L2_WORST["head_mass"]
+        m.body_mass[sim.m0_id] = mass0[sim.m0_id] * L2_WORST["mass"] * head_mass_x
         m.actuator_forcerange[:] = fr0 * L2_WORST["derate"]
         errs = enter(sim, pose, ORIENTS[orient_name])
         cap_eff = float(m.actuator_forcerange[:, 1].min())
@@ -154,7 +159,8 @@ def cell_report(pose: Pose, orient_name: str, sim: Any) -> dict[str, Any]:
     """Validity (nominal plant: E < 0.1, no loss) and holdability (L2 corner) of one cell."""
     nom = settle_cell(pose, orient_name, sim)
     ok, tp, Ec = corner_check(pose, orient_name, sim)
-    return {"pose": pose.name, "orient": orient_name, "E_nominal": nom["E"], "lost_nominal": nom["lost"], "tau_peak_nominal": nom["tau_peak"], "tau_peak_corner": tp, "E_corner": Ec,
+    _, tps, Es = corner_check(pose, orient_name, sim, head_mass_x=L2_WORST["head_mass"])
+    return {"tau_peak_stress": tps, "E_stress": Es, "pose": pose.name, "orient": orient_name, "E_nominal": nom["E"], "lost_nominal": nom["lost"], "tau_peak_nominal": nom["tau_peak"], "tau_peak_corner": tp, "E_corner": Ec,
             "holdable": ok, "head_z": head_z(sim), "valid": bool(nom["valid"] and ok)}
 
 
