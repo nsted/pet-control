@@ -1,6 +1,8 @@
 # AUTONOMY: switch for the idle loop
 
-mode: off
+mode: on
+
+(Switched on by the owner's request, 2026-11-28.)
 
 How it works. `scripts/rl/idle_watch.sh` (started through the Monitor tool) is silent unless the line above says `mode: on`. With it on, the watcher prints an `IDLE` line when no training/job process has run and no file under `data/rl` or `docs/media` has changed for 10 minutes (and again every 30 minutes while still idle). The session then runs the `idle-check` agent (Haiku, read-only), which reports the next runnable task from `docs/plans/TASK_QUEUE.md`, or NONE. If there is a task, the session does it (respecting the gates and approvals); if there is none, the session asks the `rl-robotics-expert` to write new tasks into the queue from the accepted plan and the stage gate files. Tasks that need an owner approval are marked BLOCKED and skipped, never nagged, never left as a reason to sit idle: unblocked work (baselines, tests, videos, docs, the next stage's preparation) comes first.
 
