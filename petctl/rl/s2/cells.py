@@ -23,6 +23,7 @@ DT = 0.05
 CACHE_DIR = Path("data/rl/s2/cache")
 ORIENTS = {"upright": 0, "left": 2, "right": 3, "inverted": 1}           # name -> env ``start_orient`` code (env._apply_start_orient)
 ALPHAS = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5)
+REF_KP, REF_ZETA = 3.2, 1.0                                               # rev. 6: settled cache, validity and holdability use this PD (0.8 was the GL40 setting)
 HOLD_TAU_FRAC = 0.8                                                      # holdability: nominal-PD tau_peak <= 0.8 x derated cap at the L2 worst corner
 VALID_E_RAD = 0.1                                                        # a cell is valid if nominal PD settles with E < 0.1 rad and no loss
 LOST_RAD = 0.6
@@ -83,6 +84,15 @@ def _apply_orient(sim: Any, code: int) -> None:
 def enter(sim: Any, pose: Pose, orient: int, settle_s: float = 4.0) -> list[np.ndarray]:
     """Scripted entry with the nominal PD (the sim's own gains) and a settle; returns the joint-error samples (rad, per control tick) of the settle phase."""
     q = pose.q
+    kp0, kd0 = sim.gains()
+    sim.set_gains(kp0 * 0 + REF_KP, kd0 * 0 + kd0.mean() * math.sqrt(REF_KP / kp0.mean()) * REF_ZETA)       # reference PD (rev. 6): kp 3.2, zeta_m 1, kd = kd_ref sqrt(kp / kp_ref)
+    try:
+        return _enter(sim, pose, q, orient, settle_s)
+    finally:
+        sim.set_gains(kp0, kd0)
+
+
+def _enter(sim: Any, pose: Pose, q: np.ndarray, orient: int, settle_s: float) -> list[np.ndarray]:
     sim.reset()
     _apply_orient(sim, orient)
     sim.step(np.zeros(NJ), 0.5)
@@ -118,58 +128,100 @@ def settle_cell(pose: Pose, orient_name: str, sim: Any | None = None) -> dict[st
     return {"qpos": sim.data.qpos.copy(), "qvel": sim.data.qvel.copy(), "E": E, "lost": lost, "valid": bool(E < VALID_E_RAD and not lost), "tau_peak": tau_peak(sim)}
 
 
-def holdable(pose: Pose, sim: Any | None = None) -> tuple[bool, float]:
-    """Holdability at the L2 worst corner (mass x1.2, head mass x2, derate 0.8): nominal PD settled upright must have tau_peak <= 0.8 x derated cap and no loss."""
-    sim = sim or build_sim(N_MODULES)
+def head_z(sim: Any) -> float:
+    """Height (m) of the head module's centre."""
+    return float(sim.data.xipos[sim.m0_id, 2])
+
+
+def corner_check(pose: Pose, orient_name: str, sim: Any) -> tuple[bool, float, float]:
+    """Holdability of one cell at the L2 worst corner (mass x1.2, head mass x2, derate 0.8) with the reference PD: (ok, tau_peak, E). ok = tau_peak <= 0.8 x cap_eff and no loss."""
     m = sim.model
     mass0, fr0 = m.body_mass.copy(), m.actuator_forcerange.copy()
     try:
         m.body_mass[:] = mass0 * L2_WORST["mass"]
         m.body_mass[sim.m0_id] = mass0[sim.m0_id] * L2_WORST["mass"] * L2_WORST["head_mass"]
         m.actuator_forcerange[:] = fr0 * L2_WORST["derate"]
-        errs = enter(sim, pose, 0)
+        errs = enter(sim, pose, ORIENTS[orient_name])
         cap_eff = float(m.actuator_forcerange[:, 1].min())
-        tp = tau_peak(sim)
-        ok = tp <= HOLD_TAU_FRAC * cap_eff and float(np.array(errs[-20:]).max()) < LOST_RAD
-        return bool(ok), tp
+        tp, E = tau_peak(sim), float(np.array(errs[-20:]).mean())
+        return bool(tp <= HOLD_TAU_FRAC * cap_eff and float(np.array(errs[-20:]).max()) < LOST_RAD), tp, E
     finally:
         m.body_mass[:] = mass0
         m.actuator_forcerange[:] = fr0
 
 
-def choose_poses() -> tuple[dict[str, Pose], dict[str, Any]]:
-    """Apply the holdability rule (STAGE_2_GATES Poses): head-lift alpha, lattice replacement by the next sort-order entry, DROP with no passing option. Returns (poses, report)."""
+def cell_report(pose: Pose, orient_name: str, sim: Any) -> dict[str, Any]:
+    """Validity (nominal plant: E < 0.1, no loss) and holdability (L2 corner) of one cell."""
+    nom = settle_cell(pose, orient_name, sim)
+    ok, tp, Ec = corner_check(pose, orient_name, sim)
+    return {"pose": pose.name, "orient": orient_name, "E_nominal": nom["E"], "lost_nominal": nom["lost"], "tau_peak_nominal": nom["tau_peak"], "tau_peak_corner": tp, "E_corner": Ec,
+            "holdable": ok, "head_z": head_z(sim), "valid": bool(nom["valid"] and ok)}
+
+
+HEAD_LIFT_MIN_GAIN_M = 0.05
+WRAP_MIN_ALPHA = 0.6
+HEAD_ALPHAS = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2)
+WRAP_ALPHAS = (1.0, 0.9, 0.8, 0.7, 0.6)
+LATTICE_TALL_MIN_CM = 14.0
+LATTICE_MID_CM = (9.0, 13.0)
+LATTICE_MID_BELOW_TALL_CM = 3.0
+
+
+def _scaled(base: Pose, alpha: float) -> Pose:
+    return Pose(base.name, alpha * base.q, base.order, {**base.source, "alpha": alpha})
+
+
+def choose_cells() -> tuple[dict[str, Pose], list[dict[str, Any]], dict[str, Any]]:
+    """Apply the rev. 6 pose rules. Returns (poses kept, per-cell reports of the kept poses, summary). A pose survives if one of its cells is valid; alpha (head lift, wrap) is the largest that
+    leaves one valid cell (head lift also needs >= 5 cm head-height gain over straight, wrap alpha >= 0.6); lattice poses take the first passing entry of their height band."""
     sim = build_sim(N_MODULES)
-    report: dict[str, Any] = {"alpha": None, "dropped": [], "tau_peak": {}}
-    poses = load_poses()
+    base = load_poses()
     kept: dict[str, Pose] = {}
-    for a in ALPHAS:
-        p = load_poses(alpha=a)["head lift"]
-        ok, tp = holdable(p, sim)
-        report["tau_peak"][f"head lift alpha {a}"] = tp
-        if ok:
-            kept["head lift"], report["alpha"] = p, a
-            break
-    if "head lift" not in kept:
-        report["dropped"].append("head lift")
-    n_lat = len(_lattice())
-    for name in ("lattice tall", "lattice mid", "lattice compact"):
-        for skip in range(n_lat):
-            p = load_poses(lattice_skip={name: skip})[name] if name != "lattice compact" else poses[name]
-            ok, tp = holdable(p, sim)
-            report["tau_peak"][f"{name} skip {skip}"] = tp
-            if ok:
+    reports: list[dict[str, Any]] = []
+    summary: dict[str, Any] = {"dropped": [], "alpha": {}}
+    straight_reports = [cell_report(base["straight"], o, sim) for o in ORIENTS]
+    z_straight = next(r["head_z"] for r in straight_reports if r["orient"] == "upright")
+    kept["straight"] = base["straight"]
+    reports += straight_reports
+
+    def alpha_search(name: str, alphas: tuple[float, ...], min_gain: float | None = None) -> None:
+        for a in alphas:
+            p = _scaled(base[name], a)
+            reps = [cell_report(p, o, sim) for o in ORIENTS]
+            up = next(r for r in reps if r["orient"] == "upright")
+            gain_ok = min_gain is None or (up["head_z"] - z_straight) >= min_gain
+            if any(r["valid"] for r in reps) and gain_ok:
                 kept[name] = p
+                reports.extend(reps)
+                summary["alpha"][name] = a
+                return
+            if min_gain is not None and not gain_ok:
                 break
-            if name == "lattice compact":
-                break
-        if name not in kept:
-            report["dropped"].append(name)
-    for name in ("straight", "wrap"):
-        ok, tp = holdable(poses[name], sim)
-        report["tau_peak"][name] = tp
-        if ok:
-            kept[name] = poses[name]
-        else:
-            report["dropped"].append(name)
-    return {n: kept[n] for n in POSE_NAMES if n in kept}, report
+        summary["dropped"].append(name)
+
+    alpha_search("head lift", HEAD_ALPHAS, HEAD_LIFT_MIN_GAIN_M)
+    if "wrap" in base:
+        alpha_search("wrap", WRAP_ALPHAS)
+    lat = _lattice()
+
+    def band_pick(name: str, order: list[int]) -> float | None:
+        for i in order:
+            p = _lat_pose(name, lat, i)
+            reps = [cell_report(p, o, sim) for o in ORIENTS]
+            if any(r["valid"] for r in reps):
+                kept[name] = p
+                reports.extend(reps)
+                return float(lat[i]["height_cm"])
+        summary["dropped"].append(name)
+        return None
+
+    tall_h = band_pick("lattice tall", [i for i, r in enumerate(lat) if r["height_cm"] >= LATTICE_TALL_MIN_CM])
+    lo, hi = LATTICE_MID_CM
+    mid_order = [i for i, r in enumerate(lat) if lo <= r["height_cm"] <= hi and (tall_h is None or r["height_cm"] <= tall_h - LATTICE_MID_BELOW_TALL_CM)]
+    band_pick("lattice mid", mid_order)
+    band_pick("lattice compact", sorted(range(len(lat)), key=lambda j: lat[j]["footprint_cm2"]))
+    ordered = {n: kept[n] for n in POSE_NAMES if n in kept}
+    summary["poses"] = list(ordered)
+    summary["lifted_with_valid_cell"] = [n for n in LIFTED if n in ordered and any(r["valid"] for r in reports if r["pose"] == n)]
+    summary["no_go"] = bool(len(ordered) < 4 or "head lift" not in ordered or len(summary["lifted_with_valid_cell"]) < 2)
+    return ordered, reports, summary
