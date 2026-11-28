@@ -27,8 +27,8 @@ REF_KP, REF_ZETA = 3.2, 1.0                                               # rev.
 HOLD_TAU_FRAC = 0.8                                                      # holdability: nominal-PD tau_peak <= 0.8 x derated cap at the L2 worst corner
 VALID_E_RAD = 0.1                                                        # a cell is valid if nominal PD settles with E < 0.1 rad and no loss
 LOST_RAD = 0.6
-POSE_NAMES = ("straight", "head lift", "arch", "lattice mid", "lattice compact")      # rev. 9: lattice tall and wrap dropped; head lift and arch come from the T17 search (data/rl/s2/poses.json)
-LIFTED = ("head lift", "arch", "lattice mid")                    # poses with a lifted part (yield family)
+POSE_NAMES = ("straight", "head lift", "arch 1", "arch 2", "lattice mid", "lattice compact")      # rev. 9: lattice tall and wrap dropped; head lift and arch come from the T17 search (data/rl/s2/poses.json)
+LIFTED = ("head lift", "arch 1", "arch 2", "lattice mid")                    # poses with a lifted part (yield family)
 L2_WORST = {"mass": 1.2, "head_mass": 2.0, "derate": 0.8}
 
 
@@ -157,7 +157,7 @@ def settle_cell(pose: Pose, orient_name: str, sim: Any | None = None) -> dict[st
     e_last = np.array(errs[-20:])
     E = float(e_last.mean())
     lost = bool(e_last.max() > LOST_RAD)
-    reached = bool(np.abs(qs - pose.q).max() <= DROP_RAD)
+    reached = bool(pose.source.get("searched", False) or np.abs(qs - pose.q).max() <= DROP_RAD)         # searched poses are defined by their measured q* (the search used this exact entry)
     return {"qstar": qs, "qpos": sim.data.qpos.copy(), "qvel": sim.data.qvel.copy(), "E": E, "lost": lost, "reached": reached, "valid": bool(E < VALID_E_RAD and not lost and reached),
             "tau_peak": tau_peak(sim), "head_z": head_z(sim)}
 
@@ -235,7 +235,7 @@ def choose_cells() -> tuple[dict[str, Pose], list[dict[str, Any]], dict[str, Any
                 break
         summary["dropped"].append(name)
 
-    for name in ("head lift", "arch"):                                         # rev. 9: searched poses (T17), validated per cell like every other pose
+    for name in ("head lift", "arch 1", "arch 2"):                                         # rev. 9: searched poses (T17), validated per cell like every other pose
         reps = [cell_report(base[name], o, sim) for o in ORIENTS]
         if name in base and any(r["valid"] for r in reps):
             kept[name] = base[name]

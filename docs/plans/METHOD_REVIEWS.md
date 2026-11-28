@@ -57,3 +57,7 @@ with different causes. Newest first.
 
 ## 2026-11-28: log_std lower bound -3 IN USE (T5, trainer)
 `petctl/rl/logstd.py` clamps the PPO policy log_std to [-3, -1] (init -1, ent_coef 0) for `action_mode: delta_kp` runs (callback in `train.py`). The owner accepted the lower bound on 2026-11-28; the upper bound -1 means std can never grow. Owner informed in the session report. Tests: `tests/test_delta_kp.py`.
+
+## 2026-11-28 (trainer): S2 set A frozen (T6) - what was actually frozen
+Cells (rev. 9 rules, expert-decided; limp-trivial straight cells out of the denominator): head lift upright, arch 1 upright + right, arch 2 upright, lattice mid upright, lattice compact upright (6 cells, limp H 0.097, 100% of non-trivial scenarios). Poses head lift / arch 1 / arch 2 come from CMA-ES (T17/T18, `data/rl/s2/poses.json`, q* measured after entry, T18 gain: arch 1 +6.3 cm, arch 2 +5.8 cm). Lattice tall, wrap dropped. Suites: 72 non-yield scenarios + 15 yield draws per (split, level), manifest `data/rl/s2/suite/manifest.json`. NOTE for the expert / owner: STAGE_2_GATES says "about 320 scenarios per level"; with 6 cells x 12 the suite has 72 (statistical power is lower than pre-registered; seeds x scenarios CI will be wider). Also: only the upright orientation (plus arch 1 right) is scored: owner item (hold tasks should work from any orientation; side-entry search not funded).
+Sim bug fixed the same day: `PetSim.step` wiped external `xfrc_applied` forces (every push was a no-op); see CURRICULUM_STATE.md.

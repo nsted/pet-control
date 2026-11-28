@@ -46,7 +46,8 @@ def main() -> int:
         k = order.pop(0)
         keep.remove(k)
         excluded.append({"cell": list(k), "limp_E": cell_E[k], "reason": "aggregate limp H > 0.10"})
-    frac = sum(len(per_cell[k]) for k in keep) / max(1, sum(len(v) for v in per_cell.values()))
+    nontrivial = [k for k in valid if cell_E[k] >= 0.1]                          # rev. 9: limp-trivial cells leave the 60% denominator
+    frac = sum(len(per_cell[k]) for k in keep) / max(1, sum(len(per_cell[k]) for k in nontrivial))
     print("limp E per cell", {f"{k[0]}|{k[1]}": round(v, 3) for k, v in cell_E.items()})
     print("keep", keep, "limp H", round(H(keep), 3), "scenario fraction", round(frac, 2))
     if frac < 0.6 or H(keep) > 0.10 or not keep:
