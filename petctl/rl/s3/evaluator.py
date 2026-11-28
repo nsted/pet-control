@@ -36,15 +36,18 @@ def dev_suite(n_pairs: int = 8, starts: tuple[str, ...] = ("upright",), seed: in
     return out
 
 
-def env_for(sc: dict[str, Any], extra: dict[str, float] | None = None) -> PetEnv:
+def env_for(sc: dict[str, Any], extra: dict[str, float] | None = None, slew_rad: float | None = None) -> PetEnv:
     """The S3 evaluation env for one scenario (n = 11, delta_kp actions, MIT frame, thermal, bus demand model, nominal plant, the scenario's start orientation)."""
     tp = {**TP, "start_orient": float(START_ORIENT[sc["start"]]), **(extra or {})}
-    return PetEnv(EnvConfig(task="loco_cmd", n_modules=11, episode_s=EPISODE_S, action_mode="delta_kp", task_params=tp))
+    cfg = EnvConfig(task="loco_cmd", n_modules=11, episode_s=EPISODE_S, action_mode="delta_kp", task_params=tp)
+    if slew_rad is not None:                                            # bridge runs only: the deployed protective ramp is 0.35 rad/tick (7 rad/s at 20 Hz); the old CPG env had no ramp
+        cfg.max_target_step_rad = slew_rad
+    return PetEnv(cfg)
 
 
-def run_scenario(sc: dict[str, Any], policy: Policy, extra: dict[str, float] | None = None) -> dict[str, Any]:
+def run_scenario(sc: dict[str, Any], policy: Policy, extra: dict[str, float] | None = None, slew_rad: float | None = None) -> dict[str, Any]:
     """One 20 s episode. M = mean of the per-segment T over the non-stop segments (None when there are none); S_stop over stop segments (reported apart)."""
-    env = env_for(sc, extra)
+    env = env_for(sc, extra, slew_rad)
     obs, _ = env.reset(seed=int(sc["seed"]), options={"scenario": {"segments": sc["segments"], **({"push": sc["push"]} if "push" in sc else {})}})
     task = env.task
     applied = {"start_orient": float(env.cfg.task_params["start_orient"]), "segments": [s.tolist() for s in task.segments], "up_dot_start": float(env._up_dot())}
@@ -71,12 +74,13 @@ def run_scenario(sc: dict[str, Any], policy: Policy, extra: dict[str, float] | N
             "families": [s["family"] for s in sc["segments"]]}
 
 
-def _selector_job(sc: dict[str, Any]) -> dict[str, Any]:
+def _selector_job(args: tuple[dict[str, Any], float | None]) -> dict[str, Any]:
     from petctl.rl.s3.selector import Selector
-    return run_scenario(sc, Selector(11, kp_action=-0.139))
+    sc, slew = args
+    return run_scenario(sc, Selector(11, kp_action=-0.139, unclipped=slew is not None), slew_rad=slew)
 
 
-def run_selector_suite(scs: list[dict[str, Any]], procs: int = 8) -> list[dict[str, Any]]:
-    """The library selector over a list of scenarios (process pool)."""
+def run_selector_suite(scs: list[dict[str, Any]], procs: int = 8, slew_rad: float | None = None) -> list[dict[str, Any]]:
+    """The library selector over a list of scenarios (process pool); ``slew_rad`` relaxes the target slew limit for the bridge run."""
     with Pool(procs) as p:
-        return p.map(_selector_job, scs)
+        return p.map(_selector_job, [(s, slew_rad) for s in scs])

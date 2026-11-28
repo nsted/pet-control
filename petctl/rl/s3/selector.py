@@ -22,7 +22,7 @@ F_RATIO = (0.4, 1.1)
 class Selector:
     """Library gait selection and the per-tick joint-target generator."""
 
-    def __init__(self, n_modules: int = 11, kp_action: float = 0.0, scale_f: bool = True) -> None:
+    def __init__(self, n_modules: int = 11, kp_action: float = 0.0, scale_f: bool = True, unclipped: bool = False) -> None:
         """Load the env-measured elite labels of this body length."""
         self.n, self.nj = n_modules, n_modules - 1
         rows = json.loads(Path(LABELS.format(n=n_modules)).read_text())
@@ -30,6 +30,7 @@ class Selector:
         self.v = np.array([r["v"] for r in rows], float)
         self.scale_f = scale_f
         self.kp_a = kp_action
+        self.unclipped = unclipped                       # bridge runs: do not clip the delta action (needs a relaxed env slew limit); deployable runs clip to +-1 (0.25 rad per tick)
         self.lo = np.array([PARAM_BOUNDS[k][0] for k in PARAM_NAMES])
         self.hi = np.array([PARAM_BOUNDS[k][1] for k in PARAM_NAMES])
         self.cpg = CPG(self.nj)
@@ -59,6 +60,6 @@ class Selector:
         cmd = env.task.cmd
         tgt = self.cpg.step(env.dt, self.params_for(cmd))
         a = np.zeros(2 * self.nj)
-        a[:self.nj] = np.clip((tgt - env._tgt) / DELTA_STEP_RAD, -1.0, 1.0)
+        a[:self.nj] = (tgt - env._tgt) / DELTA_STEP_RAD if self.unclipped else np.clip((tgt - env._tgt) / DELTA_STEP_RAD, -1.0, 1.0)
         a[self.nj:] = self.kp_a
         return a
