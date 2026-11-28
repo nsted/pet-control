@@ -48,7 +48,7 @@ def env_for(sc: dict[str, Any], extra: dict[str, float] | None = None, slew_rad:
 def run_scenario(sc: dict[str, Any], policy: Policy, extra: dict[str, float] | None = None, slew_rad: float | None = None) -> dict[str, Any]:
     """One 20 s episode. M = mean of the per-segment T over the non-stop segments (None when there are none); S_stop over stop segments (reported apart)."""
     env = env_for(sc, extra, slew_rad)
-    obs, _ = env.reset(seed=int(sc["seed"]), options={"scenario": {"segments": sc["segments"], **({"push": sc["push"]} if "push" in sc else {})}})
+    obs, _ = env.reset(seed=int(sc["seed"]), options={"scenario": {"segments": sc["segments"], **({"push": sc["push"]} if "push" in sc else {}), **({"start_state": sc["start_state"]} if "start_state" in sc else {})}})
     task = env.task
     applied = {"start_orient": float(env.cfg.task_params["start_orient"]), "segments": [s.tolist() for s in task.segments], "up_dot_start": float(env._up_dot())}
     Ts: list[list[float]] = [[] for _ in task.segments]

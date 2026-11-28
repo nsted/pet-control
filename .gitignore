@@ -48,3 +48,6 @@ data/rl/s2/*
 !data/rl/s2/suite/
 !data/rl/s2/cache/
 !data/rl/s2/pose_choice_rev*.json
+!data/rl/s3/
+data/rl/s3/*
+!data/rl/s3/bank/

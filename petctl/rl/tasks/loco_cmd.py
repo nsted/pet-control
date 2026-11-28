@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
+import mujoco
 import numpy as np
 
 from petctl.rl.config import EnvConfig
@@ -51,6 +52,20 @@ class LocoCmd(Task):
         super().__init__(cfg)
         self.options: dict[str, Any] = {}
         self._prev_full: np.ndarray | None = None
+
+    def arrange_start(self, sim: PetSim, rng: np.random.Generator) -> np.ndarray | None:
+        """Start from a banked state (scenario ``start_state``: path of an npz with qpos / qvel, e.g. a collapsed or post-gait end state); None = the env's normal start (upright / ``start_orient``)."""
+        path = (self.options.get("scenario") or {}).get("start_state")
+        if not path:
+            return None
+        c = np.load(path)
+        sim.reset()
+        sim.data.qpos[:] = c["qpos"]
+        sim.data.qvel[:] = c["qvel"]
+        mujoco.mj_forward(sim.model, sim.data)
+        sim._buf.clear()
+        sim._last_target = sim.joint_pos().copy()
+        return np.zeros(3)
 
     def reset(self, sim: PetSim, rng: np.random.Generator) -> None:
         """Pick (or read) the two command segments and start the window history."""
