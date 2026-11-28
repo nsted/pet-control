@@ -169,6 +169,10 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         lo, hi = dr.reply_noise_mult
         self._reply_mult = float(np.exp(s * r.uniform(np.log(lo), np.log(hi))))
         delay = int(round(_u(r, *dr.reply_delay_ticks, s, mid=dr.reply_delay_ticks[0])))
+        if self.task.param("reply_noise_mult", 0.0) > 0.0:                          # frozen scenarios fix the draws (knobs reply_noise_mult / reply_delay_ticks)
+            self._reply_mult = self.task.param("reply_noise_mult", 1.0)
+        if self.task.param("reply_delay_ticks", 0.0) > 0.0:
+            delay = int(self.task.param("reply_delay_ticks", 1.0))
         self._reply_drop = dr.reply_drop * s
         self._reply_buf = deque(maxlen=delay + 1)
         self._reply_last = np.zeros(self.cfg.n_joints)
@@ -275,10 +279,13 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         self._rng = self.np_random
         params, self.privileged = sample_params(self.cfg.dr, self._rng, self.base)
         tp = self.cfg.task_params
+        if float(tp.get("plant_nominal", 0.0)) > 0.0:                                  # S2: frozen scenarios start from the exact nominal plant (the one the settled-pose cache was made with), not the DR midpoint
+            params = BuildParams(**{**self.base.__dict__, "cap_nm": (self.cfg.dr.cap_nm[0],) * self.cfg.n_joints})      # the real torque cap (0.5 N.m), not the stale BuildParams default
         if "floor_friction" in tp or "friction_aniso" in tp:                          # eval-suite scenarios fix the friction (overrides the randomised draw)
             params = BuildParams(**{**params.__dict__, "floor_friction": float(tp.get("floor_friction", params.floor_friction)), "skin_aniso": float(tp.get("friction_aniso", params.skin_aniso))})
             self.privileged.update({"floor_friction": params.floor_friction, "skin_aniso": params.skin_aniso})
         self.task = TASKS[self.cfg.task](self.cfg)
+        self.task.options = dict(options or {})                                      # per-reset task options (S2: the frozen scenario spec)
         if hasattr(self.task, "hug_level"):
             self.task.hug_level = self._hug_level                                   # type: ignore[attr-defined]
         if hasattr(self.task, "hug_family_levels"):
@@ -377,6 +384,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if self.task.param("thermal", 0.0) > 0.0:                                          # motor heat (S1 1.4): separate rng stream, so knob off leaves the env stream untouched
             self.thermal = ThermalModel.sample(self.cfg.n_joints, self.dt, np.random.default_rng(int(self._rng.integers(2 ** 31 - 1))), self.cfg.dr.scale, self.task.param("thermal_accel", 1.0))
             self._cap_nom = np.asarray(self.sim.model.actuator_forcerange[:, 1], float).copy()
+            if self.task.param("thermal_start_c", 0.0) > 0.0:                               # frozen scenarios fix the start temperature
+                self.thermal.temp[:] = self.task.param("thermal_start_c", 25.0)
             self.sim.set_cap(self._cap_nom * self.thermal.derating())
         self.bus = None
         if self.task.param("bus_model", 0.0) > 0.0 or self.task.param("bus_penalty", 0.0) > 0.0:       # per-robot current model, spike clamp and metrics (plan sec 5.5); off by default
@@ -480,6 +489,9 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         a_full = clip_action(c, action)
         self._tgt = next_target(c, self._tgt, a_full)
         a = a_full[:c.n_joints]                                                          # joint outputs; in ``hold`` mode the last entry is the hold channel (history / reward see the joints only)
+        pre = getattr(self.task, "pre_step", None)
+        if pre is not None:                                                              # task hook: time-dependent disturbances (S2)
+            pre(self.sim, self._t * self.dt)
         if c.action_mode == "delta_kp":                                                  # per-joint stiffness from the kp channels, kd tied to it (damping ratio fixed per episode)
             scale = KP_SCALE_BASE ** a_full[c.n_joints:]
             self.sim.set_gains(self._kp_ref * scale, self._kd_ref * np.sqrt(scale) * self._zeta_m)
@@ -507,6 +519,13 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
             if bpen > 0.0:                                                                # v3: per-tick penalty on the DEMANDED peak current above the 10 A ceiling (before the clamp)
                 terms["bus_peak"] = -bpen * max(0.0, float(tick["peak"]) - REGIMEN_BUS_PEAK_A)
                 reward += terms["bus_peak"]
+        rx = getattr(self.task, "reward_extra", None)
+        if rx is not None:                                                            # task hook: terms that need the bus / thermal state of this tick (S2)
+            extra = rx(self.sim, a_full, self._prev_action, {"bus_mean_2s": float(np.mean(self._bus_win)) if self.bus is not None and self._bus_win else 0.0,
+                                                            "bus_tick": float(tick["mean"]) if self.bus is not None else 0.0, "temp": None if self.thermal is None else self.thermal.temp})
+            for k, v in extra.items():
+                terms[k] = v
+                reward += v
         self._prev_action = a
         if self._range_on:
             self._range_step(a)

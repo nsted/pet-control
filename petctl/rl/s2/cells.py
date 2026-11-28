@@ -257,3 +257,20 @@ def choose_cells() -> tuple[dict[str, Pose], list[dict[str, Any]], dict[str, Any
     summary["lifted_with_valid_cell"] = [n for n in LIFTED if n in ordered and any(r["valid"] for r in reports if r["pose"] == n)]
     summary["no_go"] = bool(len(ordered) < 4 or "head lift" not in ordered or len(summary["lifted_with_valid_cell"]) < 2)
     return ordered, reports, summary
+
+
+def cache_path(pose_name: str, orient_name: str, root: Path = CACHE_DIR) -> Path:
+    """File of the cached settled state of one cell."""
+    return root / f"{pose_name.replace(' ', '_')}_{orient_name}.npz"
+
+
+def write_cache(poses: dict[str, Pose], cells: list[tuple[str, str]], root: Path = CACHE_DIR) -> list[dict[str, Any]]:
+    """Settle every ``(pose, orient)`` cell with the rev. 8 procedure and store qpos / qvel / q* (+ numbers) under ``root``. Returns one record per cell."""
+    root.mkdir(parents=True, exist_ok=True)
+    sim = build_sim(N_MODULES)
+    out = []
+    for pose_name, orient in cells:
+        c = settle_cell(poses[pose_name], orient, sim)
+        np.savez(cache_path(pose_name, orient, root), qpos=c["qpos"], qvel=c["qvel"], qstar=c["qstar"], E=c["E"], tau_peak=c["tau_peak"])
+        out.append({"pose": pose_name, "orient": orient, "E": c["E"], "tau_peak": c["tau_peak"], "valid": c["valid"]})
+    return out

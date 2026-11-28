@@ -65,10 +65,12 @@ def test_gain_extremes_are_stable(s_act: float, zeta: float) -> None:
     rng = np.random.default_rng(0)
     a = np.zeros(2 * NJ)
     a[NJ:] = s_act
+    goal = np.zeros(NJ)
     vmax = 0.0
     for k in range(int(60 / env.dt)):                          # 60 s, random target jumps every 0.5 s
         if k % int(0.5 / env.dt) == 0:
-            a[:NJ] = rng.choice([-1.0, 1.0], NJ) * rng.uniform(0.5, 1.0, NJ)
+            goal = rng.uniform(-1.2, 1.2, NJ)                  # random target jumps (the delta action walks the target there; delta_kp has no angle limit, so keep the jumps bounded)
+        a[:NJ] = np.clip((goal - env._tgt) / 0.25, -1.0, 1.0)
         o, r, term, trunc, _ = env.step(a)
         assert np.all(np.isfinite(o)) and np.isfinite(r)
         vmax = max(vmax, float(np.abs(env.sim.joint_vel()).max()))

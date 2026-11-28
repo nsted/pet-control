@@ -33,7 +33,9 @@ def next_target(cfg: EnvConfig, tgt: np.ndarray, a: np.ndarray) -> np.ndarray:
         ema = HOLD_EMA_BASE + HOLD_EMA_RANGE * hold_value(a)
         smoothed = ema * tgt + (1 - ema) * (cfg.action_scale_rad * np.asarray(a)[:nj])
     elif cfg.action_mode in ("delta", "delta_kp"):
-        smoothed = np.clip(tgt + DELTA_STEP_RAD * np.asarray(a)[:len(tgt)], -DELTA_LIMIT_RAD, DELTA_LIMIT_RAD)
+        smoothed = tgt + DELTA_STEP_RAD * np.asarray(a)[:len(tgt)]
+        if cfg.action_mode == "delta":                                                   # delta_kp: NO angle limit (standing rule; poses go up to +-pi/2 and beyond)
+            smoothed = np.clip(smoothed, -DELTA_LIMIT_RAD, DELTA_LIMIT_RAD)
     else:
         smoothed = cfg.action_ema * tgt + (1 - cfg.action_ema) * (cfg.action_scale_rad * a)
     return tgt + np.clip(smoothed - tgt, -cfg.max_target_step_rad, cfg.max_target_step_rad)

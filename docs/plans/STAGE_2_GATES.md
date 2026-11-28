@@ -1,4 +1,4 @@
-# STAGE_2_GATES: S2 Hold and comply (pre-registered 2026-11-28, rev. 5 after the rev. 4 re-check in STAGE_1_2_GATES_REVIEW.md, before any baseline)
+# STAGE_2_GATES: S2 Hold and comply (pre-registered 2026-11-28, rev. 8 (T6 pose rules) after the rev. 4 re-check in STAGE_1_2_GATES_REVIEW.md, before any baseline)
 
 Author: rl-robotics-expert. Plan: `RL_RESTART_PLAN.md` section 3 (S2). Changing a threshold here after results are seen needs the owner's approval. Senses: proprioception only (IMU, MIT feedback, T_coil); capacitive masked.
 
@@ -7,19 +7,39 @@ Author: rl-robotics-expert. Plan: `RL_RESTART_PLAN.md` section 3 (S2). Changing 
 The policy holds a known pose q* under hidden disturbances. In the yield family it gives way under an overload, then returns.
 - Actions: joint-target deltas plus one kp scale per joint (STAGE_1 items 1.6 and 1.12).
 - Rate and length: n = 11, 20 Hz, 15 s episodes.
-- Start: the episode starts in the **settled pose**, a cached sim state per (pose, orientation) made by the scripted entry and a 4 s nominal-PD settle. The policy never does the entry.
+- Start: the episode starts in the **settled pose**, a cached sim state per (pose, orientation) made by the scripted entry and a 4 s settle under the reference PD (kp 3.2, zeta_m 1; see Pose rules). The policy never does the entry.
 - Disturbance timing (hidden): onset ~ U[3, 7] s; it lasts 3 s (a shove lasts 0.1 s); recovery runs to the end of the episode (>= 5 s). The actor has no time feature (1.5).
 - **No termination in S2: truncation at 15 s only.** Flip, lost and every other condition are metrics, never terminals; with a cost-only reward any terminal would pay the policy to end early. Test: STAGE_1 item 1.1 (all 24 cells, truncation exactly at step 300).
 
 **Poses (sources listed in the suite manifest):**
 - straight (zeros);
-- head lift: q = alpha x the `data/rl/statics/results.json` n = 11 seed-0 vector. Both stored head-lift entries settle AT the cap (tau_peak 0.50 N.m), so they cannot be held under L2 mass or derating. alpha is the largest value in {1.0, 0.9, ..., 0.5} for which the NOMINAL PD (kp_ref, zeta_m 1; the PD that makes the settled-pose cache), settled at the L2 worst corner (mass x1.2, head mass x2, derate 0.8), has tau_peak <= 0.8 x cap_eff. It is chosen at T6, before any best PD exists, and recorded in the manifest.
-- **Holdability rule, every pose:** the same nominal-PD check applies to every pose. A lattice pose that fails is replaced by the next pose in its sort order that passes.
-- **Fallback:** if no alpha >= 0.5 passes for head lift, or no lattice replacement passes, that pose is DROPPED from S2 and listed in the manifest. If fewer than 4 of the 6 poses remain, the suite is NO-GO and goes back to the expert. It is also NO-GO, and goes back to the expert, if every cell with a lifted part (head lift, lattice tall, lattice mid) fails validity while poses survive, because the yield family would then have no cells.
-- lattice tall, mid and compact (`data/rl/pose_graph_n11.json`, chosen as in `pose_hold_baseline.py`);
-- wrap (`data/rl/statics/wrap.json`, n = 11, r = 9 cm, the best held entry, held on the floor without the cylinder).
+- head lift: q = alpha x the `data/rl/statics/results.json` n = 11 seed-0 vector (alpha rule below; the stored entries sit at the cap);
+- lattice tall, mid and compact (`data/rl/pose_graph_n11.json`, sorted by height / footprint as in `pose_hold_baseline.py`);
+- wrap: q = alpha x the `data/rl/statics/wrap.json` n = 11, r = 9 cm best held entry, held on the floor without the cylinder.
 
-**Orientations:** upright, left, right, inverted. A (pose, orientation) **cell** is valid if nominal PD settles with E < 0.1 rad and no loss. Validity is decided at suite generation and recorded.
+**Pose rules (rev. 6, T6 finding: with kp_ref 0.8 every lifted pose sags by tau/kp, so validity E < 0.1 needs tau < 0.08):**
+- **Reference PD:** cell validity, holdability and the second settle use kp 3.2, zeta_m 1. The RL kp range and the best-PD grid are unchanged.
+- **q* is the settled pose (rev. 8).** The stored statics vectors command angles beyond contact, so a PD presses into the floor (preload): the torque then grows with kp and says nothing about holding. Per cell, at nominal DR:
+  1. scripted entry with the stored vector at kp 0.8, then a 4 s settle;
+  2. q* := the measured joint angles;
+  3. a 4 s settle with target q* under the reference PD;
+  4. cache that state.
+
+  q* is per cell, frozen in the manifest, and given to the policy as the commanded pose. E is then the gravity sag from q*, with no preload. A cell is dropped if q* differs from the commanded shape by more than 0.3 rad on any joint, because it did not reach the pose.
+- **Orientations for lifted poses:** cells whose scripted entry does not reach the pose from a side or inverted start are dropped by the rule above; no staged side entry is built now. Straight keeps all four orientations, so the any-orientation rule is covered there.
+- **Holdability is checked per (pose, orientation) cell.** (rev. 7) A cell passes if, settled at the L2 DR corner (mass x1.2, derate 0.8; NO head mass, which is a load-family disturbance, not DR), it has tau_peak <= 0.8 x cap_eff and no loss. tau_peak is measured over the LAST 2 s of the settle (the static hold), not during the entry ramp. The full corner (with head mass x2) is reported as a stress test only. In load scenarios, failing to hold is a legitimate outcome that E scores. A failing cell is excluded and listed in the manifest. A pose survives if >= 1 cell passes.
+- **Alpha (head lift and wrap):** the largest alpha in {1.0, 0.9, ..., 0.2} for which a cell passes, subject to a floor so the pose stays itself:
+  - head lift must keep a head-height gain of >= 5 cm over straight at nominal;
+  - wrap must keep alpha >= 0.6 (below that it is no longer a wrap).
+- **Lattice:** tall must have height >= 14 cm (the 15.7-17.5 cm band); mid must be within 9-13 cm and differ from tall by >= 3 cm; compact is the smallest footprint. Each takes the first pose in its sort order that passes inside its band, and otherwise it is dropped. A pose 10 places down the height order (11.6 cm) is a duplicate of mid, not a tall pose.
+- **Minimum set:**
+  - >= 4 poses survive;
+  - head lift survives (the lift is closest to PET_PURPOSE);
+  - >= 2 poses with a lifted part have >= 1 valid cell each (yield family).
+
+  Otherwise the suite is NO-GO. The next step is then an OWNER decision on narrowing the L2 mass or derate ranges (a threshold change), not a further rule change by the expert.
+
+**Orientations:** upright, left, right, inverted. A (pose, orientation) **cell** is valid if the reference PD (kp 3.2, zeta_m 1) settles with E < 0.1 rad and no loss. Validity is decided at suite generation and recorded.
 
 **Families:**
 
