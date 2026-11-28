@@ -25,6 +25,9 @@ MIT_VEL_Q_RAD_S = 2 * MIT_VEL_RANGE_RAD_S / 4096
 MIT_TORQUE_RANGE_NM = 2.0                # torque field +-2 N.m, 12 bit
 MIT_TORQUE_Q_NM = 2 * MIT_TORQUE_RANGE_NM / 4096
 
+KP_SCALE_BASE = 4.0       # action_mode 'delta_kp': kp = kp_ref * 4**a_kp with a_kp in [-1, 1] (scale 0.25..4); kd = kd_ref * sqrt(scale) * zeta_m (damping ratio tied to the stiffness)
+ZETA_M_RANGE = (0.7, 1.4)  # per-episode damping multiplier (a DR parameter, not an action); 1 at dr.scale 0 and whenever the task knob ``zeta_m`` fixes it
+LOG_STD_RANGE = (-3.0, -1.0)  # PPO policy log_std is clamped to this range (owner accepted the -3 lower bound 2026-11-28; init -1, ent_coef 0)
 DELTA_STEP_RAD = 0.25     # action_mode 'delta': target change per tick for an action of +-1
 HOLD_EMA_BASE = 0.3      # action_mode 'hold': ema_eff = HOLD_EMA_BASE + HOLD_EMA_RANGE * h with h = (a_h + 1) / 2 in [0, 1] (h = 0: the EMA 0.3 mapping that walked, h = 1: frozen pose)
 HOLD_EMA_RANGE = 0.7
@@ -109,8 +112,8 @@ class EnvConfig:
 
     def __post_init__(self) -> None:
         """Reject lengths outside the supported range."""
-        if self.action_mode not in ("abs", "delta", "hold"):
-            raise ValueError(f"action_mode must be 'abs', 'delta' or 'hold', got {self.action_mode!r}")
+        if self.action_mode not in ("abs", "delta", "hold", "delta_kp"):
+            raise ValueError(f"action_mode must be 'abs', 'delta', 'hold' or 'delta_kp', got {self.action_mode!r}")
         if not MIN_MODULES <= int(self.n_modules) <= MAX_MODULES:
             raise ValueError(f"n_modules must be in {MIN_MODULES}..{MAX_MODULES}, got {self.n_modules}")
 
@@ -121,8 +124,8 @@ class EnvConfig:
 
     @property
     def n_actions(self) -> int:
-        """Policy outputs: one per joint, plus the hold channel in ``hold`` mode."""
-        return self.n_joints + (1 if self.action_mode == "hold" else 0)
+        """Policy outputs: one per joint, plus the hold channel in ``hold`` mode, plus one kp-scale output per joint in ``delta_kp`` mode."""
+        return self.n_joints + (1 if self.action_mode == "hold" else self.n_joints if self.action_mode == "delta_kp" else 0)
 
     @property
     def len_norm(self) -> float:

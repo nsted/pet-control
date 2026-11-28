@@ -95,7 +95,7 @@ class GaitPolicy:
 
     def step(self, snap: Snapshot) -> np.ndarray:
         """Joint-angle targets (rad) for this control tick; mirrors ``PetEnv.step``'s EMA and slew limit."""
-        if self.cfg.action_mode in ("delta", "hold"):           # the observation carries the policy's own commanded targets
+        if self.cfg.action_mode in ("delta", "hold", "delta_kp"):           # the observation carries the policy's own commanded targets
             snap = dataclasses.replace(snap, target=self._tgt.copy())
         a = self.action(self.obs.build(snap))
         self.obs.push_action(a[:self.cfg.n_joints] * self.cfg.action_obs_scale)             # the action history holds the joint outputs only (the hold channel is not part of it)

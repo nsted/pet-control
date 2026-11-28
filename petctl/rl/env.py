@@ -13,7 +13,7 @@ from gymnasium import spaces
 from petctl.config import (GIM3505_HOLD_A_PER_NM2, GIM3505_IDLE_PER_MOTOR_A, GIM3505_MOVE_A_PER_NM2, GIM3505_MOVE_OMEGA0_RAD_S, GIM3505_V_TEST, REGIMEN_BUS_MEAN_A,
                           REGIMEN_BUS_PEAK_A)
 from petctl.rl.capacitive import CapacitiveSensor, PostProbe, sample_cap_params
-from petctl.rl.config import BUS_A_PER_NM2, MIT_TORQUE_Q_NM, MIT_TORQUE_RANGE_NM, MIT_VEL_Q_RAD_S, MIT_VEL_RANGE_RAD_S, EnvConfig
+from petctl.rl.config import BUS_A_PER_NM2, KP_SCALE_BASE, ZETA_M_RANGE, MIT_TORQUE_Q_NM, MIT_TORQUE_RANGE_NM, MIT_VEL_Q_RAD_S, MIT_VEL_RANGE_RAD_S, EnvConfig
 from petctl.rl.domain_rand import _u, sample_params
 from petctl.rl.hold_diag import TORQUE_FRAC, HoldBreakTracker
 from petctl.rl.hug_buffer import BUFFER_ENV, HugStartBuffer
@@ -366,6 +366,13 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
                                                enabled=PostProbe.of(self.sim) is not None)
             self._cap_out = (np.zeros((n, 3)), np.zeros((n, 3)))
         self._init_reply_dr()
+        self._kp_ref, self._kd_ref = self.sim.gains()                                     # nominal gains of this episode (after DR): delta_kp scales them
+        self._zeta_m = 1.0
+        if self.cfg.action_mode == "delta_kp":
+            fixed = self.task.param("zeta_m", 0.0)
+            lo, hi = np.log(ZETA_M_RANGE[0]), np.log(ZETA_M_RANGE[1])
+            zr = np.random.default_rng(int(self._rng.integers(2 ** 31 - 1)))
+            self._zeta_m = fixed if fixed > 0 else float(np.exp(self.cfg.dr.scale * zr.uniform(lo, hi)))
         self.thermal = self._cap_nom = None
         if self.task.param("thermal", 0.0) > 0.0:                                          # motor heat (S1 1.4): separate rng stream, so knob off leaves the env stream untouched
             self.thermal = ThermalModel.sample(self.cfg.n_joints, self.dt, np.random.default_rng(int(self._rng.integers(2 ** 31 - 1))), self.cfg.dr.scale, self.task.param("thermal_accel", 1.0))
@@ -473,13 +480,16 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         a_full = clip_action(c, action)
         self._tgt = next_target(c, self._tgt, a_full)
         a = a_full[:c.n_joints]                                                          # joint outputs; in ``hold`` mode the last entry is the hold channel (history / reward see the joints only)
+        if c.action_mode == "delta_kp":                                                  # per-joint stiffness from the kp channels, kd tied to it (damping ratio fixed per episode)
+            scale = KP_SCALE_BASE ** a_full[c.n_joints:]
+            self.sim.set_gains(self._kp_ref * scale, self._kd_ref * np.sqrt(scale) * self._zeta_m)
         self.sim.step(self._tgt, self.dt)
         if self.thermal is not None:                                                     # heat from the applied torque, then derate the cap for the next tick
             self.thermal.step(np.abs(self.sim.joint_torque()))
             self.sim.set_cap(self._cap_nom * self.thermal.derating())
         if not np.all(np.isfinite(self.sim.data.qpos)):
             raise FloatingPointError("simulation diverged (NaN)")
-        self.obs_builder.push_action(a * c.action_obs_scale)
+        self.obs_builder.push_action((a_full if c.action_mode == "delta_kp" else a) * c.action_obs_scale)
         reward, terms = self.task.reward(self.sim, a, self._prev_action)
         if self.bus is not None:
             tick = self.bus.end_tick()

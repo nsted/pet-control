@@ -238,7 +238,11 @@ def train(cfg: EnvConfig, steps: int, n_envs: int, out: Path, seed: int = 0, alg
         from petctl.rl.watchdog import WatchdogCallback
         base = os.environ.get("PETCTL_WATCHDOG_BASELINE")
         wd_cbs = [WatchdogCallback(out, baseline=Path(base) if base else None)]
-    callback = CallbackList([callback, ProgressExportCallback(out), *buf_cbs, *wd_cbs, *(extra_callbacks or [])])      # progress_policy.npz / progress.json every 20 min (PETCTL_PROGRESS_EXPORT_S)
+    ls_cbs: list[Any] = []
+    if algo == "ppo" and cfg.action_mode == "delta_kp":                  # RL restart: log_std clamped to [-3, -1] (see petctl/rl/logstd.py)
+        from petctl.rl.logstd import LogStdClamp
+        ls_cbs = [LogStdClamp()]
+    callback = CallbackList([callback, ProgressExportCallback(out), *buf_cbs, *wd_cbs, *ls_cbs, *(extra_callbacks or [])])      # progress_policy.npz / progress.json every 20 min (PETCTL_PROGRESS_EXPORT_S)
     model.learn(total_timesteps=steps, progress_bar=False, callback=callback)
     model.save(str(out / "model"))
     venv.save(str(out / "vecnormalize.pkl"))

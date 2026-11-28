@@ -32,8 +32,8 @@ def next_target(cfg: EnvConfig, tgt: np.ndarray, a: np.ndarray) -> np.ndarray:
         nj = len(tgt)
         ema = HOLD_EMA_BASE + HOLD_EMA_RANGE * hold_value(a)
         smoothed = ema * tgt + (1 - ema) * (cfg.action_scale_rad * np.asarray(a)[:nj])
-    elif cfg.action_mode == "delta":
-        smoothed = np.clip(tgt + DELTA_STEP_RAD * a, -DELTA_LIMIT_RAD, DELTA_LIMIT_RAD)
+    elif cfg.action_mode in ("delta", "delta_kp"):
+        smoothed = np.clip(tgt + DELTA_STEP_RAD * np.asarray(a)[:len(tgt)], -DELTA_LIMIT_RAD, DELTA_LIMIT_RAD)
     else:
         smoothed = cfg.action_ema * tgt + (1 - cfg.action_ema) * (cfg.action_scale_rad * a)
     return tgt + np.clip(smoothed - tgt, -cfg.max_target_step_rad, cfg.max_target_step_rad)
@@ -65,6 +65,8 @@ def clip_action(cfg: EnvConfig, a: np.ndarray) -> np.ndarray:
     if not unbounded(cfg):
         return np.clip(a, -1.0, 1.0)
     out = a.copy()
+    if cfg.action_mode == "delta_kp":
+        out[cfg.n_joints:] = np.clip(out[cfg.n_joints:], -1.0, 1.0)             # the kp channels stay in [-1, 1]; only the joint-target deltas are unbounded
     if cfg.action_mode == "hold":
         out[-1] = np.clip(out[-1], -1.0, 1.0)
     return out
@@ -120,6 +122,7 @@ class ObsBuilder:
         self.touch_off = float(cfg.task_params.get("touch_off", 0.0)) > 0.0          # ablation: zero the contact channels
         self.touch_long = self.touch and float(cfg.task_params.get("touch_long", 0.0)) > 0.0
         self.n_joints = nj = cfg.n_joints
+        self.act_dim = cfg.n_actions if cfg.action_mode == "delta_kp" else nj                 # one history entry per policy output (delta_kp: targets and kp channels)
         self.capacitive = float(cfg.task_params.get("capacitive_obs", 0.0)) > 0.0         # post-only face sensors; block appended after everything else (9 per module)
         self.capacitive_off = float(cfg.task_params.get("capacitive_off", 0.0)) > 0.0      # ablation: zero the capacitive block
         self.imu_off = float(cfg.task_params.get("imu_off", 0.0)) > 0.0                    # ablation: zero the IMU channels (gravity direction + gyro)
@@ -127,9 +130,9 @@ class ObsBuilder:
         self.thermal = float(cfg.task_params.get("thermal", 0.0)) > 0.0                    # motor T_coil block (n_joints entries, (T - 25 C) / 75) appended last
         self.n_modules = cfg.n_modules
         self.unbounded = unbounded(cfg)                                                    # no angle range: observed joint angles and targets are wrapped to [-pi, pi)
-        self.delta = cfg.action_mode in ("delta", "hold")                                  # the current target vector (/ DELTA_LIMIT_RAD) is appended last (delta and hold modes)
+        self.delta = cfg.action_mode in ("delta", "hold", "delta_kp")                                  # the current target vector (/ DELTA_LIMIT_RAD) is appended last (delta and hold modes)
         self.turn_obs = self.unbounded and float(cfg.task_params.get("turn_obs", 0.0)) > 0.0         # multi-turn state: whole turns of each joint angle (and of the commanded target in delta/hold modes), appended last
-        self.size = (3 + 3 + nj + nj + nj + cfg.history * nj + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
+        self.size = (3 + 3 + nj + nj + nj + cfg.history * self.act_dim + self.extra_dim + (8 * nj if self.touch else 0) + (4 * nj if self.touch_long else 0)
                      + (9 * cfg.n_modules if self.capacitive else 0) + (nj if self.delta else 0) + (self.n_turn_entries() if self.turn_obs else 0) + (nj if self.thermal else 0))
         self._cap_ema = np.zeros(3 * cfg.n_modules)
         self._touch_prev = np.zeros(2 * self.n_joints)
@@ -145,7 +148,7 @@ class ObsBuilder:
     def blocks(self) -> list[tuple[str, int]]:
         """Ordered ``(name, size)`` blocks of the observation vector (they sum to ``size``); used to map warm-start columns between tasks whose layouts differ."""
         nj = self.n_joints
-        out = [("base", 3 + 3 + nj + nj + nj + self.cfg.history * nj + self.extra_dim)]
+        out = [("base", 3 + 3 + nj + nj + nj + self.cfg.history * self.act_dim + self.extra_dim)]
         if self.touch:
             out.append(("touch", 8 * nj))
         if self.touch_long:
@@ -171,7 +174,7 @@ class ObsBuilder:
         for _ in range(self.cfg.pos_window + 1):
             self._pos.append(first.joint_pos.copy())
         for _ in range(self.cfg.history):
-            self._act.append(np.zeros(self.n_joints))
+            self._act.append(np.zeros(self.act_dim))
 
     def push_action(self, action: np.ndarray) -> None:
         """Record the action just applied."""

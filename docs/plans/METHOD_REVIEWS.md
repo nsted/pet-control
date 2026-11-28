@@ -49,3 +49,6 @@ with different causes. Newest first.
 - **Run gating.** `scripts/rl/launch_run.py pilot|full`, `scripts/rl/mark_pilot.py`, `scripts/rl/contact_sheet.py`; the hook proposal in `docs/proposals/phase1/` enforces them.
 - ~~Known gap: n_modules 10-13 do not use the URDF generator~~ WRONG: the builder has always used `urdf_gen` for n != 8 (corrected in Phase 2, see PHASE2_MODEL_CHECKS.md).
 - **Known pre-existing failure:** `tests/test_gate2.py::test_gate2_hard_fails` fails on f450903 and on this branch alike.
+
+## 2026-11-28: log_std lower bound -3 IN USE (T5, trainer)
+`petctl/rl/logstd.py` clamps the PPO policy log_std to [-3, -1] (init -1, ent_coef 0) for `action_mode: delta_kp` runs (callback in `train.py`). The owner accepted the lower bound on 2026-11-28; the upper bound -1 means std can never grow. Owner informed in the session report. Tests: `tests/test_delta_kp.py`.
