@@ -2,6 +2,8 @@
 
 ## Project Overview
 
+**Read `docs/PET_PURPOSE.md` first: it states what PET is for (the owner's own statement) and a decision guide derived from it. Use it when choosing between options.**
+
 petctl is the control framework for PET, a robotic art installation exploring embodiment, affect, and AI through human-robot touch interaction. PET is an 8-module snake-like robot (head + 6 middle + tail) with triangular prism body segments. Each module has 3 sensor faces (left, right, middle) with touch and pressure sensors, and a single-axis revolute joint (Z-axis).
 
 **PET is a twist chain** (an oblique swivel joint chain with Rubik's Snake geometry), **not a pitch/yaw snake robot.** Each joint axis is at 45° to the chain and neighbouring axes are 90° apart, so no joint bends the body in a single plane on its own: a single joint twists everything downstream, and bending comes from combining neighbouring joints. Do not apply pitch/yaw snake-robot assumptions (planar serpenoid waves, per-joint "horizontal"/"vertical" roles, single-joint bending) without checking them against this geometry. The CPG in `petctl/rl/cpg.py` works in joint-pair coordinates for this reason.
