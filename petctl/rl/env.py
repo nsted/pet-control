@@ -493,7 +493,8 @@ class PetEnv(gym.Env):  # type: ignore[type-arg]
         if pre is not None:                                                              # task hook: time-dependent disturbances (S2)
             pre(self.sim, self._t * self.dt)
         if c.action_mode == "delta_kp":                                                  # per-joint stiffness from the kp channels, kd tied to it (damping ratio fixed per episode)
-            scale = KP_SCALE_BASE ** a_full[c.n_joints:]
+            fixed = self.task.param("fixed_kp", 0.0)
+            scale = KP_SCALE_BASE ** a_full[c.n_joints:] if fixed <= 0.0 else np.full(c.n_joints, fixed / float(np.mean(self._kp_ref)))     # knob fixed_kp: scripted PD baselines (the kp channels are ignored, any kp)
             self.sim.set_gains(self._kp_ref * scale, self._kd_ref * np.sqrt(scale) * self._zeta_m)
         self.sim.step(self._tgt, self.dt)
         if self.thermal is not None:                                                     # heat from the applied torque, then derate the cap for the next tick

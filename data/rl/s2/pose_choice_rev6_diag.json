@@ -1,0 +1,44 @@
+{
+ "head lift a1.0": {
+  "nominal_tau": 0.5,
+  "nominal_E": 0.23611190603635065,
+  "corner_tau": 0.4,
+  "corner_E": 0.590832430131775
+ },
+ "head lift a0.5": {
+  "nominal_tau": 0.5,
+  "nominal_E": 0.1332388442726572,
+  "corner_tau": 0.4,
+  "corner_E": 0.23223799531472017
+ },
+ "head lift a0.3": {
+  "nominal_tau": 0.5,
+  "nominal_E": 0.05665077031817055,
+  "corner_tau": 0.4,
+  "corner_E": 0.1027488542361791
+ },
+ "wrap a1.0": {
+  "nominal_tau": 0.5,
+  "nominal_E": 0.27706009590988323,
+  "corner_tau": 0.4,
+  "corner_E": 0.2969251843398154
+ },
+ "wrap a0.6": {
+  "nominal_tau": 0.5,
+  "nominal_E": 0.1947432692837831,
+  "corner_tau": 0.4,
+  "corner_E": 0.21446821066171837
+ },
+ "tall idx6": {
+  "nominal_tau": 0.00459964560560637,
+  "nominal_E": 0.0007177078310629872,
+  "corner_tau": 0.4,
+  "corner_E": 0.9570309505782265
+ },
+ "mid idx11": {
+  "nominal_tau": 0.16184966697116632,
+  "nominal_E": 0.01896353030426524,
+  "corner_tau": 0.4,
+  "corner_E": 0.3389235182126693
+ }
+}

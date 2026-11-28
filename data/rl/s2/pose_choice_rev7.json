@@ -1,0 +1,189 @@
+{
+ "summary": {
+  "dropped": [
+   "head lift",
+   "wrap",
+   "lattice tall"
+  ],
+  "alpha": {},
+  "poses": [
+   "straight",
+   "lattice mid",
+   "lattice compact"
+  ],
+  "lifted_with_valid_cell": [
+   "lattice mid"
+  ],
+  "no_go": true
+ },
+ "cells": [
+  {
+   "tau_peak_stress": 0.009018862151096388,
+   "E_stress": 0.0008502474236065627,
+   "pose": "straight",
+   "orient": "upright",
+   "E_nominal": 0.0007440662874504813,
+   "lost_nominal": false,
+   "tau_peak_nominal": 0.008181664229330247,
+   "tau_peak_corner": 0.009992206672966486,
+   "E_corner": 0.0009202816329546882,
+   "holdable": true,
+   "head_z": 0.02342887762810908,
+   "valid": true
+  },
+  {
+   "tau_peak_stress": 0.004135450740620952,
+   "E_stress": 0.00035372084239361864,
+   "pose": "straight",
+   "orient": "left",
+   "E_nominal": 0.0003068733722526309,
+   "lost_nominal": false,
+   "tau_peak_nominal": 0.0031578250048375288,
+   "tau_peak_corner": 0.0030788507585193053,
+   "E_corner": 0.0003117821928265043,
+   "holdable": true,
+   "head_z": 0.034924579732660756,
+   "valid": true
+  },
+  {
+   "tau_peak_stress": 0.008627470589906962,
+   "E_stress": 0.0007786534113784036,
+   "pose": "straight",
+   "orient": "right",
+   "E_nominal": 0.0004822862656470421,
+   "lost_nominal": false,
+   "tau_peak_nominal": 0.0054489182423504276,
+   "tau_peak_corner": 0.00561689477996324,
+   "E_corner": 0.0004962328017279953,
+   "holdable": true,
+   "head_z": 0.03484862175465369,
+   "valid": true
+  },
+  {
+   "tau_peak_stress": 0.0005332111106348137,
+   "E_stress": 3.9221511694706886e-05,
+   "pose": "straight",
+   "orient": "inverted",
+   "E_nominal": 6.067331328811926e-06,
+   "lost_nominal": false,
+   "tau_peak_nominal": 5.918282230076972e-05,
+   "tau_peak_corner": 7.093923960199033e-05,
+   "E_corner": 8.58052778750722e-06,
+   "holdable": true,
+   "head_z": 0.055231298941649916,
+   "valid": true
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.18769167765051,
+   "pose": "lattice mid",
+   "orient": "upright",
+   "E_nominal": 0.004144064494234106,
+   "lost_nominal": false,
+   "tau_peak_nominal": 0.06738495242221905,
+   "tau_peak_corner": 0.07131589857633841,
+   "E_corner": 0.004225915964504552,
+   "holdable": true,
+   "head_z": 0.03053283027886644,
+   "valid": true
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.9340212165563324,
+   "pose": "lattice mid",
+   "orient": "left",
+   "E_nominal": 0.7682892411997889,
+   "lost_nominal": true,
+   "tau_peak_nominal": 0.5,
+   "tau_peak_corner": 0.4,
+   "E_corner": 0.9293159893781106,
+   "holdable": false,
+   "head_z": 0.03662415921986191,
+   "valid": false
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.9369842742446598,
+   "pose": "lattice mid",
+   "orient": "right",
+   "E_nominal": 0.5210070816733934,
+   "lost_nominal": true,
+   "tau_peak_nominal": 0.5,
+   "tau_peak_corner": 0.4,
+   "E_corner": 0.9185598550063752,
+   "holdable": false,
+   "head_z": 0.0367843263917847,
+   "valid": false
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.3492666265673458,
+   "pose": "lattice mid",
+   "orient": "inverted",
+   "E_nominal": 0.055576424442799664,
+   "lost_nominal": false,
+   "tau_peak_nominal": 0.5,
+   "tau_peak_corner": 0.4,
+   "E_corner": 0.2700619673664422,
+   "holdable": false,
+   "head_z": 0.06064787632874087,
+   "valid": false
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.3389235182126693,
+   "pose": "lattice compact",
+   "orient": "upright",
+   "E_nominal": 0.01896353030426524,
+   "lost_nominal": false,
+   "tau_peak_nominal": 0.17049605900199022,
+   "tau_peak_corner": 0.07864706030162581,
+   "E_corner": 0.007362373320030261,
+   "holdable": true,
+   "head_z": 0.026608425069323538,
+   "valid": true
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.6280789254097991,
+   "pose": "lattice compact",
+   "orient": "left",
+   "E_nominal": 0.6241006915964611,
+   "lost_nominal": true,
+   "tau_peak_nominal": 0.5,
+   "tau_peak_corner": 0.4,
+   "E_corner": 0.6278591903201108,
+   "holdable": false,
+   "head_z": 0.03501560211326497,
+   "valid": false
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.6295497489424509,
+   "pose": "lattice compact",
+   "orient": "right",
+   "E_nominal": 0.6220433522767624,
+   "lost_nominal": true,
+   "tau_peak_nominal": 0.5,
+   "tau_peak_corner": 0.4,
+   "E_corner": 0.6292962839653294,
+   "holdable": false,
+   "head_z": 0.035041335979715635,
+   "valid": false
+  },
+  {
+   "tau_peak_stress": 0.4,
+   "E_stress": 0.18647465541448618,
+   "pose": "lattice compact",
+   "orient": "inverted",
+   "E_nominal": 0.31350432695186237,
+   "lost_nominal": true,
+   "tau_peak_nominal": 0.5,
+   "tau_peak_corner": 0.4,
+   "E_corner": 0.19339915924241682,
+   "holdable": false,
+   "head_z": 0.044970594933340456,
+   "valid": false
+  }
+ ]
+}

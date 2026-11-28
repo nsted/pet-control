@@ -42,3 +42,9 @@ data/rl/*
 MUJOCO_LOG.TXT
 docs/media/.video_log.jsonl
 docs/media/
+!data/rl/s2/
+data/rl/s2/*
+!data/rl/s2/poses.json
+!data/rl/s2/suite/
+!data/rl/s2/cache/
+!data/rl/s2/pose_choice_rev*.json

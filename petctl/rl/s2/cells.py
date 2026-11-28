@@ -27,8 +27,8 @@ REF_KP, REF_ZETA = 3.2, 1.0                                               # rev.
 HOLD_TAU_FRAC = 0.8                                                      # holdability: nominal-PD tau_peak <= 0.8 x derated cap at the L2 worst corner
 VALID_E_RAD = 0.1                                                        # a cell is valid if nominal PD settles with E < 0.1 rad and no loss
 LOST_RAD = 0.6
-POSE_NAMES = ("straight", "head lift", "lattice tall", "lattice mid", "lattice compact", "wrap")
-LIFTED = ("head lift", "lattice tall", "lattice mid")                    # poses with a lifted part (yield family)
+POSE_NAMES = ("straight", "head lift", "arch", "lattice mid", "lattice compact")      # rev. 9: lattice tall and wrap dropped; head lift and arch come from the T17 search (data/rl/s2/poses.json)
+LIFTED = ("head lift", "arch", "lattice mid")                    # poses with a lifted part (yield family)
 L2_WORST = {"mass": 1.2, "head_mass": 2.0, "derate": 0.8}
 
 
@@ -52,7 +52,11 @@ def load_poses(alpha: float = 1.0, lattice_skip: dict[str, int] | None = None) -
     out: dict[str, Pose] = {"straight": Pose("straight", np.zeros(NJ), None, {"file": "zeros"})}
     res = json.loads(Path("data/rl/statics/results.json").read_text())
     hl = next(r for r in res if r["task"] == "head_lift" and r["n_modules"] == N_MODULES and r["seed"] == 0)
-    out["head lift"] = Pose("head lift", alpha * np.array(hl["q"], float), None, {"file": "data/rl/statics/results.json", "task": "head_lift", "seed": 0, "alpha": alpha})
+    out["head lift (stored)"] = Pose("head lift", alpha * np.array(hl["q"], float), None, {"file": "data/rl/statics/results.json", "task": "head_lift", "seed": 0, "alpha": alpha})
+    sp = Path("data/rl/s2/poses.json")
+    if sp.exists():
+        for name, rec in json.loads(sp.read_text()).items():
+            out[name] = Pose(name, np.array(rec["q"], float), None, rec["source"])
     lat = _lattice()
     idx = {"lattice tall": 0, "lattice mid": len(lat) // 2}
     for name, base in idx.items():
@@ -231,9 +235,13 @@ def choose_cells() -> tuple[dict[str, Pose], list[dict[str, Any]], dict[str, Any
                 break
         summary["dropped"].append(name)
 
-    alpha_search("head lift", HEAD_ALPHAS, HEAD_LIFT_MIN_GAIN_M)
-    if "wrap" in base:
-        alpha_search("wrap", WRAP_ALPHAS)
+    for name in ("head lift", "arch"):                                         # rev. 9: searched poses (T17), validated per cell like every other pose
+        reps = [cell_report(base[name], o, sim) for o in ORIENTS]
+        if name in base and any(r["valid"] for r in reps):
+            kept[name] = base[name]
+            reports.extend(reps)
+        else:
+            summary["dropped"].append(name)
     lat = _lattice()
 
     def band_pick(name: str, order: list[int]) -> float | None:
@@ -247,7 +255,7 @@ def choose_cells() -> tuple[dict[str, Pose], list[dict[str, Any]], dict[str, Any
         summary["dropped"].append(name)
         return None
 
-    tall_h = band_pick("lattice tall", [i for i, r in enumerate(lat) if r["height_cm"] >= LATTICE_TALL_MIN_CM])
+    tall_h = None                                                              # lattice tall dropped in rev. 9 (cannot be held at the L2 corner); mid keeps its 9-13 cm band
     lo, hi = LATTICE_MID_CM
     mid_order = [i for i, r in enumerate(lat) if lo <= r["height_cm"] <= hi and (tall_h is None or r["height_cm"] <= tall_h - LATTICE_MID_BELOW_TALL_CM)]
     band_pick("lattice mid", mid_order)
@@ -256,6 +264,7 @@ def choose_cells() -> tuple[dict[str, Pose], list[dict[str, Any]], dict[str, Any
     summary["poses"] = list(ordered)
     summary["lifted_with_valid_cell"] = [n for n in LIFTED if n in ordered and any(r["valid"] for r in reports if r["pose"] == n)]
     summary["no_go"] = bool(len(ordered) < 4 or "head lift" not in ordered or len(summary["lifted_with_valid_cell"]) < 2)
+    summary["gain_cm"] = {n: next((r["head_z"] for r in reports if r["pose"] == n and r["orient"] == "upright"), None) for n in ordered}
     return ordered, reports, summary
 
 
